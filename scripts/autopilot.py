@@ -6179,7 +6179,7 @@ def main(argv):
         # #856: a `/autopilot more` on issue NUMBER (issue-claim.yml's
         # `more` job). LOGIN, who commented; COMMENT, a file with its body;
         # COMMENT_URL, its link; ALLOWED, `deciders.py may continue LOGIN`'s
-        # exit (0 may, 1 may not, 2 could not tell).
+        # exit (0 may, 1 may not, any other could not tell).
         allowed_rc = (os.environ.get("ALLOWED") or "2").strip()
         login = os.environ.get("LOGIN", "")
         body = open(os.environ["COMMENT"], encoding="utf-8").read() if os.environ.get("COMMENT") and os.path.exists(os.environ["COMMENT"]) else ""
@@ -6195,13 +6195,15 @@ def main(argv):
             gh("issue", "comment", str(number), "--repo", repo, "--body", more_reply(kind, issue_url, policy_cap=cap, **k))
             print(kind)
             return 0
-        if allowed_rc == "2":
+        # Only 0 and 1 are deciders.py's answers; any other exit (a crash,
+        # a signal) is "could not tell", never a no.
+        if allowed_rc not in ("0", "1"):
             if unread_said(view.get("comments") or []):
                 print("Who decides could not be read, as said before: nothing to do.")
                 return 0
-            return reply("unread", unread="deciders.py could not tell")
+            return reply("unread", unread="deciders.py could not tell" if allowed_rc == "2" else f"deciders.py exited {allowed_rc}")
         said_before = any(_login(c) in BOT_LOGINS and str(c.get("body") or "").startswith(MORE_REFUSED) for c in view.get("comments") or [])
-        if allowed_rc != "0":
+        if allowed_rc == "1":
             plan = more_plan(False, {}, True, cap, False, said_before)
             if plan["reply"]:
                 return reply(plan["reply"])
@@ -6235,7 +6237,18 @@ def main(argv):
         subprocess.run(["gh", "label", "create", "autopilot:continue", "--repo", repo, "--color", "1D76DB", "--force",
                         "--description", "On an issue: the autopilot continues its draft pull request"], capture_output=True)
         # No `answered` on the issue's board: the run counts, against the new cap.
-        gh("issue", "edit", str(number), "--repo", repo, "--add-label", "autopilot:continue")
+        try:
+            gh("issue", "edit", str(number), "--repo", repo, "--add-label", "autopilot:continue")
+        except RuntimeError:
+            # Nothing would start the run: undo the extension and put the
+            # stop back, so the same `/autopilot more` again extends it
+            # instead of finding it below its cap.
+            set_board(repo, target, "pr", extensions=extensions(st) or None)
+            try:
+                gh("pr", "edit", target, "--repo", repo, "--add-label", "needs-human")
+            except RuntimeError as err:
+                print(f"::warning::needs-human could not go back on #{target}: {err}")
+            raise
         return reply("extended", pr=target, cap=plan["cap"], runs=counted, n=len(extensions(st)) + 1)
     if argv[:1] == ["may-continue"]:
         info = pr_json(repo, pr, "body,labels,isDraft,state")

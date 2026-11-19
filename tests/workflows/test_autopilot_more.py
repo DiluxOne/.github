@@ -207,6 +207,52 @@ def test_c3_who_decides_unread_is_never_a_yes(tmp_path, monkeypatch):
     assert "dx-autopilot-more-refused" not in reply
 
 
+def test_an_unexpected_deciders_exit_is_could_not_tell_not_a_no(tmp_path, monkeypatch):
+    # 1 is deciders.py's documented no; any other code (a signal's 137,
+    # one it never gives) is "could not tell", never a refusal whose
+    # marker would silence later replies.
+    for rc in ("137", "3", "-1"):
+        (tmp_path / rc).mkdir()
+        w = World(tmp_path / rc, monkeypatch)
+        before = board(w.fx, 8)
+        assert w.more("boss", rc) == 0
+        assert board(w.fx, 8) == before
+        [reply] = w.replies()
+        assert "dx-autopilot-more-refused" not in reply
+
+
+def test_a_continue_that_fails_leaves_the_board_as_before_and_a_repeat_extends(tmp_path, monkeypatch):
+    w = World(tmp_path, monkeypatch)
+    before = board(w.fx, 8)
+    plain = w.ap.gh
+
+    def failing(*args, input_text=None):
+        if args[:2] == ("issue", "edit") and "autopilot:continue" in args:
+            w.calls.append(" ".join(args))
+            raise RuntimeError("API rate limit exceeded")
+        return plain(*args, input_text=input_text)
+
+    monkeypatch.setattr(w.ap, "gh", failing)
+    try:
+        w.more("boss", "0")
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("a continue that could not be added must fail the job")
+    # The extension is not recorded, and needs-human is back on the pull
+    # request, so the stop is still one a maintainer can answer.
+    assert board(w.fx, 8) == before
+    assert any(c.startswith("pr edit 8") and "--add-label needs-human" in c for c in w.calls)
+    assert w.replies() == []
+    # The same comment again: the pull request is still at its cap, so it
+    # is extended this time, not refused as "below".
+    monkeypatch.setattr(w.ap, "gh", plain)
+    assert w.more("boss", "0") == 0
+    assert len(board(w.fx, 8)["extensions"]) == 1
+    assert any(c.startswith("issue edit 7") and "autopilot:continue" in c for c in w.calls)
+    assert "not at its cap" not in w.replies()[-1]
+
+
 # --- C4: two extensions already ---------------------------------------------
 
 TWO = [{"by": "boss", "at": "2026-11-19T10:00:00Z", "comment": COMMENT_URL}, {"by": "boss", "at": "2026-11-20T10:00:00Z", "comment": COMMENT_URL}]
