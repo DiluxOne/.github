@@ -83,7 +83,12 @@ archived and not excluded in repos.yml:
             jobs' checks, from its last merged pull request; one that exists
             is left as it is. Then its rulesets the organisation's cover
             (another one on the default branch, a tag ruleset the same as the
-            organisation's) are deleted.
+            organisation's) are deleted. A repository whose repos.yml entry
+            names its `required-checks` (#842; DiluxOne/.github: "Scripts
+            (self-tests)" and "test-first / Test first") gets "own checks"
+            requiring exactly those, not strict, in place of the pack's pick:
+            created, or its required checks replaced in the whole ruleset
+            the GET gave (never a part of its conditions); nothing deleted.
   callers   the workflows that call the shared ones, held job for job (and trigger for trigger, #324, and permission for
             permission, #329) to
             the templates in workflow-templates/ (repos.yml `callers`): the
@@ -834,24 +839,33 @@ def by_property(ruleset):
                for p in ((cond.get("repository_property") or {}).get("include") or [])) and "repository_name" not in cond
 
 
-def complete(body):
+def complete(body, keys=("ref_name", "repository_property")):
     """A ruleset's PUT or POST body, once its conditions are complete
-    (#748): both `ref_name` and `repository_property`, since GitHub reads a
-    ruleset with no `ref_name` as covering no branch. Raises naming the
-    ruleset, never writes one that would cover nothing."""
+    (#748): both `ref_name` and `repository_property` for an organisation's
+    (`keys`; a repository's own has `ref_name` alone, #842), since GitHub
+    reads a ruleset with no `ref_name` as covering no branch. Raises naming
+    the ruleset, never writes one that would cover nothing."""
     cond = body.get("conditions") or {}
-    for key in ("ref_name", "repository_property"):
+    for key in keys:
         if not cond.get(key):
             raise RuntimeError(f"the ruleset \"{body.get('name')}\" would have no `{key}` condition: nothing was written")
     return body
+
+
+# What a ruleset's GET gives that its PUT does not take.
+READ_ONLY = ("id", "source", "source_type", "node_id", "_links", "created_at", "updated_at", "current_user_can_bypass")
+
+
+def writable(ruleset):
+    """The ruleset as the GET gave it, but what the PUT does not take."""
+    return {k: v for k, v in ruleset.items() if k not in READ_ONLY}
 
 
 def with_property_condition(ruleset, exclude=None):
     """The ruleset as the PUT takes it, its every field as the GET gave it
     but its repositories, now those with the property, less what it
     excluded by property (`exclude`, when given, in its place)."""
-    body = {k: v for k, v in ruleset.items() if k not in ("id", "source", "source_type", "node_id", "_links",
-                                                            "created_at", "updated_at", "current_user_can_bypass")}
+    body = writable(ruleset)
     cond = {k: v for k, v in (ruleset.get("conditions") or {}).items() if k not in ("repository_name", "repository_id")}
     kept = ((ruleset.get("conditions") or {}).get("repository_property") or {}).get("exclude") or []
     body["conditions"] = {**cond, **property_condition(kept if exclude is None else exclude)}
@@ -2792,6 +2806,71 @@ def recent_check_names(full, count=5):
     return names
 
 
+def required_checks_of(name):
+    """repos.yml `required-checks` of repository NAME (#842): the check names
+    its default branch requires, exactly; None when it sets none."""
+    got = (listed(name) or {}).get("required-checks")
+    return list(got) if got else None
+
+
+def required_status_rule(contexts):
+    """The rule requiring exactly these checks (#842), not strict: the merge
+    queue is off where repos.yml names them."""
+    return {"type": "required_status_checks", "parameters": {
+        "strict_required_status_checks_policy": False, "do_not_enforce_on_create": False,
+        "required_status_checks": [{"context": c} for c in contexts]}}
+
+
+def own_checks_body(contexts):
+    """The body of a new "own checks" requiring exactly CONTEXTS (#842), on
+    the default branch, its conditions complete. Pure."""
+    return complete({"name": OWN, "target": "branch", "enforcement": "active", "bypass_actors": [],
+                     "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
+                     "rules": [required_status_rule(contexts)]}, keys=("ref_name",))
+
+
+def with_required_checks(ruleset, contexts):
+    """The existing "own checks" as the PUT takes it (#842): every field as
+    the GET gave it, its conditions whole, but its `required_status_checks`
+    rule, now requiring exactly CONTEXTS. Raises rather than send a ruleset
+    with no `ref_name`. Pure."""
+    body = writable(ruleset)
+    rules = [r for r in ruleset.get("rules") or [] if r.get("type") != "required_status_checks"]
+    body["rules"] = rules + [required_status_rule(contexts)]
+    return complete(body, keys=("ref_name",))
+
+
+def required_checks_drift(ruleset, contexts):
+    """Whether "own checks" (None: there is none) requires other than
+    exactly CONTEXTS, or strictly, or not on the default branch."""
+    if ruleset is None:
+        return True
+    rule = [r for r in ruleset.get("rules") or [] if r.get("type") == "required_status_checks"]
+    refs = ((ruleset.get("conditions") or {}).get("ref_name") or {}).get("include") or []
+    return (rule != [required_status_rule(contexts)] or ruleset.get("enforcement") != "active"
+            or not set(refs) & MAIN_REFS)
+
+
+def sync_required_checks(full, contexts, mine, dry):
+    """Writes "own checks" for a repository whose repos.yml entry names its
+    `required-checks` (#842): a POST when it has none, else a PUT of the
+    whole ruleset with only its required checks replaced; nothing when in
+    step. The body is complete before anything is written."""
+    own = next((r for r in mine if r.get("name") == OWN), None)
+    if not required_checks_drift(own, contexts):
+        print(f"  \"{OWN}\" requires {', '.join(contexts)}: in step")
+        return
+    if own is None:
+        body, call = own_checks_body(contexts), ("api", "-X", "POST", f"repos/{full}/rulesets", "--input", "-")
+    else:
+        body, call = with_required_checks(own, contexts), ("api", "-X", "PUT", f"repos/{full}/rulesets/{own['id']}", "--input", "-")
+    if dry:
+        print(f"  would {'create' if own is None else 'update'} \"{OWN}\" to require {', '.join(contexts)}")
+        return
+    gh(*call, input_text=json.dumps(body))
+    print(f"  \"{OWN}\" {'created' if own is None else 'updated'}: it requires {', '.join(contexts)}")
+
+
 def sync_own_checks(repo, dry):
     """Creates "own checks" where the kind asks for it and there is none: the
     pack's jobs' checks on the last merged pull requests, plus every check
@@ -2800,6 +2879,12 @@ def sync_own_checks(repo, dry):
     finds; a ruleset with a rule or a check nothing else carries stays."""
     full = f"{ORG}/{repo['name']}"
     default = (repo.get("defaultBranchRef") or {}).get("name") or "main"
+    contexts = required_checks_of(repo["name"])
+    if contexts:
+        # #842: repos.yml says exactly what it requires; the pack's pick
+        # and its deletions are not this repository's.
+        sync_required_checks(full, contexts, rulesets(full), dry)
+        return
     spec = own_checks_spec(full, default, workflow_texts(full))
     mine = rulesets(full)
     pipeline = pipeline_jobs()
@@ -3465,7 +3550,10 @@ def drift(repo, conf, labels, block, current=0):
         except RuntimeError as exc:
             found.append(f"its rulesets could not be checked: {exc}")
             mine, org = None, []
-        if mine is not None and own_checks_spec(full, default, texts) and not any(r.get("name") == OWN for r in mine):
+        wanted = required_checks_of(repo["name"])
+        if mine is not None and wanted and required_checks_drift(next((r for r in mine if r.get("name") == OWN), None), wanted):
+            found.append(f"its \"{OWN}\" ruleset does not require exactly {', '.join(wanted)} (repos.yml `required-checks`, `sync-repos.py own-checks`)")
+        elif mine is not None and own_checks_spec(full, default, texts) and not any(r.get("name") == OWN for r in mine):
             found.append(f"no \"{OWN}\" ruleset: nothing requires its own jobs' checks (`sync-repos.py own-checks`)")
         for _, rname in superseded(repo["name"], mine or [], org, pipeline_jobs()):
             found.append(f"the ruleset \"{rname}\" is covered by the organisation's (`sync-repos.py own-checks` deletes it)")
@@ -5536,6 +5624,27 @@ def self_test():
     check("own checks: no policy, no ruleset", own_checks_spec("o/r", "main", ["uses: DiluxOne/.github/.github/workflows/plugin-checks-wp.yml@v5"]) is None)
     globals()["gh"] = saved_gh
     check("pipeline: the organisation's required jobs", {"conventions", "review"} <= pipeline_jobs(), pipeline_jobs())
+    # #842: repos.yml `required-checks`, written exactly as "own checks".
+    two = ["Scripts (self-tests)", "test-first / Test first"]
+    check("#842 DiluxOne/.github requires its self-tests and its Test first", required_checks_of(".github") == two, required_checks_of(".github"))
+    body = own_checks_body(two)
+    check("#842 the new \"own checks\": exactly those checks, not strict, on the default branch",
+          (body["name"], body["conditions"], body["rules"][0]["parameters"]["strict_required_status_checks_policy"],
+           [c["context"] for c in body["rules"][0]["parameters"]["required_status_checks"]]),
+          (OWN, {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}}, False, two))
+    got = {"id": 5, "name": OWN, "target": "branch", "enforcement": "active", "source_type": "Repository", "node_id": "N",
+           "bypass_actors": [{"actor_id": 1}], "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": ["x"]}},
+           "rules": [{"type": "deletion"}, required_status_rule(["lint"])]}
+    put = with_required_checks(got, two)
+    check("#842 the update: the whole ruleset as the GET gave it, only its required checks replaced",
+          put, dict({k: v for k, v in got.items() if k not in READ_ONLY}, rules=[{"type": "deletion"}, required_status_rule(two)]))
+    check("#842 in step, it is not drift; other checks, strict, or none, is", (required_checks_drift(dict(got, rules=[required_status_rule(two)]), two),
+          required_checks_drift(got, two), required_checks_drift(None, two)), (False, True, True))
+    try:
+        with_required_checks(dict(got, conditions={}), two)
+        check("#842 a ruleset with part of its conditions is never written", False)
+    except RuntimeError as exc:
+        check("#842 a ruleset with part of its conditions is never written", "`ref_name`" in str(exc), str(exc))
     check("kind: plain, quoted and with a comment", [policy_kind("kind: wordpress-plugin\n"), policy_kind('kind: "wordpress-plugin"\n'), policy_kind("a: b\nkind: 'x-y'  # mine\n"), policy_kind("other: 1\n")] == ["wordpress-plugin", "wordpress-plugin", "x-y", None])
     tag_rules = [{"type": "deletion"}, {"type": "update"}]
     pipe = set(pipeline_gates())
