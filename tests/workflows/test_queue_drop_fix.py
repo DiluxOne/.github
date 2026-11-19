@@ -2,16 +2,15 @@
 `dequeued`, the organisation's pipeline starts one autopilot fix round for
 an autopilot pull request, and nothing else of the pipeline runs; the round
 runs only when a check failed in its last merge group, within the rounds
-cap, and its agent reads the failed jobs' log. The "may" step's gate runs
-with python3 and gh stood in."""
+cap, and its agent reads the failed jobs' log. The "may" step runs as
+written, its helper scripts and gh stood in."""
 import importlib.util
 import json
-import os
-import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
+from steps import evaluate, run
 
 ROOT = Path(__file__).resolve().parents[2]
 DEQUEUED = "${{ github.event_name == 'pull_request' && github.event.action == 'dequeued' }}"
@@ -64,51 +63,65 @@ def test_the_round_knows_it_from_the_event_and_reads_the_failed_jobs_log():
     assert 'autopilot.py inputs "$MODE"' in task["run"] and "autopilot.py prompt fix" in task["run"]
 
 
+# The helpers the step calls under .dx-central/scripts, stood in: each
+# records its call (as the stubs on PATH do) and answers as a fix round of
+# a human-issue pull request whose PRD matches its seal; queue-failed
+# exits as $FAILED says.
+HELPER = """import json, os, sys
+with open(os.environ["DX_CALLS"], "a") as f:
+    f.write(json.dumps([{name!r}, *sys.argv[1:]]) + "\\n")
+{body}
+"""
+HELPERS = {
+    "autopilot.py": ("cmd = sys.argv[1]\n"
+                     "if cmd == 'lane': print('human-issue')\n"
+                     "elif cmd == 'queue-failed': print('Plugin tests (u)'); sys.exit(0 if os.environ['FAILED'] == 'true' else 1)\n"
+                     "elif cmd == 'superseded': sys.exit(1)\n"
+                     "elif cmd == 'rounds-spent': print('The rounds are spent.')\n"),
+    "autonomy.py": "print(json.dumps({'autopilot-rounds': 5}))",
+    "receipts.py": "print('match' if sys.argv[1] == 'verify-prd' else '')",
+}
+
+
 def gate(tmp_path, round_, queue, failed):
-    run = prep_step("may")["run"]
-    script = "set -euo pipefail\n" + run[run.index('if [ "$MODE" = fix ]; then'):]
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir(exist_ok=True)
-    log = tmp_path / "calls.log"
-    log.write_text("")
-    policy = json.dumps({"autopilot-rounds": 5})
-    (bin_dir / "python3").write_text(
-        "#!/bin/bash\n"
-        f'echo "python3 $*" >> "{log}"\n'
-        f"case \"$2\" in policy) echo '{policy}' ;; queue-failed) echo 'Plugin tests (u)'; exit {0 if failed else 1} ;; superseded) exit 1 ;; esac\n")
-    (bin_dir / "gh").write_text(f'#!/bin/bash\necho "gh $*" >> "{log}"\nexit 0\n')
-    for f in ("python3", "gh"):
-        (bin_dir / f).chmod(0o755)
-    out = tmp_path / "out"
-    out.write_text("")
-    env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", GITHUB_OUTPUT=str(out), GITHUB_REPOSITORY="o/r",
-               MODE="fix", ISSUE="7", PR="9", ROUND=str(round_), QUEUE="true" if queue else "false")
-    done = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=60)
-    assert done.returncode == 0, done.stderr
-    return log.read_text(), out.read_text()
+    """The "may" step run as written, for fix round ROUND_ of pull request
+    #9 (issue #7): QUEUE from its own expression on a `dequeued` event (or
+    a review's), FAILED whether a check failed in the last merge group.
+    Returns (the calls, $GITHUB_OUTPUT)."""
+    s = prep_step("may")
+    queue_expr = s["env"]["QUEUE"].strip()[3:-2].strip()
+    ctx = {"github.event_name": "pull_request" if queue else "workflow_run", "github.event.action": "dequeued" if queue else "completed"}
+    files = {f".dx-central/scripts/{name}": HELPER.format(name=name, body=body) for name, body in HELPERS.items()}
+    ran = run(s, tmp_path, central=False, files=files,
+              stubs={"gh": 'case "$*" in *"--json labels"*) echo false ;; esac'},
+              exprs={queue_expr: str(evaluate(queue_expr, ctx)).lower(), "inputs.mode": "fix", "steps.what.outputs.mode": "fix",
+                     "steps.what.outputs.issue": "7", "steps.what.outputs.pr": "9", "steps.what.outputs.round": str(round_)},
+              env={"FAILED": "true" if failed else "false"})
+    assert ran.code == 0, ran.stdout + ran.stderr
+    return ran.calls, ran.output
 
 
 def test_one_round_when_a_check_failed_in_the_group(tmp_path):
     calls, out = gate(tmp_path, 2, True, True)
-    assert out == "go=true\n" and "queue-failed" in calls
+    assert out["go"] == "true" and ["autopilot.py", "queue-failed"] in calls
 
 
 def test_no_round_when_no_check_failed(tmp_path):
     calls, out = gate(tmp_path, 2, True, False)
-    assert out == "go=false\n" and "needs-human" not in calls
+    assert out["go"] == "false" and not [c for c in calls if "needs-human" in c], calls
 
 
 @pytest.mark.parametrize("failed", [True, False])
 def test_refused_past_the_rounds_cap(tmp_path, failed):
     calls, out = gate(tmp_path, 6, True, failed)
-    assert out == "go=false\n"
-    assert "queue-failed" not in calls
-    assert "--add-label needs-human" in calls
+    assert out["go"] == "false"
+    assert ["autopilot.py", "queue-failed"] not in calls
+    assert ["gh", "pr", "edit", "9", "--repo", "o/r", "--add-label", "needs-human"] in calls
 
 
 def test_a_blocked_review_round_does_not_ask_the_queue(tmp_path):
     calls, out = gate(tmp_path, 2, False, False)
-    assert out == "go=true\n" and "queue-failed" not in calls
+    assert out["go"] == "true" and ["autopilot.py", "queue-failed"] not in calls
 
 
 def test_the_agent_gets_the_failed_jobs_log(tmp_path, monkeypatch):

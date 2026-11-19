@@ -2,6 +2,8 @@
 actor without write permission unless told otherwise, so every use that runs
 on a stranger's text passes `allowed_non_write_users: '*'`, from a job whose
 token cannot write contents and a model with no tool to act with."""
+import argparse
+import shlex
 from pathlib import Path
 
 import yaml
@@ -42,6 +44,15 @@ def uses_of_the_action(name):
                 yield job_name, permissions, s
 
 
+def allowed_tools(claude_args):
+    """[tool] of `--allowedTools` in claude_args, read as the CLI reads its
+    arguments ([] when it is not given)."""
+    ap = argparse.ArgumentParser(add_help=False)
+    ap.add_argument("--allowedTools", default="")
+    known, _ = ap.parse_known_args(shlex.split(claude_args))
+    return [t for t in known.allowedTools.split(",") if t]
+
+
 def test_every_strangers_use_allows_non_write_users_with_no_write_token():
     # Every use in these two workflows reads a stranger's text: the issue, a
     # test written from it, or that test's output.
@@ -55,7 +66,8 @@ def test_every_strangers_use_allows_non_write_users_with_no_write_token():
             assert isinstance(permissions, dict), f"{where}: the job's token must name its permissions"
             assert permissions.get("contents") in ("read", None), f"{where}: its token can write contents"
             assert "write" not in {permissions.get(k) for k in ("pull-requests", "actions", "workflows")}, where
-            tools = s["with"]["claude_args"].split('--allowedTools "', 1)[1].split('"', 1)[0].split(",")
+            tools = allowed_tools(s["with"]["claude_args"])
+            assert tools, f"{where}: no --allowedTools, so every tool is allowed"
             assert all(t in ("Read", "Glob", "Grep") or t.startswith(("Write(", "Edit(")) for t in tools), f"{where}: {tools}"
         # Each says why it is safe, in a comment just above it.
         lines = (ROOT / ".github/workflows" / name).read_text(encoding="utf-8").splitlines()

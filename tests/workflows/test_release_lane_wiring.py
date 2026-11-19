@@ -2,11 +2,11 @@
 repository's checks and the workflow runs behind them, and a failed scenario
 reaches the job that opens its bug instead of stopping the lane."""
 import json
-import os
-import subprocess
 from pathlib import Path
 
 import yaml
+
+from steps import run, step
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -44,28 +44,52 @@ def test_the_scenarios_have_time_and_the_play_step_stops_first():
 GROUPS = [{"id": "serial", "scenarios": ["s1", "s2"]}, {"id": "s3", "scenarios": ["s3"]}]
 
 
+# `release-lane.py act` as the act step calls it, with `act` read as `decide`
+# (which writes nothing to GitHub); it records its call as a stub does.
+DECIDE = """import json, os, runpy, sys
+real = {real!r}
+with open(os.environ["DX_CALLS"], "a", encoding="utf-8") as fh:
+    fh.write(json.dumps(["release-lane.py", *sys.argv[1:]]) + "\\n")
+sys.argv = [real] + ["decide" if a == "act" else a for a in sys.argv[1:]]
+runpy.run_path(real, run_name="__main__")
+"""
+
+
 def run_act_step(tmp_path, results, written):
-    """The act step's shell up to the decision, with `release-lane.py act`
-    replaced by `decide` (which writes nothing to GitHub). `written`: the
+    """Run the act step (steps.run) in a copy of this checkout, with
+    `release-lane.py act` read as `decide` and git stubbed; its decision, as it printed it. `written`: the
     rows each artifact (`move`, `back`, a group's id) holds, None for one
     its job left none of."""
-    step = next(s for s in jobs()["act"]["steps"] if s.get("id") == "act")
-    script = step["run"].split("# Exit 1")[0]
-    script = "\n".join(l for l in script.splitlines() if not l.startswith("git config"))
-    tmp_path.mkdir()
+    s = step("release-lane.yml", "act", job="act")
+    # The step runs in this repository's checkout: every top entry but scripts/.
+    work = tmp_path / "work"
+    scripts = work / "scripts"
+    scripts.mkdir(parents=True)
+    for top in ROOT.iterdir():
+        if top.name not in ("scripts", ".git", ".dx-central"):
+            (work / top.name).symlink_to(top)
+    for real in (ROOT / "scripts").iterdir():
+        (scripts / real.name).symlink_to(real)
+    (scripts / "release-lane.py").unlink()
+    (scripts / "release-lane.py").write_text(DECIDE.format(real=str(ROOT / "scripts" / "release-lane.py")), encoding="utf-8")
     for name, rows in written.items():
         if rows is not None:
-            (tmp_path / "scenarios" / f"scenarios-{name}").mkdir(parents=True)
-            (tmp_path / "scenarios" / f"scenarios-{name}" / "results.md").write_text(
-                f"| table |\n\n<!-- dx-scenarios {json.dumps(rows)} -->\n", encoding="utf-8")
+            d = tmp_path / "temp" / "scenarios" / f"scenarios-{name}"
+            d.mkdir(parents=True)
+            (d / "results.md").write_text(f"| table |\n\n<!-- dx-scenarios {json.dumps(rows)} -->\n", encoding="utf-8")
     plan = {"release": True, "version": "7.14.0", "major": "v7"}
-    env = dict(os.environ, RUNNER_TEMP=str(tmp_path), PLAN=json.dumps(plan), SCENARIO_GROUPS=json.dumps(GROUPS),
-               SCENARIOS_TIMEOUT=str(step["env"]["SCENARIOS_TIMEOUT"]), PLAY_TIMEOUT=str(step["env"]["PLAY_TIMEOUT"]),
-               GITHUB_STEP_SUMMARY=str(tmp_path / "summary.md"),
+    env = dict(PLAN=json.dumps(plan), SCENARIO_GROUPS=json.dumps(GROUPS),
                RUN_URL="https://github.com/DiluxOne/.github/actions/runs/1", **results)
-    script += f'\npython3 {ROOT}/scripts/release-lane.py decide --plan "$RUNNER_TEMP/plan.json" --results "$results"\n'
-    out = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, check=True, cwd=ROOT)
-    return json.loads(out.stdout)
+    ran = run(s, tmp_path, env=env, stubs={"git": ""})
+    assert ran.code == 0, ran.stderr
+    # The decision reads the plan the step wrote and the table it merged.
+    act = ran.of("release-lane.py")
+    assert len(act) == 1 and act[0][0] == "act"
+    assert act[0][act[0].index("--plan") + 1] == f"{tmp_path}/temp/plan.json"
+    assert act[0][act[0].index("--results") + 1] == f"{tmp_path}/temp/results.md"
+    d = json.loads(ran.stdout)
+    assert ran.output["do"] == d["do"]
+    return d
 
 
 def ok(*ids):

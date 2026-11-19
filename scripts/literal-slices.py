@@ -18,8 +18,8 @@ literals:
   is a name assigned from such a call in the same function;
 - a fixed index into `.split/.rsplit/.partition/.rpartition("literal")`.
 
-The files that still slice are listed in KNOWN with their number of
-slices, which can only shrink: a listed file with more slices than its
+A file that still slices would be listed in KNOWN (empty since #873)
+with its number of slices, which can only shrink: a listed file with more slices than its
 count fails, naming each of its slices, and one with fewer fails too, so
 its count is lowered (or the file removed) in the change that fixes it.
 A path given that does not exist fails rather than scanning nothing.
@@ -36,35 +36,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FINDS = {"index", "find", "rindex", "rfind"}
 SPLITS = {"split", "partition", "rpartition", "rsplit"}
 
-# Files that slice text still: the tests/repro reproductions from before the
-# check, and the tests/workflows files left for the follow-up (#845, worst
-# first: none of them slices more than once), each with its number of
-# slices. Only shrinks.
-KNOWN = {
-    "tests/repro/test_issue_549.py": 1,
-    "tests/repro/test_issue_556.py": 1,
-    "tests/repro/test_issue_575.py": 1,
-    "tests/repro/test_issue_577.py": 1,
-    "tests/repro/test_issue_696.py": 2,
-    "tests/repro/test_issue_774.py": 1,
-    "tests/workflows/test_autopilot_cancelled_review.py": 1,
-    "tests/workflows/test_autopilot_commit_cadence.py": 1,
-    "tests/workflows/test_autopilot_pre_pr.py": 1,
-    "tests/workflows/test_autopilot_rounds.py": 1,
-    "tests/workflows/test_autopilot_sweep_draft.py": 1,
-    "tests/workflows/test_claimed_bug_wiring.py": 1,
-    "tests/workflows/test_configuration_doc.py": 1,
-    "tests/workflows/test_credits_wiring.py": 1,
-    "tests/workflows/test_flow_label_words.py": 1,
-    "tests/workflows/test_hint_without_needs_human.py": 1,
-    "tests/workflows/test_pr_screenshots_wiring.py": 1,
-    "tests/workflows/test_queue_drop_fix.py": 1,
-    "tests/workflows/test_release_bug_reproduced.py": 1,
-    "tests/workflows/test_release_lane_wiring.py": 1,
-    "tests/workflows/test_required_checks.py": 1,
-    "tests/workflows/test_triage_non_write_users.py": 1,
-    "tests/workflows/test_who_decides_wiring.py": 1,
-}
+# Files that slice text still, each with its number of slices. Empty since
+# #873 converted the last ones: add one back only as a reasoned exception,
+# with the reason beside it. Only shrinks.
+KNOWN = {}
 
 
 def is_literal(node):

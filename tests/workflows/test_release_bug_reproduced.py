@@ -12,6 +12,8 @@ from pathlib import Path
 
 import yaml
 
+from steps import sections
+
 ROOT = Path(__file__).resolve().parents[2]
 RUN = "https://github.com/DiluxOne/.github/actions/runs/77"
 
@@ -39,7 +41,8 @@ def test_the_lanes_bug_names_its_run_as_the_reproduction():
     d = bug()
     body = d["body"]
     assert body.startswith(release.MARK + "\n")
-    assert f"<!-- dx-lane: {repro.LANE} run: {RUN} -->" in body.split("###", 1)[0]
+    # The mark comes before the first heading: it heads the body.
+    assert f"<!-- dx-lane: {repro.LANE} run: {RUN} -->" in sections(body)[""].splitlines()
     assert schema.g1(body)["ok"], schema.g1(body)
     ev = repro.scenario_evidence(body)
     assert ev == {"run": RUN, "scenario": "edit-starts"}

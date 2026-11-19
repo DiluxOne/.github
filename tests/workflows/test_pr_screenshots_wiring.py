@@ -4,6 +4,7 @@ secret, and only the job that never checks it out holds the key."""
 from pathlib import Path
 
 import yaml
+from steps import sections
 
 ROOT = Path(__file__).resolve().parents[2]
 WF = ROOT / ".github/workflows"
@@ -63,5 +64,5 @@ def test_the_browser_way_of_the_pack_says_how_to_take_them():
 
 def test_the_template_has_the_sections_markers():
     tpl = (ROOT / "pull_request_template.md").read_text(encoding="utf-8")
-    shots = tpl[tpl.index("## 📸 Screenshots"):tpl.index("## ✅ Checklist")]
+    shots = sections(tpl)["📸 Screenshots"]
     assert "<!-- dx-screenshots -->" in shots and "<!-- /dx-screenshots -->" in shots
