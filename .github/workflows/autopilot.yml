@@ -45,7 +45,9 @@ name: Autopilot
 #                   a run an answer to its question started, or whose
 #                   runner was lost, is free and does not count (#479), and
 #                   so is one whose `make pre-pr` failed after the agent's
-#                   step (#673).
+#                   step (#673), or whose commits `apply` refused because
+#                   they do not build on the branch as GitHub has it (#856:
+#                   free, and it stops).
 #                   A maintainer's answer after a stop or a silent end
 #                   brings it back the same way: review-reply.yml takes
 #                   `needs-human` off and dilux-bot adds the continue (#561),
@@ -718,7 +720,14 @@ jobs:
                 gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "$cap" >/dev/null
               fi
               [[ "$why" != *"cap is"* ]] || gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label needs-human >/dev/null
-              [[ "$why" != *"cap is"* ]] || gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "${OPEN_TO_CLAIM:-}" >/dev/null || true
+              # The issue's comment says the same way past it (#856: `/autopilot
+              # more` while extensions are left, only a claim or closing past
+              # the last); scripts older than it, OPEN_TO_CLAIM.
+              if [[ "$why" == *"cap is"* ]]; then
+                claim=$(python3 .dx-central/scripts/autopilot.py cap-comment --issue "$why" 2>/dev/null) && [[ "$claim" == "The autopilot reached its"* ]] \
+                  || claim="${OPEN_TO_CLAIM:-}"
+                gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$claim" >/dev/null || true
+              fi
               echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
             fi
           fi
@@ -787,8 +796,9 @@ jobs:
       # it does not count (#479); so is one that only catches up with
       # another merge (autopilot-sweep.yml sets `catchup` before its
       # continue on a conflict, #563); each is read once, and cleared. The
-      # end rule frees a run whose runner was lost, or whose `make pre-pr`
-      # did not pass in full after the agent's step (#673).
+      # end rule frees a run whose runner was lost, whose `make pre-pr`
+      # did not pass in full after the agent's step (#673), or whose
+      # commits do not build on the branch as GitHub has it (#856).
       - name: Count the round or the run
         if: steps.may.outputs.go == 'true' && steps.what.outputs.mode != 'start'
         env:
@@ -1766,7 +1776,7 @@ jobs:
                 REWORD=true
                 echo "The agent reworded the branch's commits (the same tree): pushed with a lease."
               else
-                echo "::error::The agent's commits do not build on $BRANCH as GitHub has it: nothing is pushed."; exit 1
+                echo "refused=diverged" >> "$GITHUB_OUTPUT"; echo "::error::The agent's commits do not build on $BRANCH as GitHub has it: nothing is pushed."; exit 1
               fi
             fi
             # Read whole, then searched: a pipe into grep -q could end early
@@ -1858,6 +1868,9 @@ jobs:
           # #673: `apply` kept `ready` back on `verify`'s verdict: a comment
           # with the output's tail, the run free, and a fix round.
           PREPR: ${{ steps.applied.outputs.prepr }}
+          # #856 C1: `applied` refused the agent's commits, which do not
+          # build on the branch as GitHub has it: the run is free.
+          REFUSED: ${{ steps.applied.outputs.refused }}
           PREPR_TAIL: .dx-verify/tail.txt
           RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
           REPO_AUTONOMY: ${{ runner.temp }}/repo-autonomy.yml

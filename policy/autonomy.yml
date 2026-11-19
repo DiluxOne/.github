@@ -52,7 +52,10 @@ autopilot-rounds: 5
 # Runs the autopilot may spend on one issue's draft pull request: the first,
 # and each that continues it (`autopilot:continue`, added by a person or by
 # the workflow when a run ran out of turns or time with criteria left). Past
-# it, a person takes the pull request.
+# it, a person takes the pull request. One pull request goes past it only on
+# `/autopilot more [hint]` on its issue by someone `who-decides` allows
+# (#856, issue-claim.yml): each adds this number again to that pull
+# request's cap, at most twice; every other one keeps this cap.
 autopilot-runs: 5
 # The most one agent's run may cost, in US dollars (#287): Claude stops
 # there (--max-budget-usd), and the run is handed to a person, never

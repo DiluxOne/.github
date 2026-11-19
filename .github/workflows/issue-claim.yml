@@ -23,6 +23,15 @@ name: Issue claims
 #                   commits there carry `Co-authored-by` for the author.
 #                   A maintainer is read from GitHub (write access), never
 #                   from author_association alone.
+#                   `/autopilot more [hint]` (#856, the `more` job, not
+#                   the claim's) gives the issue's autopilot pull request,
+#                   at its cap, `autopilot-runs` more runs, at most twice,
+#                   when `who-decides` allows who commented: the extension
+#                   on its board, `needs-human` off it, `autopilot:continue`
+#                   on the issue, and the rest of the comment the next run's
+#                   hint. Anyone else gets one reply that a maintainer
+#                   decides; a third is refused, naming `/claim` and
+#                   closing it.
 #   issues          the form's checkbox ("I want to work on this myself")
 #                   claims it when it opens, before acceptance: the claim's
 #                   clock starts when it is accepted.
@@ -86,7 +95,8 @@ jobs:
         (github.event.action == 'labeled' && github.event.label.name == 'accepted') ||
         ((github.event.action == 'opened' || github.event.action == 'edited') && contains(github.event.issue.body, 'I want to work on this myself')))) ||
       github.event_name == 'pull_request_target' ||
-      (github.event_name == 'issue_comment' && github.event.comment.user.type != 'Bot')
+      (github.event_name == 'issue_comment' && github.event.comment.user.type != 'Bot' &&
+        !startsWith(github.event.comment.body, '/autopilot more'))
     runs-on: ubuntu-latest # fresh: it holds the key
     timeout-minutes: 10
     permissions: {}
@@ -126,6 +136,60 @@ jobs:
           set -euo pipefail
           gh api "repos/$GITHUB_REPOSITORY/contents/.github/autonomy.yml" --jq .content 2>/dev/null | base64 -d > "$RUNNER_TEMP/repo-autonomy.yml" || : > "$RUNNER_TEMP/repo-autonomy.yml"
           REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml" python3 .dx-central/scripts/claim.py event
+
+  # `/autopilot more [hint]` on an issue (#856): someone `who-decides`
+  # allows gives its autopilot pull request, at its cap, `autopilot-runs`
+  # more runs, at most twice (scripts/autopilot.py more). Anyone else gets
+  # one reply that a maintainer decides, and nothing changes.
+  more:
+    name: Claims · /autopilot more
+    if: >-
+      github.event_name == 'issue_comment' && !github.event.issue.pull_request &&
+      github.event.comment.user.type != 'Bot' && startsWith(github.event.comment.body, '/autopilot more')
+    runs-on: ubuntu-latest # fresh: it holds the key
+    timeout-minutes: 10
+    permissions: {}
+    concurrency:
+      group: autopilot-more-${{ github.repository }}-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    steps:
+      - name: App token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: read # CODEOWNERS, for who decides
+          permission-issues: write
+          permission-pull-requests: write
+
+      - name: The organisation's scripts and policy
+        env:
+          REF: ${{ inputs.central-ref || job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          git clone -q --depth 1 --branch "$REF" https://github.com/DiluxOne/.github .dx-central 2>/dev/null \
+            || { git clone -q https://github.com/DiluxOne/.github .dx-central && git -C .dx-central checkout -q "$REF"; }
+          test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+
+      # Who commented, the comment and its link from the event's file. Who
+      # decides is read live (`deciders.py may continue`, as for adding
+      # `autopilot:continue`); exit 2, "could not tell", is never a yes.
+      - name: More runs
+        id: more
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/contents/.github/autonomy.yml" --jq .content 2>/dev/null | base64 -d > "$RUNNER_TEMP/repo-autonomy.yml" || : > "$RUNNER_TEMP/repo-autonomy.yml"
+          LOGIN=$(jq -r '.comment.user.login' "$GITHUB_EVENT_PATH")
+          COMMENT_URL=$(jq -r '.comment.html_url' "$GITHUB_EVENT_PATH")
+          jq -r '.comment.body' "$GITHUB_EVENT_PATH" > "$RUNNER_TEMP/comment.md"
+          rc=0; python3 .dx-central/scripts/deciders.py may continue "$LOGIN" || rc=$?
+          LOGIN="$LOGIN" COMMENT_URL="$COMMENT_URL" COMMENT="$RUNNER_TEMP/comment.md" ALLOWED="$rc" \
+            REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml" python3 .dx-central/scripts/autopilot.py more
 
   daily:
     name: Claims · the daily run
