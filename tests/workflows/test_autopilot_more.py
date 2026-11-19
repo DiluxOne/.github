@@ -238,3 +238,27 @@ def test_c4_a_pull_request_below_its_cap_or_with_a_board_edited_by_hand_gets_non
     assert not any("--add-label" in c or "--remove-label" in c for c in w.calls)
     [reply] = w.replies()
     assert "not at its cap" in reply
+
+
+# --- C5: the policy's number stays 5 ----------------------------------------
+
+def test_c5_autopilot_runs_is_still_5_and_its_comment_names_the_way_past_it():
+    text = (ROOT / "policy/autonomy.yml").read_text(encoding="utf-8")
+    assert yaml.safe_load(text)["autopilot-runs"] == 5
+    lines = text.splitlines()
+    at = next(i for i, l in enumerate(lines) if l.startswith("autopilot-runs:"))
+    comment = []
+    for l in reversed(lines[:at]):
+        if not l.startswith("#"):
+            break
+        comment.insert(0, l)
+    assert "`/autopilot more" in " ".join(comment), "autopilot-runs' comment does not name /autopilot more"
+
+
+def test_c5_the_cap_message_says_how_a_maintainer_gives_more_runs():
+    ap = autopilot()
+    assert "`/autopilot more <hint>`" in ap.cap_comment("the autopilot already ran 5 times on it (the cap is 5)")
+    # Its extensions spent, the comment no longer offers one.
+    assert "/autopilot more" not in ap.cap_comment("the autopilot already ran 15 times on it (the cap is 15)", 5, False)
+    env = next(st["env"] for st in wf("autopilot.yml")["jobs"]["prep"]["steps"] if "OPEN_TO_CLAIM" in (st.get("env") or {}))
+    assert "`/autopilot more <hint>`" in env["OPEN_TO_CLAIM"] and "`/claim`" in env["OPEN_TO_CLAIM"]

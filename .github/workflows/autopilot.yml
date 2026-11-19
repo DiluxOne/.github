@@ -529,7 +529,7 @@ jobs:
           # when a newer run superseded it.
           RUN_HEAD: ${{ github.event.pull_request.head.sha }}
           # At its cap the autopilot hands the issue to people (#488).
-          OPEN_TO_CLAIM: "The autopilot reached its cap on this issue, and its pull request waits for a person: anyone may `/claim` this issue to finish it with their own code (CONTRIBUTING.md). It is on the daily list of claims until someone does.\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)"
+          OPEN_TO_CLAIM: "The autopilot reached its cap on this issue, and its pull request waits for a person: anyone may `/claim` this issue to finish it with their own code (CONTRIBUTING.md). It is on the daily list of claims until someone does. When it was the runs cap, a maintainer may instead give its pull request as many runs again as `autopilot-runs` allows with `/autopilot more <hint>` on this issue, at most twice (#856).\n\n🤖 AI-generated · Claude Opus 5.5 (Anthropic)"
         run: |
           set -euo pipefail
           export BODY="$RUNNER_TEMP/body.md" REPO_AUTONOMY="$RUNNER_TEMP/repo-autonomy.yml"

@@ -1706,8 +1706,13 @@ CAP = "<!-- dx-autopilot-cap -->"
 PERSON_ENDS = ((STOP, "stop"), (SILENT, "silent"), (CAP, "cap"))
 
 
-def cap_comment(why):
-    return f"{CAP}\nThe autopilot does not continue: {why.strip()}. A person takes it from here.\n\n{AI_LINE}"
+def cap_comment(why, runs=5, more=True):
+    """The runs cap's comment (#696), with the way past it (#856): while the
+    pull request has extensions left (`more`), a maintainer may give it
+    `runs` (the policy's `autopilot-runs`) more with `/autopilot more`."""
+    way = (f" A maintainer may give this pull request {runs} more runs with `{MORE} <hint>` on its issue, at most "
+           f"{MAX_EXTENSIONS} times; or anyone may `/claim` the issue and finish it.") if more else ""
+    return f"{CAP}\nThe autopilot does not continue: {why.strip()}. A person takes it from here.{way}\n\n{AI_LINE}"
 
 
 def _login(c):
@@ -3305,6 +3310,9 @@ A class on html.
            "`/claim`" in more_reply("spent", "u", "8", 15) and "closes the pull request" in more_reply("spent", "u", "8", 15),
            more_plan(True, {}, True, 5, False, False)["reply"], more_plan(True, {}, False, 5, True, False)["reply"]),
           ({"go": True, "reply": "extended", "cap": 15}, "spent", True, "below", "hand"))
+    check("#856 C5: the cap's comment names /autopilot more while an extension is left, never after",
+          ("`/autopilot more <hint>`" in cap_comment("the cap is 5"), "/autopilot more" in cap_comment("the cap is 15", 5, False),
+           cap_comment("the cap is 5").startswith(CAP)), (True, False, True))
     cap856 = {"body": cap_comment("the cap is 5"), "createdAt": "2026-11-19T09:00:00Z", "author": {"login": BOT_LOGINS[0]}}
     check("#856 C2: answers() restarts at a cap end and gives the rest of a /autopilot more as the hint",
           (answers([{"body": "old", "createdAt": "2026-11-19T08:00:00Z", "author": {"login": "boss"}}, cap856,
@@ -6354,7 +6362,15 @@ def main(argv):
         print(back)
         return 0
     if argv[:1] == ["cap-comment"]:
-        print(cap_comment(" ".join(argv[1:])))
+        # #856: the way past it while the pull request has extensions left;
+        # a board that cannot be read leaves the way in.
+        more = True
+        if pr:
+            try:
+                more = len(extensions(board_state(repo, pr, "pr")[0])) < MAX_EXTENSIONS
+            except RuntimeError as err:
+                print(f"::warning::{err}", file=sys.stderr)
+        print(cap_comment(" ".join(argv[1:]), cap, more))
         return 0
     if argv[:1] == ["settled"]:
         # #696: COMMENTS, DECIDERS as `answers`; SINCE, the first acceptance.
