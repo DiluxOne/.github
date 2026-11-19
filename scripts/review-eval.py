@@ -8,7 +8,8 @@ The cases are real pull requests of the organisation's public repositories
          then fixed: its `line` of `path`, which `fix`, a later commit of
          the pull request, changed (a thread that is only outdated or
          resolved, its line never changed, is no case; #844). The review
-         must raise a blocker or major on that line again.
+         must raise a blocker or major on that line again: another line
+         of the file is a miss.
   clean  the last commit of a merged pull request on which the review left
          no thread at all. The review must not block it.
 
@@ -221,6 +222,15 @@ def check(cases):
     return 1 if why else 0
 
 
+def as_line(v):
+    """A finding's line as an int, or None."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v
+    return int(v) if isinstance(v, str) and v.strip().isdigit() else None
+
+
 def verdict(case, review):
     """Whether the review did what the case expects. review is
     local-review.sh's last.json, or None when it gave none."""
@@ -229,7 +239,9 @@ def verdict(case, review):
     serious = [f for f in review.get("findings") or [] if isinstance(f, dict)
                and f.get("severity") in ("blocker", "major") and not f.get("pre_existing")]
     if case["expect"] == "flag":
-        return any(f.get("file") == case["path"] for f in serious)
+        # The case's line, not its file: another line of the same file, or
+        # a finding with no line, is a miss (C2, #844).
+        return any(f.get("file") == case["path"] and as_line(f.get("line")) == case.get("line") for f in serious)
     return not serious
 
 
@@ -320,8 +332,9 @@ def self_test():
     check("cases: never a fork's pull request, nor one that does not say", cases_from("o/r", fork, 5), ([], []))
     picked = pick({"o/a": ([{"id": "a1"}, {"id": "a2"}], []), "o/b": ([{"id": "b1"}], [])}, 2)
     check("pick: round the repositories", [c["id"] for c in picked], ["a1", "b1"])
-    case_f = {"expect": "flag", "path": "a.php"}
-    check("verdict: flag found on its file", verdict(case_f, {"findings": [{"severity": "major", "file": "a.php"}]}), True)
+    case_f = {"expect": "flag", "path": "a.php", "line": 3}
+    check("verdict: flag found on its line", verdict(case_f, {"findings": [{"severity": "major", "file": "a.php", "line": 3}]}), True)
+    check("verdict: another line of the file, or no line, is missed", (verdict(case_f, {"findings": [{"severity": "major", "file": "a.php", "line": 4}]}), verdict(case_f, {"findings": [{"severity": "major", "file": "a.php"}]})), (False, False))
     check("verdict: flag missed (a minor, another file, a pre-existing one)", verdict(case_f, {"findings": [{"severity": "minor", "file": "a.php"}, {"severity": "major", "file": "b.php"}, {"severity": "blocker", "file": "a.php", "pre_existing": True}]}), False)
     check("verdict: clean kept clean; clean blocked", (verdict({"expect": "clean"}, {"findings": [{"severity": "minor"}]}), verdict({"expect": "clean"}, {"findings": [{"severity": "major"}]})), (True, False))
     check("verdict: no review is unknown", verdict(case_f, None), None)

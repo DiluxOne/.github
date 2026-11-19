@@ -95,3 +95,12 @@ def test_collect_picks_the_first_commit_after_head_that_changed_the_line():
     assert mod.first_fix(["c2", "c3", "c4"], 3, lambda c: diffs[c]) == "c3"
     assert mod.first_fix(["c2"], 3, lambda c: diffs[c]) is None
 
+
+
+def test_a_review_that_flags_another_line_of_the_same_file_missed_the_case():
+    mod = load()
+    c = {"expect": "flag", "path": "a.php", "line": 3}
+    assert mod.verdict(c, {"findings": [{"severity": "major", "file": "a.php", "line": 3}]}) is True
+    assert mod.verdict(c, {"findings": [{"severity": "major", "file": "a.php", "line": 4}]}) is False
+    assert mod.verdict(c, {"findings": [{"severity": "blocker", "file": "a.php"}]}) is False
+    assert mod.verdict(c, {"findings": [{"severity": "major", "file": "a.php", "line": "3"}]}) is True
