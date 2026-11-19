@@ -503,9 +503,9 @@ files:
     - key: own-checks
       org: any
       repo: never
-      limit: a ruleset that exists is never rewritten
+      limit: "a ruleset that exists is never rewritten; a repository whose repos.yml entry names `required-checks` (#842) gets exactly those instead, its required checks replaced in the whole ruleset"
       read-by: [scripts/sync-repos.py]
-      issue: "#552"
+      issue: "#552, #842"
       says: What a repository of the kind requires of its own jobs.
     - key: pre-pr
       org: any
@@ -616,9 +616,9 @@ files:
       org: any
       repo: any
       limit: "read from the pull request's base; a repository's own adds tests and not-tests (scripts/test-first.py)"
-      read-by: [scripts/test-first.py, scripts/sync-repos.py]
-      issue: "#734"
-      says: Where the kind's tests are, which reproduction way runs each, and what is never a test, for the "Test first" check.
+      read-by: [scripts/test-first.py, scripts/sync-repos.py, scripts/autopilot.py]
+      issue: "#734, #842"
+      says: Where the kind's tests are, which reproduction way runs each, which required check runs them (`check`, for gate G7), and what is never a test, for the "Test first" check.
     - key: release.publishes-to
       org: any
       repo: never

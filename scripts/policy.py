@@ -684,7 +684,9 @@ def settings_tests():
         tf = pack.get("test-first")
         ways = ((pack.get("repro") or {}).get("ways") or {}) if isinstance(pack.get("repro"), dict) else {}
         check(f"pack {kind}: it declares its tests (test-first)", isinstance(tf, dict) and bool(tf.get("tests"))
-              and all(isinstance(e, dict) and e.get("paths") and e.get("way") in ways for e in tf["tests"]), tf)
+              and all(isinstance(e, dict) and e.get("paths") and e.get("way") in ways
+                      # #842: the required check that runs them, when it names one.
+                      and ("check" not in e or (isinstance(e["check"], str) and e["check"].strip())) for e in tf["tests"]), tf)
     return failed
 
 
