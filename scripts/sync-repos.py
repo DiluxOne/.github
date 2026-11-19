@@ -2845,10 +2845,13 @@ def required_checks_drift(ruleset, contexts):
     exactly CONTEXTS, or strictly, or not on the default branch."""
     if ruleset is None:
         return True
-    rule = [r for r in ruleset.get("rules") or [] if r.get("type") == "required_status_checks"]
+    rules = [r for r in ruleset.get("rules") or [] if r.get("type") == "required_status_checks"]
+    params = (rules[0].get("parameters") or {}) if len(rules) == 1 else {}
     refs = ((ruleset.get("conditions") or {}).get("ref_name") or {}).get("include") or []
-    return (rule != [required_status_rule(contexts)] or ruleset.get("enforcement") != "active"
-            or not set(refs) & MAIN_REFS)
+    # The contexts alone: GitHub may give each its `integration_id`.
+    return (len(rules) != 1 or sorted(required_checks(ruleset)) != sorted(contexts)
+            or params.get("strict_required_status_checks_policy") is not False
+            or ruleset.get("enforcement") != "active" or not set(refs) & MAIN_REFS)
 
 
 def sync_required_checks(full, contexts, mine, dry):
@@ -3781,17 +3784,17 @@ def callers_test(check, conf):
     # job does not wait for differs, with an own job of the repository's
     # or without, and the rewrite takes the template's, the own job kept.
     mine_job = "\n  mine:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo mine\n"
-    stale = {n: tpr.replace("  auto-merge:\n    needs: review\n", f"  auto-merge:\n    needs: {n}\n") + mine_job
-             for n in ("[review, conventions]", "[review, conventions, mine]")}
+    stale = {n: tpr.replace("    needs: [review, test-first]\n", f"    needs: {n}\n") + mine_job
+             for n in ("[review, test-first, conventions]", "[review, test-first, conventions, mine]")}
     got = {n: callers_drift({**c2, ".github/workflows/test-pull-request.yml": t}, conf, kind="engine-test") for n, t in stale.items()}
     check("#757 C1: a caller job waiting on a job of the template its template's job does not wait for differs, own job or not",
           all(g and [(x, y) for x, y, _ in g] == [("test-pull-request.yml", ".github/workflows/test-pull-request.yml")]
-              and g[0][2] == [f"job `auto-merge` needs `{', '.join(sorted(n.strip('[]').split(', ')))}`, not `review`"] for n, g in got.items()), got)
+              and g[0][2] == [f"job `auto-merge` needs `{', '.join(sorted(n.strip('[]').split(', ')))}`, not `review, test-first`"] for n, g in got.items()), got)
     fixed = {n: rewrite_caller(t, tpr, set(owned.get("test-pull-request.yml") or []))[0] for n, t in stale.items()}
     check("#757 C1: the rewrite gives the template's `needs`, the repository's own job after it, and comes out in step",
           all(f is not None for f in fixed.values())
-          and "  auto-merge:\n    needs: review\n" in fixed["[review, conventions]"]
-          and "  auto-merge:\n    needs: [review, mine]\n" in fixed["[review, conventions, mine]"]
+          and "    needs: [review, test-first]\n" in fixed["[review, test-first, conventions]"]
+          and "    needs: [review, test-first, mine]\n" in fixed["[review, test-first, conventions, mine]"]
           and all(callers_drift({**c2, ".github/workflows/test-pull-request.yml": f}, conf, kind="engine-test") == [] for f in fixed.values()), fixed)
     fix_own = tpr.replace("    needs: [conventions, review]\n    # Only", "    needs: [conventions, review, mine]\n    # Only").replace("      mode: fix\n      pr: ${{ format('{0}', github.event.pull_request.number) }}\n    secrets: inherit\n\n  # An autopilot pull request the merge", "      mode: other\n      pr: ${{ format('{0}', github.event.pull_request.number) }}\n    secrets: inherit\n\n  # An autopilot pull request the merge") + mine_job
     fixed, _ = rewrite_caller(fix_own, tpr, set(owned.get("test-pull-request.yml") or []))
@@ -5638,8 +5641,13 @@ def self_test():
     put = with_required_checks(got, two)
     check("#842 the update: the whole ruleset as the GET gave it, only its required checks replaced",
           put, dict({k: v for k, v in got.items() if k not in READ_ONLY}, rules=[{"type": "deletion"}, required_status_rule(two)]))
-    check("#842 in step, it is not drift; other checks, strict, or none, is", (required_checks_drift(dict(got, rules=[required_status_rule(two)]), two),
-          required_checks_drift(got, two), required_checks_drift(None, two)), (False, True, True))
+    given = {"type": "required_status_checks", "parameters": {"strict_required_status_checks_policy": False, "do_not_enforce_on_create": False,
+             "required_status_checks": [{"context": c, "integration_id": 15368} for c in reversed(two)]}}
+    check("#842 in step, it is not drift (whatever order or integration GitHub gives); other checks, strict, or none, is",
+          (required_checks_drift(dict(got, rules=[required_status_rule(two)]), two), required_checks_drift(dict(got, rules=[given]), two),
+           required_checks_drift(got, two), required_checks_drift(dict(got, rules=[dict(required_status_rule(two), parameters=dict(
+               required_status_rule(two)["parameters"], strict_required_status_checks_policy=True))]), two), required_checks_drift(None, two)),
+          (False, False, True, True, True))
     try:
         with_required_checks(dict(got, conditions={}), two)
         check("#842 a ruleset with part of its conditions is never written", False)
