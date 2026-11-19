@@ -283,13 +283,16 @@ jobs:
   # Its scripts and policy are read from main, like the review's (#524): a
   # pull request's own copy decides whether others merge only once merged.
   auto-merge:
-    needs: review
+    # order: after the "Test first" check too (#842), whose verdict at the
+    # head G7 reads for a criterion's test.
+    needs: [review, test-first]
     if: always() && needs.review.result != 'skipped'
     # Its `repro` job reads the lane issue a reproduced bug's fix closes (#397).
     permissions:
       contents: read
       issues: read
       pull-requests: read
+      checks: read # the head's check runs, for G7 (#842)
     uses: ./.github/workflows/auto-merge.yml
     with:
       central-ref: main
