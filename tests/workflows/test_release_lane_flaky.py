@@ -96,3 +96,30 @@ def test_the_candidate_is_not_failed_and_the_summary_names_it_flaky(tmp_path, mo
     text = summary.read_text() if summary.exists() else ""
     assert "Flaky" in text and "`spec-to-draft`" in text and "no label autopilot" in text
     assert "Flaky" in out.err and "spec-to-draft" in out.err
+
+
+def classed(outcomes):
+    """A stand-in for `play` whose rows carry a class: (ok, class) each."""
+    calls = []
+
+    def play(s, repo, ref, bodies, run=None, sleep=None, minutes=20, **kw):
+        calls.append(minutes)
+        ok, cls = outcomes[len(calls) - 1]
+        row = {"id": s["id"], "ok": ok, "why": [] if ok else [f"{cls} failed"], "run": ""}
+        if cls:
+            row["class"] = cls
+        return row
+    return play
+
+
+def test_a_scenario_that_fails_twice_keeps_the_first_failures_class(monkeypatch):
+    monkeypatch.setattr(scen, "play", classed([(False, "infrastructure"), (False, "engine")]))
+    rows = scen.play_group(CONF, "spec-to-draft", "o/t", "v7-next", run=lambda *a, **k: "", sleep=lambda s: None, minutes=20)
+    assert (rows[0]["ok"], rows[0].get("attempts"), rows[0].get("class")) == (False, 2, "infrastructure")
+
+
+def test_a_scenario_that_passes_on_retry_is_flaky_with_no_class(monkeypatch):
+    monkeypatch.setattr(scen, "play", classed([(False, "engine"), (True, "harness")]))
+    rows = scen.play_group(CONF, "spec-to-draft", "o/t", "v7-next", run=lambda *a, **k: "", sleep=lambda s: None, minutes=20)
+    assert (rows[0]["ok"], rows[0].get("flaky")) == (True, True)
+    assert "class" not in rows[0]
