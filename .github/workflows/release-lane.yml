@@ -36,10 +36,15 @@ name: Release lane
 # token has `workflows`: its commit rewrites workflow files, and it makes
 # that commit through the API (scripts/api-commit.py), so GitHub signs it,
 # as the organisation's ruleset requires on every branch; so is the release
-# pull request's commit (CHANGELOG.md), made by `act` the same way (#780). A scenario that fails: nothing is tagged, `v7` stays, and a
-# bug names the scenario and its run; so does a scenarios job that runs out
-# of time (the play step at 20 minutes, the job at 30), whose bug names
-# the timeout (#690): only a run a person cancelled stays silent. A breaking change (`!`): the scenarios
+# pull request's commit (CHANGELOG.md), made by `act` the same way (#780). A scenario that fails is played once
+# more (#843): passing then, it is flaky, named in the run's summary, and
+# fails nothing; failing twice, nothing is tagged, `v7` stays, and it is
+# filed by its first failure's class (an `engine` failure a bug, a
+# `harness` or an `infrastructure` one a Task), naming the scenario and its
+# run, once: an open report of the same scenario gets a comment instead of
+# a new issue; so is a scenarios job that runs out
+# of time (the play step at 20 minutes, the job at 30), as
+# infrastructure's, naming the timeout (#690): only a run a person cancelled stays silent. A breaking change (`!`): the scenarios
 # run, then the release issue opens for a person. After `v7` moves, the
 # watch reads every adopted repository's runs for 30 minutes (a read-only
 # token; its write token is this repository's alone) and, on the first that
