@@ -42,10 +42,11 @@ def test_c1_one_paragraph_defines_the_battery():
 
 def test_c1_the_earlier_mentions_link_to_it():
     text = KINDS.read_text(encoding="utf-8")
-    assert "\n## The battery\n" in text, "no '## The battery' section"
-    before = text[: text.index("## The battery")]
-    first = before.lower().index("battery")
-    assert before[first - 1] == "[" and before[first:].startswith("battery](#the-battery)"), "the intro links it"
+    heading = re.search(r"^## The battery$", text, re.M)
+    assert heading, "no '## The battery' section"
+    before = text[: heading.start()]
+    first = re.search(r"\[?battery(\]\(#the-battery\))?", before, re.I)
+    assert first and first.group(0) == "[battery](#the-battery)", "the intro links it"
     row = next(line for line in before.splitlines() if line.startswith("| `workflows` |"))
     assert "(#the-battery)" in row, "the `workflows` row links it"
 

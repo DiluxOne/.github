@@ -142,10 +142,25 @@ def test_c1_a_start_that_never_opened_its_draft_holds_the_queue_six_hours_at_mos
     assert "core_started" not in board(w.fx, 7)
 
 
-def test_c1_a_run_that_waits_on_the_core_again_or_stops_lets_the_queue_go():
-    src = (ROOT / "scripts/autopilot.py").read_text(encoding="utf-8")
-    end = src[src.index('if argv[:1] == ["end"]:'):src.index('if argv[:1] == ["answers"]:')]
-    core = end[end.index('if os.environ.get("CORE"):'):end.index('if os.environ.get("HELD"):')]
-    assert "core_started" in core
-    silent = end[end.index('elif v == "silent":'):]
-    assert "core_started" in silent
+def ended(tmp_path, **env):
+    """autopilot.py end for #7, which holds the core (core_started on its
+    board), with no pull request: its board afterwards, and the step's exit."""
+    w = World(tmp_path)
+    (w.bin / "gh").write_text(f"#!/bin/bash\necho \"gh $*\" >> \"{w.log}\"\n"
+                              "case \"$*\" in *'--json comments'*) echo '{\"comments\": []}' ;; esac\n")
+    w.run("python3 .dx-central/scripts/receipts.py state set 'core_started=\"2026-11-18T10:00:00Z\"'", NUMBER="7")
+    done = subprocess.run(["python3", ".dx-central/scripts/autopilot.py", "end"], env=dict(w.env, NUMBER="7", PR="", **env),
+                          capture_output=True, text=True, timeout=120, cwd=tmp_path)
+    return board(w.fx, 7), done
+
+
+def test_c1_a_run_that_waits_on_the_core_again_lets_the_queue_go(tmp_path):
+    state, done = ended(tmp_path, CORE="#5")
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert state.get("core_wait") == 5 and not state.get("core_started"), state
+
+
+def test_c1_a_run_that_stops_lets_the_queue_go(tmp_path):
+    state, done = ended(tmp_path, WHY="It broke.")
+    assert "silent" in done.stdout and done.returncode == 1, done.stdout + done.stderr
+    assert not state.get("core_started"), state

@@ -4,9 +4,17 @@ issues.yml's `autopilot-sweep` job (the template's, which every repository
 runs, and its mirror here) calls the sweep for that one repository on a
 merged pull request's `closed`, and the sweep runs the engine's scripts,
 never the caller's code."""
+import json
 from pathlib import Path
+from unittest import mock
 
 import yaml
+
+try:
+    import steps  # tests/workflows/steps.py: it runs a workflow's step with stubs
+except ModuleNotFoundError:  # Test first's base has no steps.py (#845): there each call to it fails an assertion
+    steps = mock.Mock(**{f"{n}.side_effect": AssertionError("tests/workflows/steps.py is missing") for n in ("evaluate", "run", "step", "workflow")})
+run = steps.run
 
 ROOT = Path(__file__).resolve().parents[2]
 FLOWS = ROOT / ".github" / "workflows"
@@ -65,20 +73,54 @@ def test_one_repositorys_sweep_gets_a_token_for_it_alone():
     assert 'if [ -n "$REPO" ]; then where=(--repo "$REPO")' in run
 
 
-def test_a_conflict_continues_its_issue_free():
-    run = step("Bring each one in step")["run"]
-    cont = run[run.index("continue)"):run.index("esac")]
-    assert cont.index('receipts.py state set catchup=true') < cont.index('gh issue edit "$issue" --repo "$repo" --add-label "autopilot:continue"')
+GH = r"""case "$*" in
+  "search prs "*) echo "o/r 5" ;;
+  "pr view 5 "*) cat "$DX_PR" ;;
+  "issue view 7 --repo o/r --json labels "*) echo '[]' ;;
+  "issue edit "*) cp "$RECEIPTS_FIXTURE/comments/7/board.md" "$RUNNER_TEMP/board-at-edit.md"; exit "${EDIT_RC:-0}" ;;
+  "search issues "*) ;;
+  "api -X GET search/issues "*) echo 0 ;;
+esac"""
 
 
-def test_one_only_behind_main_gets_main_merged_in_at_its_head():
+def swept(tmp_path, pr, **env):
+    """The sweep's step for o/r with one open autopilot pull request, #5
+    (PR, as gh pr view gives it), which closes #7: the run, and #7's board."""
+    pr = {"number": 5, "labels": [{"name": "autopilot"}], "author": {"login": "app/dilux-bot"}, "headRefOid": "abc123",
+          "closingIssuesReferences": [{"number": 7}], **pr}
+    (tmp_path / "pr.json").write_text(json.dumps(pr))
+    fx = tmp_path / "fx"
+    fx.mkdir()
+    ran = run(steps.step("autopilot-sweep.yml", "Bring each one in step"), tmp_path, stubs={"gh": GH, "sleep": ""},
+              env={"REPO": "o/r", "OWNER": "o", "DX_PR": str(tmp_path / "pr.json"), "RECEIPTS_FIXTURE": str(fx),
+                   "DX_BOT_APP": "dilux-bot", "DX_BOT_LOGIN": "dilux-bot[bot]", **env})
+    board = fx / "comments" / "7" / "board.md"
+    return ran, board.read_text() if board.exists() else ""
+
+
+def test_a_conflict_continues_its_issue_free(tmp_path):
+    ran, board = swept(tmp_path, {"isDraft": False, "mergeStateStatus": "DIRTY"})
+    assert ran.code == 0, ran.stdout + ran.stderr
+    assert ["issue", "edit", "7", "--repo", "o/r", "--add-label", "autopilot:continue"] in ran.of("gh"), ran.calls
+    # The catch-up is on the board before the continue is asked for.
+    assert '"catchup":true' in (ran.temp / "board-at-edit.md").read_text()
+    assert not any(c[:2] == ["api", "-X"] and c[2] == "PUT" for c in ran.of("gh"))
+
+
+def test_a_continue_that_cannot_be_asked_for_takes_the_catch_up_off_and_fails(tmp_path):
+    ran, board = swept(tmp_path, {"isDraft": False, "mergeStateStatus": "DIRTY"}, EDIT_RC="1")
+    assert ran.code == 1 and "the continue could not be asked for on o/r#7" in ran.stdout
+    assert '"catchup":true' not in board
+
+
+def test_one_only_behind_main_gets_main_merged_in_at_its_head(tmp_path):
     """C2: on `update` (autopilot.py sweep --test covers the verdict for a
     pull request only behind main), the same merge-triggered sweep merges
     main into it with GitHub's update-branch, at the head it read."""
-    run = step("Bring each one in step")["run"]
-    update = run[run.index("update)"):run.index("continue)")]
-    assert 'gh api -X PUT "repos/$repo/pulls/$n/update-branch" -f expected_head_sha="$(jq -r .headRefOid <<<"$pr")"' in update
-    assert "headRefOid" in run[:run.index("update)")]
+    ran, board = swept(tmp_path, {"isDraft": True, "mergeStateStatus": "BEHIND"})
+    assert ran.code == 0, ran.stdout + ran.stderr
+    assert ["api", "-X", "PUT", "repos/o/r/pulls/5/update-branch", "-f", "expected_head_sha=abc123"] in ran.of("gh"), ran.calls
+    assert not any(c[:1] == ["issue"] and "edit" in c for c in ran.of("gh"))
     # A token that may merge main in: contents write, on that repository.
     token = step("App token")["with"]
     assert token["permission-contents"] == "write" and token["repositories"] == "${{ steps.where.outputs.name }}"

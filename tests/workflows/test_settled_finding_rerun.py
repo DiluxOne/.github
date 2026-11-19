@@ -9,9 +9,17 @@ settlement is newer than it, and the settled findings reach the brief with
 SETTLED_THREADS so the review does not raise them again."""
 import importlib.util
 import json
+import shlex
 from pathlib import Path
+from unittest import mock
 
 import yaml
+
+try:
+    import steps  # tests/workflows/steps.py: it runs a workflow's step with stubs
+except ModuleNotFoundError:  # Test first's base has no steps.py (#845): there each call to it fails an assertion
+    steps = mock.Mock(**{f"{n}.side_effect": AssertionError("tests/workflows/steps.py is missing") for n in ("evaluate", "run", "step", "workflow")})
+run, step = steps.run, steps.step
 
 ROOT = Path(__file__).resolve().parents[2]
 BOT = "dilux-bot[bot]"
@@ -48,7 +56,8 @@ def test_the_mark_names_the_finding_and_the_answer_and_reads_back():
 def test_the_reply_records_the_settlement_and_reruns_the_blocking_review():
     steps = reply_steps()
     claude = next(s for s in steps if s.get("id") == "claude")
-    schema = json.loads(claude["with"]["claude_args"].split("--json-schema '", 1)[1].split("'", 1)[0])
+    args = shlex.split(claude["with"]["claude_args"])
+    schema = json.loads(args[args.index("--json-schema") + 1])
     assert "settles" in schema["properties"]
     post = next(s for s in steps if s.get("id") == "post")["run"]
     assert "autopilot.py settled-mark" in post and "settled=true" in post
@@ -62,13 +71,56 @@ def test_the_reply_records_the_settlement_and_reruns_the_blocking_review():
     assert token["with"]["permission-actions"] == "write"
 
 
-def test_the_review_does_not_reuse_a_verdict_older_than_a_settlement():
-    text = (ROOT / ".github/workflows/claude-review.yml").read_text(encoding="utf-8")
-    scope = text[text.index("- name: Scope (previous verdict, range, model)"):]
-    scope = scope[:scope.index("- name: The bot's threads from earlier reviews")]
-    assert "autopilot.py settlements" in scope and "settled_since" in scope
-    reuse = scope[scope.index("mode=full; range=\"\""):]
-    assert '[ "$settled_since" = 0 ]' in reuse.split("mode=reuse", 1)[0]
-    threads = text[text.index("- name: The bot's threads from earlier reviews"):]
-    threads = threads[:threads.index("- name: Brief")]
-    assert "settled-threads.json" in threads and "settlements" in threads
+REVIEWED = "<!-- dx-review -->\nBlocked.\n<!-- dx-review-record " + json.dumps(
+    {"sha": "h" * 40, "count": 1, "risk": "high", "complexity": "low", "blocking": True}) + " -->"
+
+
+def scope(tmp_path, comments):
+    """claude-review.yml's scope step at the head the last verdict was of,
+    with gh answering COMMENTS for the pull request's comments."""
+    (tmp_path / "comments.json").write_text(json.dumps(comments))
+    gh = f"""case "$1 $2" in
+  "api repos/o/r/issues/8/comments") cat {tmp_path}/comments.json ;;
+  "api repos/o/r/pulls/8/comments") echo '[]' ;;
+  "pr view") echo false ;;
+  *) echo "unexpected gh $*" >&2; exit 1 ;;
+esac"""
+    env = {"BOT": BOT, "PR": "8", "HEAD": "h" * 40, "ACTION": "synchronize", "MAX_AUTO": "5", "MODEL": "m", "EFFORT": "low"}
+    return run(step("claude-review.yml", "scope"), tmp_path, env=env, stubs={"gh": gh})
+
+
+def test_the_review_reuses_the_verdict_of_its_head_with_nothing_settled(tmp_path):
+    ran = scope(tmp_path, [{"user": {"login": BOT}, "body": REVIEWED, "updated_at": "2026-11-08T10:00:00Z"}])
+    assert ran.code == 0, ran.stderr
+    assert ran.output["mode"] == "reuse"
+
+
+def test_the_review_does_not_reuse_a_verdict_older_than_a_settlement(tmp_path):
+    settled = "Settled.\n" + autopilot.settled_mark("The cap is not checked", "https://github.com/o/r/pull/8#issuecomment-5")
+    comments = [{"user": {"login": BOT}, "body": REVIEWED, "updated_at": "2026-11-08T10:00:00Z"},
+                {"user": {"login": BOT}, "body": settled, "created_at": "2026-11-08T11:00:00Z", "updated_at": "2026-11-08T11:00:00Z"}]
+    ran = scope(tmp_path, comments)
+    assert ran.code == 0, ran.stderr
+    assert ran.output["mode"] == "full"
+    assert "1 finding(s) settled since the last verdict" in ran.stdout
+
+
+def test_a_mark_typed_by_someone_else_does_not_stop_the_reuse(tmp_path):
+    forged = autopilot.settled_mark("forged", "u1")
+    comments = [{"user": {"login": BOT}, "body": REVIEWED, "updated_at": "2026-11-08T10:00:00Z"},
+                {"user": {"login": "mallory"}, "body": forged, "created_at": "2026-11-08T11:00:00Z"}]
+    assert scope(tmp_path, comments).output["mode"] == "reuse"
+
+
+def test_the_settled_findings_reach_the_brief_as_settled_threads(tmp_path):
+    (tmp_path / "temp").mkdir()
+    (tmp_path / "temp" / "settlement-comments.json").write_text(json.dumps(
+        [{"user": {"login": BOT}, "body": autopilot.settled_mark("The cap is not checked", "https://x/5"), "created_at": "2026-11-08T11:00:00Z"}]))
+    threads = {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": []}}}}}
+    (tmp_path / "threads.json").write_text(json.dumps(threads))
+    ran = run(step("claude-review.yml", "The bot's threads from earlier reviews"), tmp_path,
+              env={"PR": "8", "SLUG": BOT.removesuffix("[bot]")}, stubs={"gh": f"cat {tmp_path}/threads.json"})
+    assert ran.code == 0, ran.stderr
+    settled = json.loads((tmp_path / "temp" / "settled-threads.json").read_text())
+    assert [t["finding"] for t in settled] == ["The cap is not checked"]
+    assert settled[0]["replies"][0]["body"] == "https://x/5"

@@ -151,6 +151,11 @@ jobs:
       - run: python3 scripts/repro-ways.py --test
       - run: bash scripts/repro-run.sh --test
       - run: python3 scripts/test-first.py --test
+      # A test cuts a workflow's text between two literals (#845): it tests
+      # the wording, not the step. KNOWN in the script lists the files that
+      # did before the check, and only shrinks.
+      - run: python3 scripts/literal-slices.py --test
+      - run: python3 scripts/literal-slices.py tests/workflows tests/repro
       - run: python3 scripts/no-widening.py --test
       # The tests under tests/ (#376): the reproduction ways' examples, the
       # reproductions kept as regression tests, and the workflows' wiring,

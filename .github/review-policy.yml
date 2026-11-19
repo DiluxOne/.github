@@ -121,12 +121,19 @@ repro:
           that only calls its functions runs no step here. Name the script as its own argument, or as the
           command of a shell string (`bash -c "scripts/<name>.sh ..."`); a string that only mentions it
           (`bash -c "echo scripts/<name>.sh"`) runs no step.
+        - Write the stubs and the `subprocess` call in the test file itself: the check reads only that
+          file's own process calls, so a helper that runs the step for it (from another module) runs
+          no step here. Never cut the workflow's text
+          between two literals (`text[text.index("..."):text.index("...")]`, `text.split("...")[1]`): the
+          scripts job refuses it (scripts/literal-slices.py, #845).
         - A plain `assert` on what the report expected, so the test FAILS while the bug is there.
         - Small: one or two test functions, named after the expectation.
 
 # The "Test first" check (#734, scripts/test-first.py): a fix or a feature
 # here carries a pytest test under tests/ that fails at the base and passes
-# at the head, run by the `python` way above. A script's own `--test` case
+# at the head, run by the `python` way above. At the base it fails on an
+# assertion, a feature's as a fix's (#845): one that only breaks there (an
+# ImportError, a missing file) asserted nothing. A script's own `--test` case
 # cannot run at the base apart from its code, so it alone is no test here.
 # The release scenarios, fixtures, the reproduction's examples and the
 # review's evaluation set are never a test. Read from the base commit.

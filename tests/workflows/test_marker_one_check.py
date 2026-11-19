@@ -41,7 +41,7 @@ def written_marks():
         "dx-release-lane": release.MARK,
         "dx-nightly-finding": nightly.BUG_MARK.format(repo="O/r"),
         "dx-scenario": scenarios.scenario_mark("edit-starts"),
-        "dx-adopt": detect.adopt_body("diluxone-new", [], {}).split("\n", 1)[0],
+        "dx-adopt": detect.adopt_body("diluxone-new", [], {}).splitlines()[0],
         "dx-lane sync": autonomy.sync_marker("org-sync", "O/r", "callers", "a" * 40, {"f": "x"}),
         "dx-lane run": lane_run,
     }
@@ -90,7 +90,23 @@ def test_g1_and_the_start_call_the_same_function():
     accepted = (ROOT / ".github/workflows/issue-accepted.yml").read_text(encoding="utf-8")
     assert "issue-schema.py check)" not in accepted and "issue-schema.py check <" not in accepted
     assert accepted.count("issue-schema.py g1)") + accepted.count("issue-schema.py g1 <") >= 2
-    autopilot = (SCRIPTS / "autopilot.py").read_text(encoding="utf-8")
-    start = autopilot[autopilot.index("def may_start("):]
-    start = start[:start.index("\ndef ")]
-    assert "schema.g1(body)" in start and "schema.check(" not in start
+
+
+def test_the_start_takes_g1s_answer(monkeypatch):
+    """may_start asks issue-schema.py's g1, and only it, about the body."""
+    autopilot = load("autopilot_c1_start", "autopilot.py")
+    policy = {"autopilot": True, "lanes": {autopilot.LANE: {"enabled": True}}}
+    asked = []
+
+    def g1(body):
+        asked.append(body)
+        return {"ok": False, "errors": ["the sentinel G1 error"]}
+
+    def check(*args, **kwargs):
+        raise AssertionError("the start called schema.check")
+
+    monkeypatch.setattr(autopilot.schema, "g1", g1)
+    monkeypatch.setattr(autopilot.schema, "check", check, raising=False)
+    ok, why = autopilot.may_start(policy, GOOD, "on")
+    assert asked == [GOOD]
+    assert ok is False and "the sentinel G1 error" in why

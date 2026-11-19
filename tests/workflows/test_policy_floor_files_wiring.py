@@ -18,21 +18,12 @@ def policy_step():
     return next(s for s in review_steps() if s.get("name") == "Policy floor (deterministic)")
 
 
-def new_path(run):
-    """The step's script where pr-files.py is there: up to its `else`."""
-    start = run.index("if [ -f .dx-central/scripts/pr-files.py ]; then")
-    return run[start:run.index("\nelse\n", start)]
-
-
-def test_an_unlistable_change_is_a_high_floor_not_a_failed_job():
+def test_an_unlistable_change_is_a_high_floor_not_a_failed_job(tmp_path):
     """C3: with pr-files.py the step no longer exits on an empty or partial
     list; policy.py's reason for an empty one reaches the summary's
     `Policy floor` line."""
     step = policy_step()
     run = step["run"]
-    branch = new_path(run)
-    assert 'CHANGED_FILES="$(python3 .dx-central/scripts/pr-files.py)"' in branch
-    assert "exit 1" not in branch and "LISTED" not in branch
     assert run.rstrip().endswith("python3 .dx-central/scripts/policy.py")
     assert step["env"]["HEAD"] == "${{ github.event.pull_request.head.sha }}"
     assert "no changed files could be listed" in (ROOT / "scripts/policy.py").read_text(encoding="utf-8")
@@ -41,6 +32,11 @@ def test_an_unlistable_change_is_a_high_floor_not_a_failed_job():
     for s in summary:
         assert s["env"]["REASONS"] == "${{ steps.policy.outputs.reasons }}"
         assert s["env"]["FLOOR"] == "${{ steps.policy.outputs.floor }}"
+    # The files API still lists nothing: the step hands policy.py no files
+    # and goes on, never a failed job.
+    r = run_step(tmp_path, with_pr_files=True, listed=[], total="1")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "FILES=" in r.stdout.splitlines()
 
 
 def test_the_bound_is_data_not_the_workflow():
@@ -57,19 +53,18 @@ def test_the_bound_is_data_not_the_workflow():
     assert "files-wait" in (ROOT / "scripts/pr-files.py").read_text(encoding="utf-8")
 
 
-def test_an_older_central_ref_falls_back_to_the_listing_of_before():
-    """C5: pr-files.py runs only where the central-ref has it; without it
-    the step says so and keeps the files API's single read and its count
-    check, as before."""
-    run = policy_step()["run"]
-    guard = "if [ -f .dx-central/scripts/pr-files.py ]; then"
-    assert run.count("python3 .dx-central/scripts/pr-files.py") == 1 and run.index(guard) < run.index("python3 .dx-central/scripts/pr-files.py")
-    fallback = run[run.index("\nelse\n", run.index(guard)):run.index("\nfi\n", run.index(guard))]
-    assert "::notice::No pr-files.py at this central-ref; listing the files once, as before." in fallback
-    assert 'gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate --slurp' in fallback
-    assert 'gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json changedFiles --jq .changedFiles' in fallback
-    assert 'if [ "$LISTED" != "$TOTAL" ]; then' in fallback and "exit 1" in fallback
-    assert "jq -r '.[][] | .filename, (.previous_filename // empty)'" in fallback
+def test_an_older_central_ref_falls_back_to_the_listing_of_before(tmp_path):
+    """C5: without pr-files.py the step says so and reads the files API
+    once; a list shorter than the pull request's total fails the step, and
+    a rename hands policy.py both its paths."""
+    r = run_step(tmp_path / "partial", with_pr_files=False, listed=[{"filename": "docs/new.md"}], total="2")
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "::notice::No pr-files.py at this central-ref" in r.stdout
+    assert "listed 1 of the pull request's 2 changed files" in r.stdout
+    assert "FILES=" not in r.stdout
+    r = run_step(tmp_path / "rename", with_pr_files=False, listed=[{"filename": "docs/new.md", "previous_filename": "docs/old.md"}], total="1")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "FILES=docs/new.md,docs/old.md" in r.stdout
 
 
 GH_STUB = """#!/bin/sh
@@ -89,7 +84,7 @@ if __name__ == "__main__":
 """
 
 
-def run_step(tmp, with_pr_files):
+def run_step(tmp, with_pr_files, listed=None, total="1"):
     """The step's script, in a checkout whose head adds docs/new.md, with a
     stub `gh` whose files API lists it."""
     import json
@@ -114,8 +109,9 @@ def run_step(tmp, with_pr_files):
         shutil.copy(ROOT / "scripts/pr-files.py", work / ".dx-central/scripts/pr-files.py")
     (stub / "gh").write_text(GH_STUB, encoding="utf-8")
     (stub / "gh").chmod(0o755)
-    (stub / "files.json").write_text(json.dumps([[{"filename": "docs/new.md"}]]), encoding="utf-8")
-    (stub / "total").write_text("1\n", encoding="utf-8")
+    listed = [{"filename": "docs/new.md"}] if listed is None else listed
+    (stub / "files.json").write_text(json.dumps([listed]), encoding="utf-8")
+    (stub / "total").write_text(f"{total}\n", encoding="utf-8")
     env = dict(os.environ, PATH=f"{stub}{os.pathsep}{os.environ['PATH']}", STUB=str(stub), RUNNER_TEMP=str(tmp),
                GITHUB_REPOSITORY="DiluxOne/example", PR="1", BASE=base, HEAD=head,
                DEFAULT_POLICY=".dx-central/policy/review-policy.default.yml")

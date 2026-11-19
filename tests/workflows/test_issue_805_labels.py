@@ -11,6 +11,8 @@ import contextlib
 import importlib.util
 import io
 import json
+import re
+import sys
 import urllib.parse
 from pathlib import Path
 
@@ -47,7 +49,7 @@ def fake_gh(have, carried, calls):
             return Out("")
         if args[0] == "api":
             path = next(a for a in args[1:] if a.startswith("repos/"))
-            name = urllib.parse.unquote(path.split("labels=", 1)[1].split("&", 1)[0])
+            name = urllib.parse.parse_qs(urllib.parse.urlsplit(path).query)["labels"][0]
             return Out(json.dumps([[{"number": n} for n in carried.get(name, [])]]))
         raise AssertionError(f"unexpected gh {args}")
     return run
@@ -151,7 +153,7 @@ def test_c2_every_way_to_set_a_label_is_seen_and_removing_or_listing_is_not(tmp_
         "scripts/fixtures/f.sh": "gh issue edit 1 --add-label in-a-fixture\n",
     })
     found = sr.label_misuse(str(root))
-    names = sorted(f.split("sets label ", 1)[1].split(",", 1)[0] for f in found)
+    names = sorted(re.search(r": sets label (.+?), ", f).group(1) for f in found)
     assert names == ["made:up", "x:five", "x:four", "x:one", "x:three", "x:two"], found
 
 
@@ -163,13 +165,29 @@ def test_c2_a_label_built_from_a_variable_the_check_does_not_know_fails(tmp_path
 
 
 def test_c2_this_repository_sets_only_labels_it_lists():
+    # The same check sync-repos.py --test runs on this repository, run here.
     assert sync_repos().label_misuse(str(ROOT)) == []
 
 
-def test_c2_the_check_runs_in_the_scripts_test():
-    text = (ROOT / "scripts" / "sync-repos.py").read_text(encoding="utf-8")
-    test = text[text.index("def self_test("):]
-    assert "label_misuse(CENTRAL)" in test
+def test_c2_the_scripts_test_fails_when_this_repository_sets_an_unlisted_label(monkeypatch):
+    """sync-repos.py --test (the scripts job) runs the check on this
+    repository: a misuse there fails it, named."""
+    sr = sync_repos()
+    monkeypatch.setitem(sys.modules, sr.__name__, sr)  # its self-test patches itself by its module's name
+    real, seen = sr.label_misuse, []
+
+    def planted(root):
+        seen.append(Path(root).resolve())
+        got = real(root)
+        return got + [".github/workflows/x.yml:3: sets label made:up, which labels.yml does not list"] if Path(root).resolve() == ROOT else got
+
+    sr.label_misuse = planted
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = sr.self_test()
+    assert ROOT in seen
+    assert rc == 1
+    assert re.search(r"^FAIL #805 C2: no workflow, template or script sets a label .*made:up", out.getvalue(), re.M), out.getvalue()[-2000:]
 
 
 def test_c3_a_retired_label_on_an_open_issue_is_kept_and_the_issue_named():
