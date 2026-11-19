@@ -302,7 +302,10 @@ jobs:
           TEST_REPO: ${{ steps.test.outputs.repo }}
         run: |
           set -uo pipefail
-          python3 scripts/release-scenarios.py play --repo "$OWNER/$TEST_REPO" --ref v7-next --group "$GROUP" --out "$RUNNER_TEMP/results.md"
+          # --minutes is the player's own deadline (#878), three below the
+          # step's timeout: it stops, writes its results and exits first, and
+          # a retry that does not fit in it is not played.
+          python3 scripts/release-scenarios.py play --repo "$OWNER/$TEST_REPO" --ref v7-next --group "$GROUP" --out "$RUNNER_TEMP/results.md" --minutes 17
           # The decision is the act job's: a failed scenario is a bug, not a red lane.
           exit 0
 
