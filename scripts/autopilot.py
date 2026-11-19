@@ -842,6 +842,25 @@ def with_run(state, entry):
     return sorted(runs, key=lambda r: r["n"])
 
 
+def free_end(mode, stopped, asked, lost, held_back, refused):
+    """Whether the run that ends is free on the pull request's board: its
+    runner was lost (#479), its `make pre-pr` held `ready` back (#673), or
+    apply-and-end refused its commits because they do not build on the
+    branch as GitHub has it (#856 C1: `refused`, the engine's race, never
+    the agent's fault). Never a fix round (no run on the board) nor a run
+    the agent ended itself with a stop or a question. Pure."""
+    return mode != "fix" and not stopped and not asked and bool(lost or held_back or refused)
+
+
+def freed_runs(state, n, free):
+    """The board's `runs` with run N's entry made free, when `free` and it
+    is there and counts; None when there is nothing to rewrite. Pure."""
+    mine = [r for r in _runs(state) if r["n"] == n]
+    if not free or not mine or mine[0].get("free"):
+        return None
+    return with_run(state, run_entry(n, True))
+
+
 def runner_lost(work_result, agent_outcome):
     """Whether the work job failed without its agent's step saying how
     (#479): its runner lost or killed, or a step before the agent failing;
@@ -3174,6 +3193,14 @@ A class on html.
            end_verdict("continue", "8", True, False, 1, 3, False, 2, 5, lost=True, frees=6), end_verdict("fix", "8", False, False, 1, 3, False, 2, 5, lost=True, frees=1),
            end_verdict("continue", "8", True, True, 1, 3, False, 2, 5, lost=True, frees=1)),
           ("continue", "silent", "silent", "silent", "stopped"))
+    check("#856 C1: a run apply-and-end refused (do not build on) is free, as a lost runner is; never a fix round, a stop or a question",
+          (free_end("continue", False, False, False, False, True), free_end("start", False, False, True, False, False), free_end("continue", False, False, False, False, False),
+           free_end("fix", False, False, False, False, True), free_end("continue", True, False, False, False, True), free_end("continue", False, True, False, False, True)),
+          (True, True, False, False, False, False))
+    check("#856 C1: the refused run's entry becomes free, once, and only its own",
+          (freed_runs({"runs": [{"n": 1, "free": False}, {"n": 2, "free": False}]}, 2, True), freed_runs({"runs": [{"n": 2, "free": True}]}, 2, True),
+           freed_runs({"runs": [{"n": 2, "free": False}]}, 2, False), freed_runs({"runs": [{"n": 1, "free": False}]}, 2, True)),
+          ([{"n": 1, "free": False}, {"n": 2, "free": True}], None, None, None))
     check("#482 C1: finish ready needs make pre-pr passed at HEAD in this run, where the Makefile has it",
           (pre_pr_refusal(False, None, "abc"), bool(pre_pr_refusal(True, None, "abc")), bool(pre_pr_refusal(True, {"head": "old", "rc": 0}, "abc")),
            bool(pre_pr_refusal(True, {"head": "abc", "rc": 2}, "abc")), pre_pr_refusal(True, {"head": "abc", "rc": 0}, "abc"), bool(pre_pr_refusal(True, "x", "abc"))),
@@ -6045,7 +6072,7 @@ def main(argv):
         stopped = stopped_since(comments, started)
         asked = asked_since(comments, started)
         draft_, done, total, pushed = True, 0, 0, False
-        lost, frees, held_back = False, 0, False
+        lost, frees, held_back, free = False, 0, False, False
         prepr_verdict = verdict_of(os.environ.get("PREPR"))
         if pr:
             info = pr_json(repo, pr, "body,isDraft,headRefOid")
@@ -6061,14 +6088,18 @@ def main(argv):
             # #673: its `make pre-pr` did not pass in full after the agent's
             # step, so `apply` kept it a draft: a fix round, free as well.
             held_back = mode != "fix" and not stopped and not asked and bool(prepr_verdict)
+            # #856 C1: apply-and-end refused the agent's commits, which do
+            # not build on the branch as GitHub has it: free, and it stops.
+            refused = bool(os.environ.get("REFUSED"))
+            free = free_end(mode, stopped, asked, lost, held_back, refused)
             st, intact = board_state(repo, pr, "pr")
             if not intact:
                 # Edited by hand: the most restrictive count, no continue.
                 runs, frees = cap, cap + 1
             else:
-                mine = [r for r in st.get("runs") or [] if isinstance(r, dict) and r.get("n") == runs]
-                if (lost or held_back) and mine and not mine[0].get("free"):
-                    st = dict(st, runs=with_run(st, run_entry(runs, True)))
+                freed = freed_runs(st, runs, free)
+                if freed is not None:
+                    st = dict(st, runs=freed)
                     set_board(repo, pr, "pr", runs=st["runs"])
                 if _runs(st):
                     runs, frees = run_numbers(st)[1], free_runs(st)
@@ -6083,6 +6114,8 @@ def main(argv):
         v = end_verdict(mode, pr, draft_, stopped, done, total, limit, runs, cap, pushed, asked, nudged, lost, frees, held_back, engine, repeated)
         if lost:
             print("Its runner was lost: the run does not count towards the cap (#479).")
+        if pr and free and not lost and not held_back:
+            print("Its commits do not build on the branch as GitHub has it: the run does not count towards the cap (#856).")
         if held_back:
             print(f"`make pre-pr` after the agent's step: {prepr_verdict}. The run does not count towards the cap (#673).")
             if repeated:
