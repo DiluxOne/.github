@@ -3,20 +3,15 @@ autopilot's gate, wired as the decisions in scripts/claim.py and
 scripts/autopilot.py need them."""
 import subprocess
 from pathlib import Path
+from unittest import mock
 
 import pytest
 import yaml
 
 try:
-    import steps
-except ModuleNotFoundError:  # #845: with no helper, each test fails on its assertion, not on this import
-    import types
-
-    def _missing(*_args, **_kwargs):
-        helper = Path(__file__).with_name("steps.py")
-        assert helper.is_file(), f"{helper.name}, which runs a workflow's step with stubs, is missing"
-
-    steps = types.SimpleNamespace(evaluate=_missing, receipt=_missing, run=_missing, step=_missing, where=_missing, workflow=_missing)
+    import steps  # tests/workflows/steps.py: it runs a workflow's step with stubs
+except ModuleNotFoundError:  # Test first's base has no steps.py (#845): there each call to it fails an assertion
+    steps = mock.Mock(**{f"{n}.side_effect": AssertionError("tests/workflows/steps.py is missing") for n in ("evaluate", "run", "step", "workflow")})
 run, step = steps.run, steps.step
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -107,7 +102,10 @@ sys.stdout.write(os.environ.get(key, ""))
 sys.exit(int(os.environ.get(key + "_RC", "0")))
 """
 CENTRAL = {f".dx-central/scripts/{n}": FAKE for n in ("autopilot.py", "api-commit.py", "issue-schema.py", "receipts.py")}
-GATED = {"may": ["autopilot.py", "may-start"], "draft": ["api-commit.py", "push"], "applied": ["autopilot.py", "push"]}
+# What each gated step must not reach for a held issue: the apply step
+# neither applies the outbox (`autopilot.py apply`) nor pushes.
+GATED = {"may": [["autopilot.py", "may-start"]], "draft": [["api-commit.py", "push"]],
+         "applied": [["autopilot.py", "apply"], ["autopilot.py", "push"]]}
 
 
 @pytest.mark.parametrize("rc", [1, 2], ids=["held", "unread"])
@@ -125,7 +123,7 @@ def test_the_autopilot_asks_who_holds_the_issue_before_it_starts_opens_or_pushes
     assert ran.code == 0, ran.stdout + ran.stderr
     names = [c[:2] for c in ran.calls]
     assert ["autopilot.py", "holder"] in names
-    assert not any(c[:2] == GATED[sid] for c in ran.calls), ran.calls
+    assert not any(c[:2] in GATED[sid] for c in ran.calls), ran.calls
     assert not ran.of("api-commit.py")
     if sid == "may":
         assert ran.output["go"] == "false"

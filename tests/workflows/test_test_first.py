@@ -365,9 +365,11 @@ def test_c6_policy_self_test_holds_every_pack_to_a_declaration():
     # repository's tracked files cannot list them, and every other check holds.
     checkout = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--git-dir"], capture_output=True).returncode == 0
     failed = [line for line in got.stdout.splitlines() if line.startswith("FAIL")]
-    if not checkout:
-        failed = [line for line in failed if not line.startswith("FAIL this repository: its tracked files could be listed")]
-    assert not failed and (got.returncode == 0 or not checkout), got.stdout[-2000:]
+    if checkout:
+        assert got.returncode == 0 and not failed, got.stdout[-2000:]
+    else:
+        assert got.returncode == 1, got.stdout[-2000:]
+        assert failed == ["FAIL this repository: its tracked files could be listed: git ls-files returned nothing"], got.stdout[-2000:]
     for kind in KINDS:
         assert f"ok   pack {kind}: it declares its tests (test-first)" in got.stdout
 
