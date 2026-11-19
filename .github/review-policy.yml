@@ -99,7 +99,8 @@ repro:
       guide: |
         A pytest test that reads the workflow the report names as YAML (PyYAML, `yaml.safe_load`) and
         asserts its wiring: its triggers (`on:`), a job's or a step's `if:`, the order of the steps, the
-        inputs and `env:` a step gets, the arguments a `run:` passes. It never runs the workflow.
+        inputs and `env:` a step gets, the arguments a `run:` passes. It never runs the workflow on GitHub;
+        it runs one step's `run:` on its own, as below.
         - PyYAML reads the key `on` as the boolean True: take the triggers with `wf.get("on", wf.get(True))`.
         - Find a step by its `name` or `id`, never by its position, and compare positions to assert an
           order: `names.index("A") < names.index("B")`.
