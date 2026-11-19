@@ -150,3 +150,14 @@ def test_a_shell_string_whose_command_is_the_script_reproduces(tmp_path):
     (tmp_path / ".github" / "workflows").mkdir(parents=True)
     (tmp_path / ".github" / "workflows" / "x.yml").write_text("jobs:\n  a:\n    steps:\n      - run: scripts/fix-it.py\n", encoding="utf-8")
     assert lane_verdict(tmp_path, SHELL_RUNS_THE_SCRIPT) == ("reproduced", "")
+
+
+def test_the_workflow_way_s_spec_builds_the_lane_issue():
+    """The lane seals the resolved spec, `runs-step` with it, in the PRD
+    (scripts/repro-lane.py prd), so a confirmed workflow bug opens its issue."""
+    env = dict(os.environ, REPORT="9", RUN_URL="https://github.com/DiluxOne/x/actions/runs/1", SHA256="a" * 64,
+               BASE="b" * 40, WAY="workflow", SPEC=json.dumps(the_workflow_way()), NOUN="workflow test")
+    done = subprocess.run([sys.executable, str(ROOT / "scripts" / "repro-lane.py"), "prd"], env=env,
+                          capture_output=True, text=True, cwd=ROOT)
+    assert done.returncode == 0, done.stderr
+    assert '"runs-step":true' in json.loads(done.stdout)["body"]

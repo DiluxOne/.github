@@ -67,7 +67,9 @@ WAY_LINE = re.compile(r"^Reproduction way: `([a-z][a-z0-9-]{0,39})`(?:, with the
                       r"run by scripts/repro-run\.sh as `(\{[^`]*\})`\.$")
 COMMAND_EVIDENCE = re.compile(r"^Reproduction test: `([A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*)`, "
                               r"SHA-256 `([0-9a-f]{64})`, on the branch `(test/repro-issue-([1-9][0-9]{0,6}))`\.$")
-SPEC_KEYS = {"setup", "theme", "run", "junit", "teardown", "minutes", "test", "case", "assertion"}
+# `runs-step` (#841): the verdict's gate, sealed with the way so the lane, the
+# autopilot and G7 judge the test the same way.
+SPEC_KEYS = {"setup", "theme", "run", "junit", "teardown", "minutes", "test", "case", "assertion", "runs-step"}
 
 
 def way_spec(spec, report):
@@ -87,6 +89,8 @@ def way_spec(spec, report):
     for key in ("run", "junit", "test"):
         if not isinstance(spec.get(key), str) or not spec[key].strip():
             raise ValueError(f"the way has no `{key}`")
+    if "runs-step" in spec and not isinstance(spec["runs-step"], bool):
+        raise ValueError("the way's `runs-step` is not true or false")
     test = spec["test"]
     if not re.fullmatch(r"[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*", test) or ".." in test.split("/") or test.startswith(".github/"):
         raise ValueError(f"not a reproduction test's path: {test!r}")
@@ -272,6 +276,21 @@ def self_test():
         except ValueError:
             got = "refused"
         check(f"#397 refuses {bad}", got, "refused")
+    # #841: the spec repro-ways.py resolves for this repository's `workflow`
+    # way carries `runs-step`; its PRD is built and its evidence reads it back.
+    ways = _load("repro_ways", "repro-ways.py")
+    real = json.loads(ways.resolve(os.path.join(HERE, ".."), os.path.join(HERE, ".."), "workflow", 12)["spec"])
+    check("#841 the workflow way's resolved spec carries runs-step", real.get("runs-step"), True)
+    wp = prd(12, run, sha, base, "workflow", real, "workflow test")
+    check("#841 the workflow way's real spec builds a PRD that passes G1, its runs-step sealed and read back",
+          (schema.check(wp["body"])["ok"], '"runs-step":true' in schema.part_text(wp["body"], "prd"), (evidence(wp["body"]) or {}).get("spec", {}).get("runs-step")),
+          (True, True, True))
+    try:
+        prd(12, run, sha, base, "workflow", {**real, "runs-step": "yes"})
+        got = "accepted"
+    except ValueError:
+        got = "refused"
+    check("#841 refuses a runs-step that is not true or false", got, "refused")
     try:
         prd(12, run, sha, base, "browser", spec, "browser test", "x; rm -rf /")
         got = "accepted"
