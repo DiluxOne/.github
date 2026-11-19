@@ -1,3 +1,5 @@
 {
-  "pending": "no whole run yet: evals.yml passes this step with a warning and prints its run's results between '--- baseline autopilot ---' and '--- end ---', which `evals.py baseline autopilot FILE` writes here"
+  "passed": 1,
+  "cases": 6,
+  "unrun": 0
 }

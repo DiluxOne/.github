@@ -1,3 +1,5 @@
 {
-  "pending": "no whole run yet: evals.yml passes this step with a warning and prints its run's results between '--- baseline spec ---' and '--- end ---', which `evals.py baseline spec FILE` writes here"
+  "passed": 4,
+  "cases": 6,
+  "unrun": 0
 }
