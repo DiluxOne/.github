@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 873,
+  "prd_sha256": "53094013fc7c34b9c13dfc07080d231fc5c789f551d5de7cfbba6291294285a8",
+  "prd": "### Problem\n\n#845's C3 is met only in part. 23 test files (6 in tests/repro, 17 in tests/workflows) still cut text between literals. They break when a sentence is reworded and pass when the behaviour between the literals breaks. #846 left them in `KNOWN` because it had already reached the 20 changed tests a `feat` pull request may carry.\n\n### Scope\n\n- The 23 files above, under tests/repro and tests/workflows.\n- `KNOWN` in scripts/literal-slices.py, emptied as the files are converted.\n\n### Out of scope\n\n- Any change to the workflows or scripts the tests cover.\n- New rules in scripts/literal-slices.py (module-level code, lambdas).\n\n### Acceptance criteria\n\n- C1: Given scripts/literal-slices.py, when its `KNOWN` is read, then it is empty, and `python3 scripts/literal-slices.py` over tests/workflows and tests/repro passes.\n- C2: Given each of the 23 files, when the whole tests/ suite runs, then it passes, and no test was deleted without a behaviour test or a stated reason in the pull request (a slice that checked only wording).\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-19T13:09:28Z",
+  "policy": "DiluxOne/.github@87e876efbbdb"
+}
