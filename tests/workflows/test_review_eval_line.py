@@ -7,6 +7,7 @@ repository here is a local one, in place of GitHub (DX_EVAL_GIT).
 C2: a review that flags another line of the same file has missed the case.
 """
 import importlib.util
+import inspect
 import json
 import os
 import subprocess
@@ -126,6 +127,7 @@ def a_typed_repo(tmp_path, subject, path="a.php"):
 
 def test_the_thread_hunk_is_read_from_its_header_on_the_head_side():
     mod = load()
+    assert hasattr(mod, "thread_hunk"), "no thread_hunk in review-eval.py"
     assert mod.thread_hunk("@@ -1,4 +2,6 @@ def f():\n a\n+b\n") == (2, 7)
     assert mod.thread_hunk("@@ -5 +5 @@\n-a\n+b\n") == (5, 5)
     assert mod.thread_hunk("") is None
@@ -133,6 +135,7 @@ def test_the_thread_hunk_is_read_from_its_header_on_the_head_side():
 
 def test_the_fix_must_change_a_line_of_the_thread_hunk():
     mod = load()
+    assert hasattr(mod, "fix_hunks") and hasattr(mod, "first_fix_in"), "no fix_hunks or first_fix_in in review-eval.py"
     diff = "@@ -3,2 +3,1 @@\n@@ -20,0 +20,2 @@\n"
     assert mod.fix_hunks(diff, (1, 8)) == [[3, 4]]
     assert mod.fix_hunks(diff, (18, 25)) == [[20, 20]]
@@ -149,6 +152,7 @@ def test_collect_takes_the_thread_line_and_its_hunk():
           "commits": {"nodes": [{"commit": {"oid": x}} for x in ("c1", "c2")]},
           "reviewThreads": {"nodes": [{"isOutdated": True, "path": "s.py", "originalLine": 12, "diffSide": "RIGHT", "resolvedBy": None,
                                        "comments": {"nodes": [{"author": bot, "body": "x AI review", "diffHunk": "@@ -8,3 +10,5 @@\n", "originalCommit": {"oid": "c1"}}]}}]}}
+    assert len(inspect.signature(mod.cases_from).parameters) == 4, "cases_from does not take the fix finder"
     seen = []
     flag, _ = mod.cases_from("o/r", [pr], 5, lambda pr, head, path, hunk, after: seen.append((path, hunk)) or ("c2", [[11, 12]]))
     assert seen == [("s.py", (10, 14))]
@@ -180,6 +184,7 @@ def test_a_case_whose_fix_hunk_is_not_the_one_recorded_is_refused_by_name(tmp_pa
 
 def test_the_fix_type_and_a_docs_only_fix_drop_a_case():
     mod = load()
+    assert hasattr(mod, "not_a_fix"), "no not_a_fix in review-eval.py"
     for s in ("docs(readme): say where", "ci: pre-pr runs strict", "chore: x", "style: y", "test: z", "docs!: w"):
         assert mod.not_a_fix(s, ["a.php"]), s
     assert mod.not_a_fix("fix: a", ["README.md", "docs/x.php", "readme.txt"])

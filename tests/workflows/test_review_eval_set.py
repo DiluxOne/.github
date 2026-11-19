@@ -34,9 +34,24 @@ def results(flag_plays, clean_plays, flag=10, clean=10):
 
 def run_main(mod, argv):
     out = io.StringIO()
-    with redirect_stdout(out):
-        code = mod.main(argv)
+    try:
+        with redirect_stdout(out):
+            code = mod.main(argv)
+    except (KeyError, TypeError) as e:
+        raise AssertionError(f"review-eval.py {argv[0]} cannot read a set of three plays: {e!r}") from e
     return code, out.getvalue()
+
+
+def score(mod, rs):
+    try:
+        return mod.score(rs)
+    except (KeyError, TypeError) as e:
+        raise AssertionError(f"score cannot read each case's plays: {e!r}") from e
+
+
+def needs(mod, *names):
+    for name in names:
+        assert hasattr(mod, name), f"no {name} in review-eval.py"
 
 
 def test_the_set_holds_ten_of_each_kind_and_three_plays():
@@ -49,6 +64,7 @@ def test_run_plays_each_case_three_times_on_a_fresh_checkout(tmp_path, monkeypat
     mod = load()
     cases = tmp_path / "cases.json"
     cases.write_text(json.dumps(a_set()))
+    needs(mod, "check")
     monkeypatch.setattr(mod, "CASES", str(cases))
     monkeypatch.setattr(mod, "check", lambda cases: 0)
     calls = []
@@ -65,6 +81,7 @@ def test_run_refuses_a_set_of_fewer_than_ten_of_a_kind(tmp_path, monkeypatch):
     mod = load()
     cases = tmp_path / "cases.json"
     cases.write_text(json.dumps(a_set(flag=9)))
+    needs(mod, "check")
     monkeypatch.setattr(mod, "CASES", str(cases))
     monkeypatch.setattr(mod, "check", lambda cases: 0)
     monkeypatch.setattr(mod, "run_case", lambda *a: (_ for _ in ()).throw(AssertionError("a paid review ran")))
@@ -83,18 +100,19 @@ def test_score_refuses_a_set_of_fewer_than_ten_of_a_kind(tmp_path):
 def test_score_takes_each_cases_median():
     mod = load()
     # Found on 2 of 3 plays is found; on 1 of 3 is missed.
-    assert mod.score(results([True, False, True], [True, True, True]))["found"] == 10
-    assert mod.score(results([True, False, False], [True, True, True]))["found"] == 0
+    assert score(mod, results([True, False, True], [True, True, True]))["found"] == 10
+    assert score(mod, results([True, False, False], [True, True, True]))["found"] == 0
     # Blocked on 2 of 3 plays is blocked; on 1 of 3 is not.
-    assert mod.score(results([True] * 3, [False, True, False]))["blocked"] == 10
-    assert mod.score(results([True] * 3, [False, True, True]))["blocked"] == 0
+    assert score(mod, results([True] * 3, [False, True, False]))["blocked"] == 10
+    assert score(mod, results([True] * 3, [False, True, True]))["blocked"] == 0
     # A play that could not be reviewed is dropped; fewer than 2 reviewed is unreviewed.
-    now = mod.score(results([True, None, True], [None, None, True]))
+    now = score(mod, results([True, None, True], [None, None, True]))
     assert (now["found"], now["flag"], now["clean"], now["unreviewed"]) == (10, 10, 0, 10)
 
 
 def test_the_three_plays_of_a_run_are_merged_and_shown(tmp_path):
     mod = load()
+    needs(mod, "merge")
     files = []
     for n, ok in enumerate((True, False, True), 1):
         p = tmp_path / f"play-{n}.json"
@@ -102,6 +120,6 @@ def test_the_three_plays_of_a_run_are_merged_and_shown(tmp_path):
         files.append(str(p))
     merged = mod.merge([json.loads(Path(f).read_text()) for f in files])
     assert merged[0]["plays"] == [True, False, True]
-    now = mod.score(merged)
+    now = score(mod, merged)
     assert now["found"] == 10
     assert "found, missed, found" in mod.table(merged, now, {})

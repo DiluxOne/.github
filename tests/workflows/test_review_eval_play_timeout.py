@@ -13,6 +13,7 @@ WF = yaml.safe_load((ROOT / ".github/workflows/review-eval.yml").read_text(encod
 
 
 def test_a_play_may_run_350_minutes():
+    assert "play" in WF["jobs"], "no play job in review-eval.yml"
     play = WF["jobs"]["play"]
     assert play["runs-on"] == "ubuntu-latest"
-    assert play["timeout-minutes"] == 350
+    assert play.get("timeout-minutes") == 350
