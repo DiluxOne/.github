@@ -1,1 +1,0 @@
-<testsuites><testsuite name="repro" tests="1" failures="0"><testcase classname="repro-fixed.py" name="test_the_greeting_says_hello"></testcase></testsuite></testsuites>
