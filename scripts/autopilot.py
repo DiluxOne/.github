@@ -240,6 +240,7 @@ detect = _load("detect", "detect.py")
 prepr = _load("pre_pr", "pre-pr.py")
 review_count = _load("review_count", "review-count.py")
 credits = _load("credits", "credits.py")
+test_first = _load("test_first", "test-first.py")
 
 LEVELS = ["none", "low", "medium", "high"]
 # A path that is a test: code under tests/, test/, spec/ or __tests__/ (not
@@ -665,20 +666,126 @@ def bug_refusal(repo, lane, issue_type, policy_path):
     return bug_gate(issue_type, lane, declared, proposal, repo)
 
 
-def criteria_evidence(body, head_files, changed=None):
-    """Every criterion's test, named in the Spec, exists at the head and is
-    one of the files the pull request adds or changes (G6): a path that was
-    already there and that the pull request does not touch proves nothing."""
+# The check test-first.yml gives, as a caller's job `test-first` names it
+# (#842): it runs a `fix` or `feat` pull request's tests at the head.
+TEST_FIRST_CHECK = "test-first / Test first"
+
+
+def check_of(decl, path, pr_type):
+    """The required check that runs the test at PATH (#842), from the
+    `test-first:` declaration DECL (scripts/test-first.py, read at the
+    base): its entry's `check:`, else "test-first / Test first" for a `fix`
+    or `feat` pull request (PR_TYPE); None when no entry holds it, it is
+    one of `not-tests`, or nothing runs it. Pure."""
+    if not isinstance(decl, dict):
+        return None
+    if any(test_first.glob_match(path, g) for g in decl.get("not-tests") or []):
+        return None
+    for entry in decl.get("tests") or []:
+        if isinstance(entry, dict) and any(test_first.glob_match(path, g) for g in entry.get("paths") or []):
+            if isinstance(entry.get("check"), str) and entry["check"].strip():
+                return entry["check"]
+            return TEST_FIRST_CHECK if pr_type in test_first.TESTED else None
+    return None
+
+
+def head_checks(rows):
+    """{name: conclusion} of the check runs at a head (#842), the latest run
+    of each name; one not completed is `pending`. ROWS: the check-runs
+    API's `check_runs`. Pure."""
+    latest = {}
+    for r in rows or []:
+        if not isinstance(r, dict) or not r.get("name"):
+            continue
+        key = (r.get("started_at") or "", r.get("id") or 0)
+        if r["name"] not in latest or key >= latest[r["name"]][0]:
+            done = r.get("status") == "completed" and r.get("conclusion")
+            latest[r["name"]] = (key, r["conclusion"] if done else "pending")
+    return {n: c for n, (_, c) in latest.items()}
+
+
+def required_of(rules, runs, rows):
+    """The check names the base branch requires (#842), sorted: its rules'
+    `required_status_checks` contexts, and the checks of every job of a
+    workflow a `workflows` rule requires (the organisation's pipeline),
+    told by their check suite: the runs at the head (RUNS, the Actions
+    API's `workflow_runs`) of that workflow's path. Pure."""
+    names = set()
+    paths = set()
+    for rule in rules or []:
+        params = (rule or {}).get("parameters") or {}
+        if rule.get("type") == "required_status_checks":
+            names |= {c.get("context") for c in params.get("required_status_checks") or [] if c.get("context")}
+        elif rule.get("type") == "workflows":
+            paths |= {w.get("path") for w in params.get("workflows") or [] if w.get("path")}
+    # A required workflow's run may name its path from its own repository
+    # (owner/repo/.github/workflows/x.yml@ref): the path is its ending.
+    def of_rule(path):
+        path = (path or "").split("@", 1)[0]
+        return any(path == p or path.endswith("/" + p) for p in paths)
+    suites = {r.get("check_suite_id") for r in runs or [] if of_rule(r.get("path"))}
+    names |= {r["name"] for r in rows or [] if r.get("name") and ((r.get("check_suite") or {}).get("id") in suites - {None})}
+    return sorted(names)
+
+
+def criteria_unmet(body, head_files, changed=None, checks=None, required=None, decl=None, pr_type="", head_sha=""):
+    """[(id, why)] of the criteria not met (G6). Each criterion's test, named
+    in the Spec, must exist at the head and be one of the files the pull
+    request adds or changes: a path that was already there and that the
+    pull request does not touch proves nothing. With CHECKS ({name:
+    conclusion} at the head) given (#842), the check that runs the test
+    (check_of, from DECL and PR_TYPE) must also be one of the base's
+    REQUIRED checks and have concluded `success`: pending, skipped,
+    neutral, missing or any other conclusion is not met."""
     ids = schema.check(body)["criteria"]
     sections, _ = schema.parse(body)
     tests = next((t for h, t in sections if h == "Spec: tests"), "")
-    missing = []
+    at = f" at {head_sha}" if head_sha else " at the head"
+    unmet = []
     for i in ids:
         line = next((l for l in tests.split("\n") if re.search(rf"\b{i}\b", l)), "")
         paths = [p for p in re.findall(r"[\w./-]+\.[A-Za-z0-9]+", line) if TESTISH.search(p)]
-        if not paths or not any(p in head_files and (changed is None or p in changed) for p in paths):
-            missing.append(i)
-    return missing
+        present = [p for p in paths if p in head_files and (changed is None or p in changed)]
+        if not present:
+            unmet.append((i, f"no test at the head for {i}"))
+            continue
+        if checks is None:
+            continue
+        why = []
+        for p in present:
+            check = check_of(decl, p, pr_type)
+            if check is None:
+                why.append(f"{i}: no required check runs `{p}`")
+            elif check not in (required or []):
+                why.append(f"{i}: `{check}` is not a required check")
+            elif checks.get(check) == "success":
+                why = []
+                break
+            elif check not in checks:
+                why.append(f"{i}: `{check}` did not run{at}")
+            elif checks.get(check) in (None, "pending"):
+                why.append(f"{i}: `{check}` is pending{at}")
+            else:
+                why.append(f"{i}: `{check}` concluded {checks[check]}{at}")
+        if why:
+            unmet.append((i, why[0]))
+    return unmet
+
+
+def criteria_evidence(body, head_files, changed=None, checks=None, required=None, decl=None, pr_type=""):
+    """The ids of the criteria not met (criteria_unmet)."""
+    return [i for i, _ in criteria_unmet(body, head_files, changed, checks, required, decl, pr_type)]
+
+
+def test_declaration(repo, policy, root=os.path.join(HERE, "..")):
+    """REPO's `test-first:` declaration (scripts/test-first.py): its kind's
+    pack and repos.yml here, and its own POLICY (read at the base). None
+    when none declares one."""
+    conf = schema.read_yaml(os.path.join(root, "repos.yml")) or {}
+    name = repo.split("/", 1)[-1]
+    policy = policy if isinstance(policy, dict) else {}
+    _, pack = repro_ways.pack_of(os.path.join(root, "kinds"), conf, name, policy)
+    return test_first.merged(pack.get(test_first.KEY), test_first.repos_conf.value(conf, name, test_first.KEY), policy.get(test_first.KEY))
 
 
 # --- the draft pull request: the Spec as a checklist -----------------------
@@ -2051,7 +2158,8 @@ def g6_verdict(path):
 
 
 def decide(policy, body, risk, complexity, blocking, description_ok, files, head_files, autopilot_var, author=BOT, lane_name=LANE, repro_sha="",
-           surface=(), issue_type="", criteria_verdict=False, issue_labels=(), sensitive=(), repro_outcome=None, widening=("unknown",)):
+           surface=(), issue_type="", criteria_verdict=False, issue_labels=(), sensitive=(), repro_outcome=None, widening=("unknown",),
+           head_checks=None, required_checks=None, decl=None, pr_type="", head_sha=""):
     """Gate G7. lane_name is the lane the issue is worked under (which_lane);
     for a reproduced bug, repro_sha is the SHA-256 of the reproduction test
     as it is at the head: it must be the one the PRD sealed. surface is what
@@ -2068,7 +2176,12 @@ def decide(policy, body, risk, complexity, blocking, description_ok, files, head
     head (scripts/repro-run.sh run-ref): only `passed` merges. widening:
     what the change widens of autonomy (scripts/no-widening.py), or
     ["unknown"]; a protected path merges only in a lane with
-    `constitution-merge` and only when it is empty."""
+    `constitution-merge` and only when it is empty. head_checks ({name:
+    conclusion} at the head), required_checks (the base branch's), decl
+    (the `test-first:` declaration), pr_type (the title's type) and
+    head_sha (#842): each criterion's test must have been run by a
+    required check that concluded success at the head (criteria_unmet);
+    head_checks None (the old callers) asks only that the test be there."""
     if author != BOT:
         return False, f"the autopilot's pull requests are opened by {BOT}, not {author or 'unknown'}"
     if (autopilot_var or "").strip().lower() == "off":
@@ -2144,10 +2257,39 @@ def decide(policy, body, risk, complexity, blocking, description_ok, files, head
         unmet = [i for i in ids if not (criteria_verdict or {}).get(i)]
         if unmet:
             return False, f"the review does not find {', '.join(unmet)} met (G6)"
-    missing = criteria_evidence(body, set(head_files), set(files))
-    if missing:
-        return False, "no test at the head for " + ", ".join(missing) + " (G6)"
-    return True, f"merges by policy: lane {lane_name}, risk {risk}, complexity {complexity}, every criterion with its test"
+    unmet = criteria_unmet(body, set(head_files), set(files), head_checks, required_checks, decl, pr_type, head_sha)
+    absent = [i for i, why in unmet if why.startswith("no test at the head")]
+    if absent:
+        return False, "no test at the head for " + ", ".join(absent) + " (G6)"
+    if unmet:
+        return False, "; ".join(why for _, why in unmet) + " (G6)"
+    passed = ", its required check green at the head" if head_checks is not None else ""
+    return True, f"merges by policy: lane {lane_name}, risk {risk}, complexity {complexity}, every criterion with its test{passed}"
+
+
+def read_json_lines(path):
+    """The JSON values of a file, one per line; [] when it is missing,
+    empty or does not parse (a read that failed: no check counts)."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return [json.loads(l) for l in fh if l.strip()]
+    except (OSError, ValueError, TypeError):
+        return []
+
+
+def check_evidence(env, repo):
+    """decide's #842 arguments from the decide step's files: HEAD_CHECKS
+    (the head's check runs, one JSON per line), REQUIRED_CHECKS (the base
+    branch's rules, one per line), HEAD_RUNS (the head's workflow runs, one
+    per line), TEST_FIRST_POLICY (the repository's .github/review-policy.yml
+    at the base), TITLE (the pull request's) and HEAD. Always given: what
+    cannot be read counts as no check, so nothing is met."""
+    rows = read_json_lines(env.get("HEAD_CHECKS") or "")
+    policy_path = env.get("TEST_FIRST_POLICY") or ""
+    policy = (schema.read_yaml(policy_path) if policy_path and os.path.exists(policy_path) and os.path.getsize(policy_path) else None) or {}
+    return {"head_checks": head_checks(rows),
+            "required_checks": required_of(read_json_lines(env.get("REQUIRED_CHECKS") or ""), read_json_lines(env.get("HEAD_RUNS") or ""), rows),
+            "decl": test_declaration(repo, policy), "pr_type": test_first.pr_type(env.get("TITLE", ""))[0], "head_sha": env.get("HEAD", "")}
 
 
 def fence(prd_text):
@@ -2679,6 +2821,35 @@ A class on html.
     check("decide: never with DX_AUTOPILOT off", ok(var="off"), False)
     check("decide: never when the repository lowers the lane to low", decide(autonomy.merge(org, {"lanes": {LANE: {"merge": {"max-risk": "low"}}}}), spec, "medium", "low", "false", "true", ["header.php"], head, "")[0], False)
     check("criteria evidence: finds the missing one", criteria_evidence(spec, {"header.php"}), ["C1"])
+    # #842 C2: met only when the required check that runs the test passed at the head.
+    tdecl = {"setup": [], "not-tests": [], "tests": [{"paths": ["tests/e2e/*.spec.ts"], "way": "browser", "check": "tests / E2E"},
+                                                      {"paths": ["tests/unit/*.ts"], "way": "unit"}]}
+    ce = lambda conclusion, required=("tests / E2E",), body=spec, kind="fix", files=frozenset(head): criteria_evidence(
+        body, set(files), set(files), checks={} if conclusion is None else {"tests / E2E": conclusion, TEST_FIRST_CHECK: conclusion},
+        required=list(required), decl=tdecl, pr_type=kind)
+    check("#842 C2 criteria evidence: the required check that runs the test concluded success: met", ce("success"), [])
+    check("#842 C2 criteria evidence: failure, pending, skipped, neutral or no run: not met",
+          [ce(c) for c in ("failure", "pending", "skipped", "neutral", None)], [["C1"]] * 5)
+    check("#842 C2 criteria evidence: a check that is not required: not met", ce("success", required=("lint",)), ["C1"])
+    unit = spec.replace("tests/e2e/toggle.spec.ts", "tests/unit/toggle.ts")
+    check("#842 C2 criteria evidence: an entry with no check is Test first's, for a fix only",
+          (ce("success", (TEST_FIRST_CHECK,), unit, "fix", {"header.php", "tests/unit/toggle.ts"}),
+           ce("success", (TEST_FIRST_CHECK,), unit, "chore", {"header.php", "tests/unit/toggle.ts"})), ([], ["C1"]))
+    other = spec.replace("tests/e2e/toggle.spec.ts", "tests/other/toggle.spec.ts")
+    check("#842 C2 criteria evidence: a test in no entry of a non-fix type: not met",
+          ce("success", ("tests / E2E", TEST_FIRST_CHECK), other, "chore", {"header.php", "tests/other/toggle.spec.ts"}), ["C1"])
+    g7 = decide(pol, spec, "medium", "medium", "false", "true", head, head, "", head_checks={"tests / E2E": "pending"},
+                required_checks=["tests / E2E"], decl=tdecl, pr_type="fix", head_sha="abc")
+    check("#842 C2 decide: the reason names the criterion and the check", g7, (False, "C1: `tests / E2E` is pending at abc (G6)"))
+    check("#842 C2 the head's checks: the latest run of each name, pending until it completes",
+          head_checks([{"name": "a", "status": "completed", "conclusion": "failure", "id": 1}, {"name": "a", "status": "completed", "conclusion": "success", "id": 2},
+                       {"name": "b", "status": "queued", "conclusion": None, "id": 3}]), {"a": "success", "b": "pending"})
+    check("#842 C2 the required checks: the contexts, and the jobs of a required workflow by its runs at the head",
+          required_of([{"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "x"}]}},
+                       {"type": "workflows", "parameters": {"workflows": [{"path": ".github/workflows/p.yml"}]}}],
+                      [{"path": "O/.github/.github/workflows/p.yml@refs/tags/v7", "check_suite_id": 9}, {"path": ".github/workflows/q.yml", "check_suite_id": 8}],
+                      [{"name": "t / T", "check_suite": {"id": 9}}, {"name": "q", "check_suite": {"id": 8}}]), ["t / T", "x"])
+    check("#842 C2 decide's evidence: a read that failed is no check", check_evidence({"HEAD_CHECKS": "/nonexistent", "TITLE": "fix: x"}, "o/r")["head_checks"], {})
     check("decide: a test the pull request does not touch proves nothing", ok(files=["header.php"]), False)
     check("decide: never a pull request someone else opened", decide(pol, spec, "medium", "medium", "false", "true", ["header.php", "tests/e2e/toggle.spec.ts"], head, "", "soydiloreto")[0], False)
     check("decide: a renamed protected file counts by its old path", ok(files=["header.php", "tests/e2e/toggle.spec.ts", "policy/autonomy.yml"]), False)
@@ -6092,7 +6263,8 @@ def main(argv):
                          os.environ.get("DESCRIPTION_OK", ""), read_lines("FILES"), read_lines("HEAD_FILES"), var, os.environ.get("AUTHOR", ""),
                          lane_name, os.environ.get("REPRO_SHA256", ""), read_lines("SURFACE"), os.environ.get("ISSUE_TYPE", ""),
                          g6_verdict(os.environ.get("CRITERIA_VERDICT", "")), read_lines("ISSUE_LABELS"), read_lines("SENSITIVE"),
-                         os.environ.get("REPRO_OUTCOME", ""), read_lines("WIDENING") if os.environ.get("WIDENING") else ["unknown"])
+                         os.environ.get("REPRO_OUTCOME", ""), read_lines("WIDENING") if os.environ.get("WIDENING") else ["unknown"],
+                         **check_evidence(os.environ, repo))
         print(why)
         return 0 if ok else 1
     print(__doc__, file=sys.stderr)

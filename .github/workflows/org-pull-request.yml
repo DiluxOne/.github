@@ -126,13 +126,16 @@ jobs:
     secrets: inherit
 
   auto-merge:
-    needs: review
+    # order: after the "Test first" check too (#842), whose verdict at the
+    # head G7 reads for a criterion's test.
+    needs: [review, test-first]
     if: always() && github.event_name == 'pull_request' && github.repository != 'DiluxOne/.github' && needs.review.result != 'skipped'
     # Its `repro` job reads the lane issue a reproduced bug's fix closes (#397).
     permissions:
       contents: read
       issues: read
       pull-requests: read
+      checks: read # the head's check runs, for G7 (#842)
     uses: DiluxOne/.github/.github/workflows/auto-merge.yml@v7
     with:
       risk: ${{ needs.review.outputs.risk }}

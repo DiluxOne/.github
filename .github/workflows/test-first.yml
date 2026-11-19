@@ -33,6 +33,14 @@ name: Test first
 #         the working tree. Its verdict and each test's outcome at the base
 #         and at the head go to the job summary.
 #
+#   verdict  the one "Test first" check (#842), after both, on every pull
+#         request: green when the plan passed and the tests ran and passed,
+#         or did not run because the plan said nothing runs; red when the
+#         plan failed or was cancelled, or the tests failed, were cancelled
+#         or did not run while the plan said they would. So a branch rule
+#         can require it: it always reports, and is never green with its
+#         tests red.
+#
 #   Called by org-pull-request.yml, the organisation's required pipeline
 #   (and workflow-templates/test-pull-request.yml, job for job with it),
 #   and by this repository's own pull-request.yml and
@@ -55,7 +63,7 @@ permissions:
 
 jobs:
   plan:
-    name: Test first
+    name: Test first (plan)
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -145,3 +153,33 @@ jobs:
           HEAD: ${{ needs.plan.outputs.head }}
           CENTRAL: .dx-central
         run: python3 .dx-central/scripts/test-first.py run
+
+  # The check a ruleset requires (#842): `plan` alone is green while the
+  # tests it starts are red, and `run` is skipped where nothing runs.
+  verdict:
+    name: Test first
+    needs: [plan, run]
+    if: always() && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: The plan's and the tests' verdict
+        env:
+          PLAN: ${{ needs.plan.result }}
+          RESULT: ${{ needs.plan.outputs.result }}
+          RUN: ${{ needs.run.result }}
+        run: |
+          set -euo pipefail
+          if [ "$PLAN" != success ]; then
+            echo "::error::Test first: the plan did not pass ($PLAN): its job's log says why."; exit 1
+          fi
+          case "$RUN" in
+            success) echo "Test first: the tests ran and passed." ;;
+            skipped)
+              if [ "$RESULT" = run ]; then
+                echo "::error::Test first: the plan said the tests run, and they did not."; exit 1
+              fi
+              echo "Test first: nothing for the check to run." ;;
+            *) echo "::error::Test first: the tests did not pass ($RUN): the job \"Test first (the tests, no secrets)\" says which."; exit 1 ;;
+          esac
