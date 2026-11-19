@@ -24,7 +24,11 @@ name: AI evaluation
 # code never runs with the keys), and by hand for one step. The first job
 # lists the steps with no secret; private repositories are never cases.
 #
-# A step with no baseline (missing, or pending) passes with a warning, and
+# The slack is none when the baseline is not above it (autopilot's 1 of 6
+# fails at 0). A baseline that cannot be read, is not JSON or has the
+# wrong shape fails the check, and so does a missing or pending one for a
+# step in evals.py's BASELINED (review, spec, autopilot). Only a step never
+# baselined with no baseline (missing, or pending) passes with a warning, and
 # its summary and log carry the whole run's results between the lines
 # `--- baseline <step> ---` and `--- end ---`: saved as FILE,
 # `scripts/evals.py baseline <step> FILE` writes the baseline, in a commit

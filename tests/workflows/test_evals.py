@@ -169,7 +169,9 @@ def run_score(tmp_path, step, results, base):
     shutil.copy(ROOT / "policy" / "issue-schema.yml", root / "policy" / "issue-schema.yml")
     (root / "evals" / step).mkdir(parents=True)
     if base is not None:
-        (root / "evals" / step / "baseline.json").write_text(json.dumps(base), encoding="utf-8")
+        # A string is the file's raw text (a corrupt one); anything else, its JSON.
+        text = base if isinstance(base, str) else json.dumps(base)
+        (root / "evals" / step / "baseline.json").write_text(text, encoding="utf-8")
     res = root / "results.json"
     res.write_text(json.dumps(results), encoding="utf-8")
     return subprocess.run(["python3", str(root / "scripts" / "evals.py"), "score", step, str(res)], capture_output=True, text=True)
@@ -203,16 +205,47 @@ def baseline_block(step, text):
 
 @pytest.mark.parametrize("base", [None, {"pending": "first run"}])
 def test_c2_no_baseline_passes_with_a_warning_and_proposes_one(tmp_path, base):
+    # Only for a step that never had a baseline (not in BASELINED).
     res = results(5, 1)
-    got = run_score(tmp_path, "spec", res, base)
+    got = run_score(tmp_path, "repro", res, base)
     assert got.returncode == 0, got.stdout + got.stderr
     assert "::warning::" in got.stderr and "No baseline" in got.stdout
     # The block is the whole run's results, what `evals.py baseline` reads.
-    assert baseline_block("spec", got.stdout) == res
+    assert baseline_block("repro", got.stdout) == res
+
+
+@pytest.mark.parametrize("step,base", [
+    ("review", None), ("spec", None), ("autopilot", {"pending": "again"}),
+    ("repro", "{not json"), ("repro", {"found": 1, "flag": 2}), ("review", {"passed": 1, "cases": 6, "unrun": 0}),
+])
+def test_c2_a_baseline_that_cannot_be_read_fails_closed(tmp_path, step, base):
+    # A baselined step's missing or pending file, a corrupt one, or one of
+    # the wrong shape: the check could not tell, so it fails, never passes quietly.
+    res = ([{"id": f"f{i}", "expect": "flag", "ok": True} for i in range(3)] if step == "review" else results(5, 1))
+    got = run_score(tmp_path, step, res, base)
+    assert got.returncode == 1, got.stdout + got.stderr
+    assert "could not be read" in got.stdout and "--- baseline" not in got.stdout
+
+
+def test_c2_autopilot_baseline_of_one_still_gates(tmp_path):
+    # 1 of 6 with a slack of one could never fail: below the slack there is none.
+    base = json.loads((ROOT / "evals" / "autopilot" / "baseline.json").read_text(encoding="utf-8"))
+    assert evals().worse("autopilot", {"passed": 0, "cases": 6, "unrun": 0}, {"passed": 1, "cases": 6, "unrun": 0})
+    if base.get("passed", 0) >= 1:
+        got = run_score(tmp_path, "autopilot", results(0, base["cases"]), base)
+        assert got.returncode == 1 and "Worse than the baseline" in got.stdout
+
+
+def test_c2_baselined_is_every_step_with_a_score_baseline():
+    ev = evals()
+    for step in ev.STEPS:
+        f = ROOT / "evals" / step / "baseline.json"
+        scored = f.exists() and "pending" not in json.loads(f.read_text(encoding="utf-8"))
+        assert scored == (step in ev.BASELINED), step
 
 
 def test_c2_no_baseline_and_a_case_not_replayed_still_fails(tmp_path):
-    got = run_score(tmp_path, "spec", results(5, 0, 1), None)
+    got = run_score(tmp_path, "repro", results(5, 0, 1), None)
     assert got.returncode == 1 and "The runner did not replay" in got.stdout and "--- baseline" not in got.stdout
 
 

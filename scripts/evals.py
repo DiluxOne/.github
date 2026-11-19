@@ -31,10 +31,14 @@ time, and merges a step's results (`merge`). It fails a change whose score
 is worse than the step's baseline by more than one case (a model does not
 answer the same twice). A case left not replayed is the runner's failure,
 never the step's score: it fails the check with the case's name (the
-review keeps its slack of one, as review-eval.yml had it). A step with no
-baseline (missing, or pending) passes with a warning and prints the whole
-run's results, what `baseline` reads, between the lines
-`--- baseline STEP ---` and `--- end ---`, for a person to commit.
+review keeps its slack of one, as review-eval.yml had it). The slack is
+none when the baseline itself is not above it (1 of 6 still fails at 0).
+A step never baselined (not in BASELINED) whose baseline is missing or
+pending passes with a warning and prints the whole run's results, what
+`baseline` reads, between the lines `--- baseline STEP ---` and
+`--- end ---`, for a person to commit. A baselined step's missing or
+pending baseline, or any unreadable, invalid or wrongly shaped one, fails
+the check: it could not tell.
 
   evals.py steps FILE...       the steps whose paths the files touch, one per
                                line (only those with a set)
@@ -74,6 +78,10 @@ import org  # noqa: E402  the organisation, from org.yml (#191)
 
 EVALS = os.path.join(ROOT, "evals")
 SLACK = 1
+# The steps that have had a whole run's baseline: theirs must be there and
+# read, or the check fails (could not tell); only a step not yet in this
+# list may run with no baseline, or a pending one, and pass with a warning.
+BASELINED = ("review", "spec", "autopilot")
 # A Spec names the files it changes: at least this share of the files the
 # merged pull request changed (tests and the changelog aside).
 RECALL = 0.5
@@ -246,20 +254,47 @@ def score(step, results):
     return {"passed": sum(1 for r in run if r["ok"]), "cases": len(run), "unrun": len(results) - len(run)}
 
 
+def slack(n):
+    """The slack below a baseline of N: SLACK, or none when N is not above
+    it (a baseline of one case with a slack of one could never fail)."""
+    return SLACK if n > SLACK else 0
+
+
 def worse(step, now, base):
-    """Why the score is worse than the baseline by more than SLACK, or ''."""
+    """Why the score is worse than the baseline by more than its slack, or ''."""
     why = []
     if step == "review":
-        if base.get("flag") and now["found"] < base["found"] - SLACK:
+        if base.get("flag") and now["found"] < base["found"] - slack(base["found"]):
             why.append(f"it found {now['found']} of {now['flag']} known bugs, the baseline {base['found']} of {base['flag']}")
         if now["blocked"] > base.get("blocked", 0) + SLACK:
             why.append(f"it blocked {now['blocked']} of {now['clean']} clean pull requests, the baseline {base.get('blocked', 0)}")
         if now["unreviewed"] > SLACK:
             why.append(f"{now['unreviewed']} cases could not be reviewed")
         return "; ".join(why)
-    if base.get("cases") and now["passed"] < base["passed"] - SLACK:
+    if base.get("cases") and now["passed"] < base["passed"] - slack(base["passed"]):
         why.append(f"{now['passed']} of {now['cases']} cases passed, the baseline {base['passed']} of {base['cases']}")
     return "; ".join(why)
+
+
+def read_baseline(step, path, now):
+    """(baseline, '') for a score of NOW's shape; (None, '') for a step not in
+    BASELINED whose file is missing or pending (its first run); otherwise
+    (None, why): unreadable, not JSON, the wrong shape, or a BASELINED step's
+    missing or pending, which fails the check."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            base = json.load(fh)
+    except FileNotFoundError:
+        base = {"pending": "missing"}
+    except (OSError, ValueError) as e:
+        return None, f"evals/{step}/baseline.json is unreadable or not JSON ({e})"
+    if isinstance(base, dict) and set(base) == set(now) and all(isinstance(v, int) for v in base.values()):
+        return base, ""
+    if isinstance(base, dict) and set(base) == {"pending"}:
+        if step in BASELINED:
+            return None, f"{step} has had a baseline, and evals/{step}/baseline.json is {'missing' if base['pending'] == 'missing' else 'pending'}"
+        return None, ""
+    return None, f"evals/{step}/baseline.json is neither a score of {sorted(now)} nor pending"
 
 
 def unreplayed(step, results):
@@ -807,6 +842,30 @@ def self_test():
     now = score("autopilot", res)
     check("score: passed, cases replayed, not replayed", now, {"passed": 1, "cases": 2, "unrun": 1})
     check("worse: one case of slack", (worse("spec", now, {"passed": 2, "cases": 2}), worse("spec", now, {"passed": 3, "cases": 3}).startswith("1 of 2 cases passed")), ("", True))
+    check("worse: a baseline not above the slack has none (1 of 6, then 0 of 6, fails)",
+          (worse("autopilot", {"passed": 0, "cases": 6, "unrun": 0}, {"passed": 1, "cases": 6, "unrun": 0}).startswith("0 of 6"),
+           worse("autopilot", {"passed": 1, "cases": 6, "unrun": 0}, {"passed": 1, "cases": 6, "unrun": 0})), (True, ""))
+    check("review worse: one bug found as the baseline, none found now, is",
+          worse("review", {"found": 0, "flag": 6, "blocked": 0, "clean": 6, "unreviewed": 0}, {"found": 1, "flag": 6, "blocked": 0}).startswith("it found 0"), True)
+    import tempfile
+    d = tempfile.mkdtemp(prefix="dx-eval-test-")
+    def base_of(step, text):
+        f = os.path.join(d, "baseline.json")
+        if text is None:
+            if os.path.exists(f):
+                os.remove(f)
+        else:
+            with open(f, "w", encoding="utf-8") as fh:
+                fh.write(text)
+        b, why = read_baseline(step, f, now)
+        return (b, bool(why))
+    check("baseline: a score is read; missing or pending only for a step never baselined",
+          (base_of("repro", json.dumps({"passed": 1, "cases": 2, "unrun": 0})), base_of("repro", None), base_of("repro", '{"pending": "first run"}')),
+          (({"passed": 1, "cases": 2, "unrun": 0}, False), (None, False), (None, False)))
+    check("baseline: corrupt, wrong keys, or a baselined step's missing or pending, cannot tell (fails)",
+          [base_of(s, t)[1] for s, t in (("repro", "{not json"), ("repro", '{"found": 1}'), ("repro", "[1]"),
+                                         ("review", None), ("autopilot", '{"pending": "x"}'), ("spec", None))], [True] * 6)
+    shutil.rmtree(d, ignore_errors=True)
     check("unreplayed: a case not replayed fails the runner by its name; the review keeps its slack",
           (unreplayed("spec", res), unreplayed("review", [{"id": "r", "expect": "flag", "ok": None}])), (["3"], []))
     check("merge: the cases' order, a case no job gave not replayed",
@@ -937,19 +996,21 @@ def main(argv):
             write_json(baseline, now)
             print(json.dumps(now))
             return 0
-        try:
-            with open(baseline, encoding="utf-8") as fh:
-                base = json.load(fh)
-        except (OSError, ValueError):
-            base = {}
+        base, broken = read_baseline(step, baseline, now)
         missing = unreplayed(step, results)
         if missing:
             # The runner's failure, not the step's: no score is read from it.
-            print(table(step, results, now, base if set(base) == set(now) else {}))
+            print(table(step, results, now, base or {}))
             print(f"\n**The runner did not replay** {len(missing)} of {len(results)} cases of {step}, so it is not scored: "
                   + ", ".join(f"`{m}`" for m in missing) + ".")
             return 1
-        if set(base) != set(now):
+        if broken:
+            # Could not tell: a gate that cannot read its baseline fails.
+            print(table(step, results, now, {}))
+            print(f"\n**The baseline could not be read:** {broken}. The check fails; it never passes quietly.")
+            print(f"::error::{broken}", file=sys.stderr)
+            return 1
+        if base is None:
             # No baseline yet: no gate, said aloud, and this run proposes one.
             print(table(step, results, now, {}))
             print(f"\n**No baseline** for {step} at evals/{step}/baseline.json: this run passes with a warning. "
