@@ -139,3 +139,18 @@ def test_c2_a_path_that_does_not_exist_fails_instead_of_scanning_nothing(tmp_pat
     got = run(tmp_path / "gone")
     assert got.returncode != 0
     assert "gone" in got.stdout + got.stderr
+
+
+def test_the_repro_guide_sends_no_agent_to_a_helper_the_runs_step_gate_rejects():
+    """A way with `runs-step` accepts a test only by the process call in
+    its own file (scripts/repro-ways.py `runs_step`): a guide that offers
+    tests/workflows/steps.py makes every reproduction that follows it
+    "the test runs no step". The guide still forbids slicing the text."""
+    ways = yaml.safe_load((ROOT / ".github" / "review-policy.yml").read_text())["repro"]["ways"]
+    for name, way in ways.items():
+        if not way.get("runs-step"):
+            continue
+        guide = way["guide"]
+        assert "steps.py" not in guide, name
+        assert "literal-slices.py" in guide, name
+        assert "subprocess" in guide, name

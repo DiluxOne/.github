@@ -121,7 +121,9 @@ repro:
           that only calls its functions runs no step here. Name the script as its own argument, or as the
           command of a shell string (`bash -c "scripts/<name>.sh ..."`); a string that only mentions it
           (`bash -c "echo scripts/<name>.sh"`) runs no step.
-        - The stubs and the run can come from tests/workflows/steps.py. Never cut the workflow's text
+        - Write the stubs and the `subprocess` call in the test file itself: the check reads only that
+          file's own process calls, so a helper that runs the step for it (from another module) runs
+          no step here. Never cut the workflow's text
           between two literals (`text[text.index("..."):text.index("...")]`, `text.split("...")[1]`): the
           scripts job refuses it (scripts/literal-slices.py, #845).
         - A plain `assert` on what the report expected, so the test FAILS while the bug is there.
