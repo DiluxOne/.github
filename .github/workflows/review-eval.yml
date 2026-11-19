@@ -134,10 +134,19 @@ jobs:
   score:
     name: Review evaluation
     needs: [collect, play]
-    if: always() && needs.play.result != 'skipped' && needs.play.result != 'cancelled'
+    # A failed collect skips the plays; the check then fails, never shows skipped.
+    if: >-
+      always() && (needs.collect.result == 'failure' ||
+      (needs.play.result != 'skipped' && needs.play.result != 'cancelled'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: A set that could not be written fails the check
+        if: needs.collect.result == 'failure'
+        run: |
+          echo "::error::The new set was not written (the collect job failed): nothing was played."
+          exit 1
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
