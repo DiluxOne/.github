@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 840,
+  "prd_sha256": "0d925cfd434a92fc34fb7d80a5e01382c23e7d4faf17706e4400ba7aaccfba22",
+  "prd": "### Problem\n\nThe evaluation's score does not measure whether the agent solved the task, so it cannot gate or guide changes to the autopilot.\n\n### Scope\n\n- scripts/evals.py: the `validate` verb and the production-loop replay for autopilot.\n- evals/spec/, evals/autopilot/: cases validated, rewritten or replaced; baselines rewritten.\n- .github/workflows/evals.yml: `validate` runs before the sets.\n- docs/testing-and-quality.md: the validation rule.\n\n### Out of scope\n\n- The repro, triage and reply sets (#735's follow-up).\n- The autopilot's prompts.\n\n### Acceptance criteria\n\n- C1: Given every case in evals/spec/ and evals/autopilot/, when `evals.py validate` runs, then each passes on its merged fix, fails on an assertion at its base, and asserts no 30-character literal from the merged fix's added lines; a case that does not fails the check by its name.\n- C2: Given the autopilot set, when a case is replayed, then it runs the work and the production's review and fix rounds, and the baseline is written from a run where every case is valid and replayed.\n\n### Criticality\n\nCritical",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-19T01:47:48Z",
+  "policy": "DiluxOne/.github@595c7cf1fc2aed863b96d30ceafbc37fdcea3f13",
+  "how": "own-bug"
+}
