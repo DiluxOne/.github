@@ -103,9 +103,12 @@ repro:
         - PyYAML reads the key `on` as the boolean True: take the triggers with `wf.get("on", wf.get(True))`.
         - Find a step by its `name` or `id`, never by its position, and compare positions to assert an
           order: `names.index("A") < names.index("B")`.
-        - For what a `run:` script does, assert on its text (the command and the flags the report says
-          are missing or wrong); when the logic lives in a script under scripts/, test that script
-          instead, as a logic bug.
+        - For what a `run:` script does, run it: find the step through YAML, run its `run:` in bash with
+          stub `gh` and helper commands on PATH that record their calls (tests/workflows/steps.py), and
+          assert on the calls and on `$GITHUB_OUTPUT`; when the logic lives in a script under scripts/,
+          call that script instead, as a logic bug. Never cut the workflow's text between two literals
+          (`text[text.index("..."):text.index("...")]`, `text.split("...")[1]`): the scripts job refuses
+          it (scripts/literal-slices.py, #845).
         - A plain `assert` on what the report expected, so the test FAILS while the bug is there.
         - Small: one or two test functions, named after the expectation.
 
