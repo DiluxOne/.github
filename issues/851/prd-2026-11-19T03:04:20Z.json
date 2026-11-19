@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 851,
+  "prd_sha256": "2a6177e185dc9d79ffc2424d9da78c670c953374be03ad02a590ba5f4d88791d",
+  "prd": "### Problem\n\nThe release candidate v7.18.1 fails the release scenarios `bug-by-person-merges`, `draft-in-conflict`, `ready-behind-main`, `review-changes-asked`, `review-replied`, `fork-without-secrets`, `merge-queue`, `low-risk-merges`, `high-risk-waits`, `conventions-fix`, `hint-no-needs-human`, `settled-rerun`, `play`, so the lane releases nothing and `v7` stays where it is.\nReproduced by: https://github.com/DiluxOne/.github/actions/runs/44446748321 scenario `bug-by-person-merges`.\n\n### Scope\n\n- The cause of each failing scenario above (`bug-by-person-merges`, `draft-in-conflict`, `ready-behind-main`, `review-changes-asked`, `review-replied`, `fork-without-secrets`, `merge-queue`, `low-risk-merges`, `high-risk-waits`, `conventions-fix`, `hint-no-needs-human`, `settled-rerun`, `play`), in the engine or in the scenario's fixtures, fixed with a test that would have caught it.\n\n### Out of scope\n\n- Changing the gates or what they check.\n\n### Acceptance criteria\n\n- C1: Given v7.18.1's candidate with the fix, when the release lane plays `bug-by-person-merges`, `draft-in-conflict`, `ready-behind-main`, `review-changes-asked`, `review-replied`, `fork-without-secrets`, `merge-queue`, `low-risk-merges`, `high-risk-waits`, `conventions-fix`, `hint-no-needs-human`, `settled-rerun`, `play` in the test repository, then each passes and the lane releases it.\n\n### Criticality\n\nCritical",
+  "accepted_by": "policy (lane bugfix-reproduced)",
+  "at": "2026-11-19T03:04:20Z",
+  "policy": "DiluxOne/.github@5ffc03bff8e3"
+}
