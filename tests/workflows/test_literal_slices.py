@@ -85,8 +85,12 @@ def slices_by_file(*args):
     return counts
 
 
-def test_c3_the_worst_wording_tests_of_tests_workflows_slice_no_more():
-    counts = slices_by_file("tests/workflows")
+def test_c3_the_worst_wording_tests_of_tests_workflows_slice_no_more(tmp_path):
+    (tmp_path / "test_slicing.py").write_text(SLICING)
+    every = slices_by_file("tests/workflows", tmp_path)
+    control = [f for f in every if f.endswith("test_slicing.py") and "tests/workflows" not in f]
+    assert len(control) == 1 and every[control[0]] == 1, f"--all missed the known slice: {every}"
+    counts = {f: n for f, n in every.items() if f not in control}
     worst = {f: n for f, n in counts.items() if n > 1}
     assert worst == {}, f"these still cut the workflow's text more than once: {worst}"
     for name in ("maintainer_bug_wiring", "policy_on_receipts", "autopilot_main_merge", "settled_finding_rerun",
