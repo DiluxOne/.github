@@ -33,7 +33,8 @@ def test_all_scenarios_polling_together_stay_within_the_hourly_rate_limit():
             marks.append(len(calls))
 
     s = {"id": "never", "opens": {"issue": {"title": "t"}}, "expect": {"labels": ["never"]}}
-    ws.play(s, "o/t", "v7-next", {}, fake, sleep, 2)
+    # Time for three polls, whatever POLL is (#878 raised it).
+    ws.play(s, "o/t", "v7-next", {}, fake, sleep, 3 * ws.POLL / 60)
     assert len(marks) >= 3
     per_poll = max(b - a for a, b in zip(marks, marks[1:]))
     per_hour = len(scenarios) * per_poll * 3600 / ws.POLL
