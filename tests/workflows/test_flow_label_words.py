@@ -1,8 +1,11 @@
 """What a local agent does, and the flow labels nobody adds to move the flow
 (#561): the same sentence in the organisation's block, AGENTS.md and
 docs/agents.md, and none of them telling an agent to add a flow label."""
+import json
 import re
 from pathlib import Path
+
+from steps import run, step
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -93,28 +96,82 @@ def test_no_workflow_script_doc_or_block_tells_anyone_to_add_a_flow_label():
     assert not found, found
 
 
-def test_a_maintainers_answer_after_a_stop_brings_the_autopilot_back():
+BOT = "dilux-bot[bot]"
+STOP = "<!-- dx-autopilot-stop -->\nThe autopilot stopped: the Spec needs a person."
+SILENT = "<!-- dx-autopilot-silent -->\nThe autopilot ended with nothing to say."
+# A stand-in for a helper under .dx-central/scripts: it records its call
+# (with the env the step gives it) as the stubs on PATH do, then answers.
+HELPER = """import json, os, sys
+with open(os.environ["DX_CALLS"], "a") as f:
+    f.write(json.dumps([{name!r}, *sys.argv[1:]]) + "\\n")
+{body}
+"""
+
+
+def answer_after_stop(tmp_path, comments, labels="autopilot,needs-human", labelled_by=BOT, decides=True, board_rc=0):
+    """review-reply.yml's `back` step, run: a person comments on pull request
+    #9 (closing #7, labelled LABELS), whose comments are COMMENTS ((login,
+    body), oldest first) and whose `needs-human` was last added by
+    LABELLED_BY. DECIDES: whether deciders.py lets them answer; BOARD_RC:
+    the exit code of reading #7's board (3: edited by hand)."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "comments.json").write_text(json.dumps([{"user": {"login": u}, "body": b, "created_at": f"2026-01-0{i + 1}T00:00:00Z"}
+                                                        for i, (u, b) in enumerate(comments)]))
+    (tmp_path / "events.json").write_text(json.dumps([
+        {"event": "labeled", "label": {"name": "needs-human"}, "actor": {"login": "someone"}},
+        {"event": "labeled", "label": {"name": "needs-human"}, "actor": {"login": labelled_by}}]))
+    gh = ('case "$*" in\n'
+          "  *closingIssuesReferences*) echo 7 ;;\n"
+          "  *'--json labels --jq [.labels[].name] | index'*) echo false ;;\n"
+          f"  'pr view 9 '*'--json labels'*) echo {labels} ;;\n"
+          '  *"/events"*|*"/comments"*)\n'
+          '    f=events; case "$*" in *"/comments"*) f=comments ;; esac\n'
+          '    while [ $# -gt 0 ]; do [ "$1" = --jq ] && { shift; q=$1; }; shift; done\n'
+          f'    jq -r "$q" "{tmp_path}/$f.json" ;;\n'
+          "esac\n")
+    scripts = ROOT / "scripts"
+    files = {
+        ".dx-central/scripts/deciders.py": HELPER.format(name="deciders.py", body=f"print('decides' if {decides} else 'does not decide'); sys.exit(0 if {decides} else 1)"),
+        ".dx-central/scripts/receipts.py": HELPER.format(name="receipts.py", body=f"print('null' if sys.argv[1:3] == ['state', 'get'] else ''); sys.exit({board_rc} if sys.argv[1:4] == ['state', 'get', 'asked'] else 0)"),
+        # How the run ended (#696, #832): the real script's run-end.
+        ".dx-central/scripts/autopilot.py": HELPER.format(name="autopilot.py", body=f"import runpy\nsys.path.insert(0, {str(scripts)!r})\nrunpy.run_path({str(scripts / 'autopilot.py')!r}, run_name='__main__')"),
+    }
+    return run(step("review-reply.yml", "back", "answer"), tmp_path, stubs={"gh": gh}, files=files, central=False,
+               env={"DX_BOT_LOGIN": BOT, "LOGIN": "maintainer", "NUMBER": "9", "IS_PR": "true"})
+
+
+def labelled(ran):
+    """The label changes the step made: needs-human off, or a label added."""
+    return [c for c in ran.calls if c[0] == "gh" and (c[1:4] == ["api", "-X", "DELETE"] or "--add-label" in c)]
+
+
+def test_a_maintainers_answer_after_a_stop_brings_the_autopilot_back(tmp_path):
     """The stuck state `needs-human` (a stop, a silent end) waits on a
     person's answer, and the bot moves it from there: review-reply.yml takes
     the label off and adds the continue, only after the bot's own stop."""
-    text = (ROOT / ".github/workflows/review-reply.yml").read_text(encoding="utf-8")
-    run = text[text.index("- name: Bring the autopilot back"):text.index("  # The others' opinions")]
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("autopilot_c7", ROOT / "scripts/autopilot.py")
-    ap = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(ap)
+    for i, end in enumerate((STOP, SILENT)):
+        ran = answer_after_stop(tmp_path / f"end{i}", [(BOT, end)])
+        assert ran.code == 0, ran.stdout + ran.stderr
+        off = ["gh", "api", "-X", "DELETE", "repos/o/r/issues/9/labels/needs-human"]
+        on = ["gh", "issue", "edit", "7", "--repo", "o/r", "--add-label", "autopilot:continue"]
+        # needs-human comes off first, then the continue; nothing else.
+        assert labelled(ran) == [off, on], ran.calls
+        # Only a decider's answer, after scripts/deciders.py (#588).
+        assert ran.calls.index(["deciders.py", "may", "answer", "maintainer"]) < ran.calls.index(off)
+    # #696, #832 C2: how it ended is run-end's; with no stop of the bot's,
+    # or a needs-human a person added, or not the autopilot's pull request,
+    # `nothing`: exit 0 and no label moves.
+    for name, kw in (("no-stop", {"comments": [(BOT, "The review found nothing blocking.")]}),
+                     ("not-the-bots", {"comments": [("someone", STOP)]}),
+                     ("a-persons-label", {"comments": [(BOT, STOP)], "labelled_by": "maintainer"}),
+                     ("not-autopilot", {"comments": [(BOT, STOP)], "labels": "needs-human"})):
+        ran = answer_after_stop(tmp_path / name, **kw)
+        assert ran.code == 0 and labelled(ran) == [], (name, ran.calls, ran.stderr)
+    # A stop asked no question, so another's comment is neither an answer
+    # nor summarised.
+    ran = answer_after_stop(tmp_path / "other", [(BOT, STOP)], decides=False)
+    assert ran.code == 0 and labelled(ran) == [] and ran.output == {}, ran.calls
     # `nothing` exits 0, but on a board edited by hand with a decider's
     # answer, which it fails with what to restore (#811).
-    # #696, #832 C2: how it ended is run-end's, past every later comment of
-    # the bot's, while the bot added needs-human.
-    assert "| python3 .dx-central/scripts/autopilot.py run-end)" in run
-    assert 'case $ended in stop|silent) ;; *) nothing ;; esac' in run
-    assert run.index("nothing() {") < run.index("exit 0\n          }", run.index("nothing() {"))
-    assert '[ "$by" = "$DX_BOT_LOGIN" ] ||' in run
-    assert '*,needs-human,*) ;; *) nothing ;;' in run and '*,autopilot,*) ;; *) nothing ;;' in run
-    off = run.index('labels/needs-human" >/dev/null')
-    assert off < run.index('--add-label "autopilot:continue" >/dev/null', off)
-    # Only a decider's answer, after scripts/deciders.py (#588); a stop asked no
-    # question, so another's comment is neither an answer nor summarised.
-    assert run.index("deciders.py may answer") < off
-    assert '[ -z "$stopped" ] || exit 0' in run
+    ran = answer_after_stop(tmp_path / "edited", [(BOT, "The review found nothing blocking.")], board_rc=3)
+    assert ran.code == 1 and "edited by hand" in ran.stdout and labelled(ran) == [], ran.stdout + ran.stderr

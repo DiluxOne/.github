@@ -8,7 +8,7 @@ path of #561), and the run reads the comment as its hint. With no
 import importlib.util
 from pathlib import Path
 
-import yaml
+from steps import run, step
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -22,11 +22,6 @@ def load(name, file):
 
 autopilot = load("autopilot_c4", "autopilot.py")
 waiting = load("waiting_c4", "waiting.py")
-
-
-def back_step():
-    job = yaml.safe_load((ROOT / ".github/workflows/review-reply.yml").read_text(encoding="utf-8"))["jobs"]["answer"]
-    return next(s for s in job["steps"] if s.get("id") == "back")["run"]
 
 
 def test_a_hint_on_a_pull_request_that_waits_on_the_autopilot_is_taken():
@@ -44,14 +39,20 @@ def test_a_hint_on_a_pull_request_that_waits_on_the_autopilot_is_taken():
     assert autopilot.hint_of(labels + ["needs-human"], True, {"role": waiting.AUTOPILOT}, "cap") == ""
 
 
-def test_the_answer_job_reads_the_pull_requests_board():
-    run = back_step()
-    assert "ITEM=pr" in run and "state get waits" in run
-    assert "autopilot.py hint" in run
-    # The hint path adds autopilot:continue, and takes needs-human off only
-    # when it is there.
-    tail = run[run.index('if [ -n "$stopped" ]; then'):]
-    assert "autopilot:continue" in tail and 'hint" = stop' in tail
+def test_the_answer_job_reads_the_pull_requests_board(tmp_path):
+    """The step reads `waits` from the pull request's board (ITEM=pr) and
+    asks autopilot.py hint; the hint path adds autopilot:continue, and takes
+    needs-human off only when it is there (a stop)."""
+    waits = {"role": "the autopilot", "what": "fix round"}
+    ran = run_back(tmp_path / "waits", "autopilot,type:fix", waits)
+    assert ["receipts.py", "pr", "9", "state", "get", "waits"] in ran.calls, ran.calls
+    assert ["autopilot.py", "hint"] in ran.calls, ran.calls
+    assert ["gh", "issue", "edit", "7", "--repo", "o/r", "--add-label", "autopilot:continue"] in ran.calls
+    assert not [c for c in ran.calls if c[:3] == ["gh", "api", "-X"]], ran.calls
+    # Stopped (needs-human, the bot's stop): the label comes off too.
+    stopped = run_back(tmp_path / "stop", "autopilot,needs-human", waits, stop=True)
+    assert ["gh", "api", "-X", "DELETE", "repos/o/r/issues/9/labels/needs-human"] in stopped.calls, stopped.calls
+    assert ["gh", "issue", "edit", "7", "--repo", "o/r", "--add-label", "autopilot:continue"] in stopped.calls
 
 
 def test_the_wait_on_the_autopilot_is_the_boards():
@@ -60,51 +61,58 @@ def test_the_wait_on_the_autopilot_is_the_boards():
     assert 'WAITS_ON_AUTOPILOT = "the autopilot"' in src
 
 
-def run_back(tmp_path, labels, waits):
+# A stand-in for a helper under .dx-central/scripts: it records its call
+# (ITEM and NUMBER first, as the step sets them) as the stubs on PATH do.
+HELPER = """import json, os, sys
+with open(os.environ["DX_CALLS"], "a") as f:
+    f.write(json.dumps([{name!r}, *([os.environ.get("ITEM", ""), os.environ.get("NUMBER", "")] if {name!r} == "receipts.py" else []), *sys.argv[1:]]) + "\\n")
+{body}
+"""
+
+
+def run_back(tmp_path, labels, waits, stop=False):
     """review-reply.yml's step as written, gh stood in: a decider comments on
     pull request #9 (closing #7, opened by dilux-bot) labelled LABELS, whose
-    board's `waits` is WAITS. Returns the gh calls."""
+    board's `waits` is WAITS; with STOP, the bot's stop is its last comment
+    and the bot added needs-human. Returns what it ran (steps.Ran)."""
     import json
-    import os
-    import subprocess
     bot = "dilux-bot[bot]"
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    log = tmp_path / "calls.log"
-    log.write_text("")
-    (bin_dir / "gh").write_text(
-        "#!/bin/bash\n"
-        f'echo "gh $*" >> "{log}"\n'
-        'case "$*" in\n'
-        "  *closingIssuesReferences*) echo 7 ;;\n"
-        "  *'--json labels --jq [.labels[].name] | index'*) echo false ;;\n"
-        f"  'pr view 9 '*'--json labels'*) echo {labels} ;;\n"
-        f"  'pr view 9 '*'--json author'*) echo '{bot}' ;;\n"
-        "esac\n")
-    (bin_dir / "gh").chmod(0o755)
-    scripts = tmp_path / ".dx-central/scripts"
-    scripts.mkdir(parents=True)
-    (scripts / "deciders.py").write_text("print('decides')\n")
-    (scripts / "receipts.py").write_text(
-        "import os, sys\n"
-        f"print({json.dumps(json.dumps(waits))} if sys.argv[1:4] == ['state', 'get', 'waits'] and os.environ.get('ITEM') == 'pr' else 'null' if sys.argv[1:3] == ['state', 'get'] else '')\n")
-    (scripts / "autopilot.py").write_text(
-        f"import runpy, sys\nsys.path.insert(0, {str(ROOT / 'scripts')!r})\nrunpy.run_path({str(ROOT / 'scripts/autopilot.py')!r}, run_name='__main__')\n")
-    out = tmp_path / "out"
-    out.write_text("")
-    env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", GITHUB_OUTPUT=str(out), GITHUB_REPOSITORY="o/r", RUNNER_TEMP=str(tmp_path),
-               DX_BOT_LOGIN=bot, LOGIN="maintainer", NUMBER="9", IS_PR="true")
-    done = subprocess.run(["bash", "-c", back_step()], env=env, capture_output=True, text=True, timeout=60, cwd=tmp_path)
-    assert done.returncode == 0, done.stdout + done.stderr
-    return log.read_text()
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    comments = [{"user": {"login": bot}, "body": "<!-- dx-autopilot-stop -->\nStopped.", "created_at": "2026-01-01T00:00:00Z"}] if stop else []
+    (tmp_path / "comments.json").write_text(json.dumps(comments))
+    (tmp_path / "events.json").write_text(json.dumps([{"event": "labeled", "label": {"name": "needs-human"}, "actor": {"login": bot}}]))
+    gh = ('case "$*" in\n'
+          "  *closingIssuesReferences*) echo 7 ;;\n"
+          "  *'--json labels --jq [.labels[].name] | index'*) echo false ;;\n"
+          f"  'pr view 9 '*'--json labels'*) echo {labels} ;;\n"
+          f"  'pr view 9 '*'--json author'*) echo '{bot}' ;;\n"
+          '  *"/events"*|*"/comments"*)\n'
+          '    f=events; case "$*" in *"/comments"*) f=comments ;; esac\n'
+          '    while [ $# -gt 0 ]; do [ "$1" = --jq ] && { shift; q=$1; }; shift; done\n'
+          f'    jq -r "$q" "{tmp_path}/$f.json" ;;\n'
+          "esac\n")
+    scripts = ROOT / "scripts"
+    answer = json.dumps(json.dumps(waits))
+    files = {
+        ".dx-central/scripts/deciders.py": HELPER.format(name="deciders.py", body="print('decides')"),
+        ".dx-central/scripts/receipts.py": HELPER.format(name="receipts.py", body=(
+            f"print({answer} if sys.argv[1:4] == ['state', 'get', 'waits'] and os.environ.get('ITEM') == 'pr' "
+            "else 'null' if sys.argv[1:3] == ['state', 'get'] else '')")),
+        ".dx-central/scripts/autopilot.py": HELPER.format(name="autopilot.py", body=(
+            f"import runpy\nsys.path.insert(0, {str(scripts)!r})\nrunpy.run_path({str(scripts / 'autopilot.py')!r}, run_name='__main__')")),
+    }
+    ran = run(step("review-reply.yml", "back", "answer"), tmp_path, stubs={"gh": gh}, files=files, central=False,
+              env={"DX_BOT_LOGIN": bot, "LOGIN": "maintainer", "NUMBER": "9", "IS_PR": "true"})
+    assert ran.code == 0, ran.stdout + ran.stderr
+    return ran
 
 
 def test_the_hint_brings_it_back_with_no_label_of_a_persons(tmp_path):
-    calls = run_back(tmp_path, "autopilot,type:fix", {"role": "the autopilot", "what": "fix round"})
-    assert "gh issue edit 7 --repo o/r --add-label autopilot:continue" in calls
-    assert "labels/needs-human" not in calls
+    calls = run_back(tmp_path, "autopilot,type:fix", {"role": "the autopilot", "what": "fix round"}).of("gh")
+    assert ["issue", "edit", "7", "--repo", "o/r", "--add-label", "autopilot:continue"] in calls
+    assert not [c for c in calls if "repos/o/r/issues/9/labels/needs-human" in c], calls
 
 
 def test_a_comment_on_one_that_waits_on_a_person_is_a_reply(tmp_path):
-    calls = run_back(tmp_path, "autopilot,type:fix", {"role": "the maintainer", "what": "merge"})
-    assert "autopilot:continue" not in calls
+    calls = run_back(tmp_path, "autopilot,type:fix", {"role": "the maintainer", "what": "merge"}).of("gh")
+    assert not [c for c in calls if "autopilot:continue" in c], calls

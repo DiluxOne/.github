@@ -60,6 +60,43 @@ python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' "{name}" "$@" >> 
 """
 
 
+HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
+
+
+def sections(markdown):
+    """{heading: body} of a markdown text, split at its headings (any level;
+    a body runs to the next heading). The text before the first heading is
+    under "". Pure."""
+    out, name, body, fenced = {}, "", [], False
+    for line in markdown.splitlines():
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+        m = None if fenced else HEADING.match(line)
+        if m:
+            out[name] = "\n".join(body).strip("\n")
+            name, body = m.group(2), []
+        else:
+            body.append(line)
+    out[name] = "\n".join(body).strip("\n")
+    return out
+
+
+def numbered(text):
+    """[item] of the numbered list items (`1. ...`, with their continuation
+    lines) in TEXT, in order. Pure."""
+    items, current = [], None
+    for line in text.splitlines():
+        m = re.match(r"^\s*\d+\.\s+(.*)$", line)
+        if m:
+            current = [m.group(1)]
+            items.append(current)
+        elif current is not None and line.strip():
+            current.append(line.strip())
+        elif current is not None:
+            current = None
+    return [" ".join(i) for i in items]
+
+
 def workflow(name):
     """The workflow .github/workflows/NAME (or a path from the root), as YAML."""
     path = ROOT / name if "/" in name else ROOT / ".github" / "workflows" / name

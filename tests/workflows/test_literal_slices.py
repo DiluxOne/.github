@@ -85,9 +85,12 @@ def slices_by_file(*args):
     return counts
 
 
-def test_c3_the_worst_wording_tests_of_tests_workflows_slice_no_more():
-    counts = slices_by_file("tests/workflows")
-    assert counts, "--all reports no slice: it does not read tests/workflows"
+def test_c3_the_worst_wording_tests_of_tests_workflows_slice_no_more(tmp_path):
+    (tmp_path / "test_slicing.py").write_text(SLICING)
+    every = slices_by_file("tests/workflows", tmp_path)
+    control = [f for f in every if f.endswith("test_slicing.py") and "tests/workflows" not in f]
+    assert len(control) == 1 and every[control[0]] == 1, f"--all missed the known slice: {every}"
+    counts = {f: n for f, n in every.items() if f not in control}
     worst = {f: n for f, n in counts.items() if n > 1}
     assert worst == {}, f"these still cut the workflow's text more than once: {worst}"
     for name in ("maintainer_bug_wiring", "policy_on_receipts", "autopilot_main_merge", "settled_finding_rerun",
@@ -154,3 +157,27 @@ def test_the_repro_guide_sends_no_agent_to_a_helper_the_runs_step_gate_rejects()
         assert "steps.py" not in guide, name
         assert "literal-slices.py" in guide, name
         assert "subprocess" in guide, name
+
+
+# The 23 files #846 left in KNOWN (#873).
+CONVERTED = [f"tests/repro/test_issue_{n}.py" for n in (549, 556, 575, 577, 696, 774)] + [
+    f"tests/workflows/test_{name}.py" for name in (
+        "autopilot_cancelled_review", "autopilot_commit_cadence", "autopilot_pre_pr", "autopilot_rounds",
+        "autopilot_sweep_draft", "claimed_bug_wiring", "configuration_doc", "credits_wiring", "flow_label_words",
+        "hint_without_needs_human", "pr_screenshots_wiring", "queue_drop_fix", "release_bug_reproduced",
+        "release_lane_wiring", "required_checks", "triage_non_write_users", "who_decides_wiring")]
+
+
+def test_c1_known_is_empty_and_the_tests_pass_it():
+    assert load().KNOWN == {}
+    got = run("tests/workflows", "tests/repro")
+    assert got.returncode == 0, got.stdout + got.stderr
+    assert "(0 files still listed in KNOWN)" in got.stdout
+
+
+def test_c2_none_of_the_23_files_slices():
+    assert len(CONVERTED) == 23
+    for rel in CONVERTED:
+        assert (ROOT / rel).is_file(), f"{rel} is gone"
+    got = run("--all", *CONVERTED)
+    assert got.returncode == 0, got.stdout + got.stderr
