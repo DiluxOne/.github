@@ -486,6 +486,11 @@ def file_reports(p, filings, repo, run=sh, lane_run=""):
         else:
             url = open_bug(repo, f["title"], f["body"], run, f["type"])
             filed.append({"scenario": f["scenario"], "class": f["class"], "issue": url, "how": "opened"})
+            # A second row of the same id in this run (the move's and the
+            # back's `callers`) comments on the one just opened.
+            number = url.rstrip("/").rsplit("/", 1)[-1]
+            if number.isdigit():
+                issues.append({"number": int(number), "body": f["body"]})
     return filed, warnings
 
 
@@ -1106,6 +1111,11 @@ def self_test():
         check("C6: a read that fails once is tried again at the next poll", (bad or {}).get("id"), 2)
         fake = Fake({"properties/values": props, "repos/O/a/actions/runs?": json.dumps(runs[:1])})
         check("C6: a quiet half hour moves nothing", (watch(moved_p, "O/.github", central, "O", "dx-adopted", since, run=fake, sleep=lambda s: None, every=600, root=root), fake.has("git")), (None, False))
+    twice = Fake({"issues?state=open": json.dumps([[]]), "repos/O/.github/issues": "https://github.com/O/.github/issues/77\n"})
+    rows = [{"id": "callers", "ok": False, "why": ["not moved"], "run": "", "class": "harness"}, {"id": "callers", "ok": False, "why": ["not back"], "run": "", "class": "harness"}]
+    filed, _ = file_reports(p, decide(p, rows)["filings"], "O/.github", twice)
+    check("#843: two rows of one scenario in a run open one report and comment on it", [(f["how"], f["issue"]) for f in filed],
+          [("opened", "https://github.com/O/.github/issues/77"), ("commented", 77)])
     check("#843: the pairs no scenario triggered, read from the results file", (untriggered("x\n<!-- dx-untriggered [\"a.yml:issues\"] -->\n"), untriggered("none"), untriggered("<!-- dx-untriggered nope -->")),
           (["a.yml:issues"], [], []))
     check("#843: a flaky scenario is named with its first failure, and fails nothing",
