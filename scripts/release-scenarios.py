@@ -128,7 +128,9 @@ after GitHub's back-off within the scenario's limit, then named.
         step's, less RETRY_MARGIN, and passing then is `flaky`, its row
         `pass (flaky: <first why>)`, which fails nothing; with less than
         a minute left it is not, and says so; their table to FILE; exits
-        1 when one fails
+        1 when one fails. A failing row says its `class` (#843, CLASSES:
+        engine, harness or infrastructure), which release-lane.py files
+        each its own way
   release-scenarios.py merge --dir DIR --groups JSON --job NAME=RESULT ...
                              --out FILE [--run URL] [--minutes N]
                              [--play-minutes M]
@@ -1098,6 +1100,26 @@ def scenario_text(sid, name, where, run_id):
     return text + (f"DX_API_TOKEN=dxfake_{re.sub(r'[^A-Za-z0-9]', '', str(run_id))}\n" if name == "token" else "")
 
 
+# What failed a scenario (#843), a failing row's `class`, set where the row
+# is made (scripts/release-lane.py files each its own way): `engine`, its
+# `until` or `expect` did not hold, or could no longer, against what the
+# engine did; `harness`, the player itself (an exception that is no `gh`
+# error, a fixture or body missing, a group or a result missing, the
+# callers' move, a `before` or a land that did not hold before the engine
+# acted); `infrastructure`, GitHub failing or rate limited until the
+# scenario's time ran out, a play job cancelled or past its timeout, a group
+# that left no results, a run GitHub held or never started.
+CLASSES = ("engine", "harness", "infrastructure")
+
+
+def blocked(seen):
+    """Whether what a poll saw is GitHub's doing, not the engine's (#843): a
+    run on the head GitHub holds for approval, or a check that never
+    started (`startup_failure`). Pure."""
+    seen = seen or {}
+    return bool(seen.get("held")) or "startup_failure" in (seen.get("checks") or {}).values()
+
+
 def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, types=None, run_id=None):
     """One scenario in `repo`: clears what an earlier run of it left
     (`clear`), opens what it opens (its `before` first), takes its steps,
@@ -1111,6 +1133,16 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
     spec = opens.get("pull") or opens.get("issue") or {}
     sid, own = s["id"], branch_of(s)
     left = [min(minutes, limit(s)) * 60]
+    # #843: set once `look` ran out of time with `gh` still failing.
+    gone = [False]
+
+    def failed(why, url, cls="engine", seen=None):
+        """A failing row of its class: GitHub's (`infrastructure`) whatever
+        the step when `gh` kept failing or a run was held or never
+        started."""
+        if gone[0] or blocked(seen):
+            cls = "infrastructure"
+        return {"id": sid, "ok": False, "why": why, "run": url, "class": cls}
 
     def look(on, want=None, closes=None):
         """`on` observed, a transient `gh` error (#698: a rate limit, a
@@ -1135,6 +1167,7 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
                 if not transient(e):
                     raise
                 if left[0] <= 0:
+                    gone[0] = True
                     return None, f"{str(e).split(': ', 1)[0]} rate limited or failing at GitHub until the scenario's time ran out: {str(e).split(': ', 1)[-1][:200]}"
                 wait = min(backoff(e, tries), max(left[0], 1))
                 sleep(wait)
@@ -1197,7 +1230,7 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
                 if there != content:
                     why = land(str(first["lands"]), path, content)
                     if why:
-                        return {"id": sid, "ok": False, "why": [w.replace("push ", "before: lands ", 1) for w in why], "run": ""}
+                        return failed([w.replace("push ", "before: lands ", 1) for w in why], "", "harness")
                 continue
             befores.append(open_issue(repo, first.get("issue") or {}, bodies, f"{sid}: before", run, sid, types))
             made.append(("issue", befores[-1]))
@@ -1249,7 +1282,7 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
                     seen, failing = look((what, number))
                     target = ((seen or {}).get("pull") or {}).get("number")
                     if not target:
-                        return {"id": sid, "ok": False, "why": [failing or f"retitle: no pull request closes #{number} to retitle"], "run": (seen or {}).get("run", "")}
+                        return failed([failing or f"retitle: no pull request closes #{number} to retitle"], (seen or {}).get("run", ""), seen=seen)
                 run("pr", "edit", str(target), "--repo", repo, "--title", str(arg))
             elif verb == "push":
                 # #698: on the head branch of the pull request it observes
@@ -1262,12 +1295,13 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
                         seen, failing = look((what, number))
                         head = ((seen or {}).get("pull") or {}).get("branch")
                         if not head:
-                            return {"id": sid, "ok": False, "why": [failing or f"push {arg}: no pull request closes #{number} to push to"], "run": (seen or {}).get("run", "")}
+                            return failed([failing or f"push {arg}: no pull request closes #{number} to push to"], (seen or {}).get("run", ""), seen=seen)
                     write_file(repo, head, path, scenario_text(sid, arg, "the pull request", run_id), run)
                 if arg in LANDS:
                     why = land(arg, path)
                     if why:
-                        return {"id": sid, "ok": False, "why": why, "run": ""}
+                        # A land is the scenario's own setup (#843).
+                        return failed(why, "", "harness")
             elif verb == "until":
                 # #694: polled every POLL seconds, never a fixed wait: on
                 # the scenario's own issue or pull request, or with `of:
@@ -1276,14 +1310,20 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
                 on = (("issue", befores[0]) if (arg or {}).get("of") == "before" and befores else (what, number))
                 seen, why = poll(want, on, None if on[1] != number else closes)
                 if why:
-                    return {"id": sid, "ok": False, "why": [f"until {json.dumps(want, sort_keys=True)}: {w}" for w in why], "run": seen.get("run", "")}
+                    return failed([f"until {json.dumps(want, sort_keys=True)}: {w}" for w in why], seen.get("run", ""), seen=seen)
             elif verb == "wait":
                 # Refused by `timing`; never slept.
                 raise ValueError(f"a fixed wait of {arg} seconds: wait `until` a state")
         seen, why = poll(s.get("expect") or {}, (what, number), closes)
-        return {"id": sid, "ok": not why, "why": why, "run": seen.get("run", "")}
+        if why:
+            return failed(why, seen.get("run", ""), seen=seen)
+        return {"id": sid, "ok": True, "why": [], "run": seen.get("run", "")}
     except (RuntimeError, ValueError) as e:
-        return {"id": sid, "ok": False, "why": [str(e)], "run": ""}
+        # #843: a transient `gh` error is GitHub's; any other exception
+        # that is no `gh` error, the player's; another `gh` error is read
+        # as the engine's, so no failure is hidden as someone else's.
+        cls = "infrastructure" if transient(e) else "engine" if isinstance(e, GhError) else "harness"
+        return failed([str(e)], "", cls)
     finally:
         cleanup(repo, made, run)
         clear(repo, sid, run, own, lands)
@@ -1619,7 +1659,7 @@ def put_back(repo, ref, moved, callers=gh, central=None, sleep=time.sleep, minut
     try:
         point_callers(repo, ref, callers, central, back={m["name"]: m["before"] for m in moved}, sleep=sleep, minutes=minutes)
     except (RuntimeError, ValueError) as e:
-        return [{"id": "callers", "ok": False, "why": [f"the callers were not put back from {ref}: {e}"], "run": ""}]
+        return [{"id": "callers", "ok": False, "why": [f"the callers were not put back from {ref}: {e}"], "run": "", "class": "harness"}]
     return []
 
 
@@ -1641,7 +1681,7 @@ def read_moved(path, ref):
             raise ValueError("not a list of moved callers")
         return moved, []
     except (OSError, ValueError) as e:
-        return [], [{"id": "callers", "ok": False, "why": [f"could not read what moved to {ref}, the callers may be left there: {e}"], "run": ""}]
+        return [], [{"id": "callers", "ok": False, "why": [f"could not read what moved to {ref}, the callers may be left there: {e}"], "run": "", "class": "harness"}]
 
 
 def at_candidate(repo, ref, run=gh, central=None):
@@ -1670,7 +1710,7 @@ def at_candidate(repo, ref, run=gh, central=None):
         got = json.loads(run("api", f"repos/{repo}/contents/.github/workflows/{name}") or "{}")
         for line in off_ref(base64.b64decode(got.get("content") or "").decode(), central, ref):
             why.append(f".github/workflows/{name} {line}: calls the engine off {ref} after the move")
-    return [{"id": "callers", "ok": False, "why": [w], "run": ""} for w in why]
+    return [{"id": "callers", "ok": False, "why": [w], "run": "", "class": "harness"} for w in why]
 
 
 def move_callers(repo, ref, callers=gh, central=None, sleep=time.sleep, minutes=20, record=None):
@@ -1685,13 +1725,13 @@ def move_callers(repo, ref, callers=gh, central=None, sleep=time.sleep, minutes=
     except (RuntimeError, ValueError) as e:
         if record:
             record([])
-        return [], [{"id": "callers", "ok": False, "why": [f"the callers did not reach {ref}: {e}"], "run": ""}]
+        return [], [{"id": "callers", "ok": False, "why": [f"the callers did not reach {ref}: {e}"], "run": "", "class": "harness"}]
     if record:
         record(moved)
     try:
         return moved, at_candidate(repo, ref, callers, central)
     except (RuntimeError, ValueError) as e:
-        return moved, [{"id": "callers", "ok": False, "why": [f"could not tell whether every pipeline of {repo} runs at {ref}: {e}"], "run": ""}]
+        return moved, [{"id": "callers", "ok": False, "why": [f"could not tell whether every pipeline of {repo} runs at {ref}: {e}"], "run": "", "class": "harness"}]
 
 
 GROUP_ID = re.compile(r"[a-z0-9-]+")
@@ -1920,7 +1960,7 @@ def play_group(conf, gid, repo, ref, run=gh, sleep=time.sleep, minutes=20, run_i
     scenarios = conf.get("scenarios") or []
     group = next((g for g in groups(scenarios) if g["id"] == gid), None)
     if group is None:
-        return [{"id": gid, "ok": False, "why": [f"{gid} is no group of {SCENARIOS}"], "run": ""}]
+        return [{"id": gid, "ok": False, "why": [f"{gid} is no group of {SCENARIOS}"], "run": "", "class": "harness"}]
     by_id, run_id = {s.get("id"): s for s in scenarios}, run_id or run_mark()
     deadline = clock() + minutes * 60
     out = []
@@ -2006,11 +2046,17 @@ def merge(gs, files, jobs, run="", minutes=0, play_minutes=0):
     rows = []
     timeout = f" (its play step at {play_minutes} minutes, its job at {minutes}: timeout-minutes in release-lane.yml)" if minutes else ""
 
-    def fail(rid, why):
-        rows.append({"id": rid, "ok": False, "why": [why], "run": run})
+    def fail(rid, why, cls):
+        rows.append({"id": rid, "ok": False, "why": [why], "run": run, "class": cls})
 
-    def own(r):
+    def own(r, cls=None):
         out = {"id": str(r.get("id")), "ok": r.get("ok") is True, "why": [str(w) for w in r.get("why") or []], "run": str(r.get("run") or "")}
+        # #843: a failing row's class, as its writer set it; a move's or a
+        # back's row is the harness's.
+        if not out["ok"]:
+            c = r.get("class") if r.get("class") in CLASSES else cls
+            if c:
+                out["class"] = c
         # #843: the retry's keys, kept.
         if isinstance(r.get("attempts"), int):
             out["attempts"] = r["attempts"]
@@ -2020,17 +2066,17 @@ def merge(gs, files, jobs, run="", minutes=0, play_minutes=0):
             out["first_why"] = [str(w) for w in r["first_why"]]
         return out
     if files.get("move") is None:
-        fail("move", "the move job left no results")
+        fail("move", "the move job left no results", "harness")
     else:
-        rows += [own(r) for r in files["move"] if isinstance(r, dict)]
+        rows += [own(r, "harness") for r in files["move"] if isinstance(r, dict)]
     if not gs:
-        fail("groups", "no groups of scenarios to read: none played")
+        fail("groups", "no groups of scenarios to read: none played", "harness")
     for g in gs:
         got = files.get(g["id"])
         if got is None:
             # A play job that was skipped is its own failing row below.
             if jobs.get("play") != "skipped":
-                fail(g["id"], f"the group {g['id']} left no results: its play job failed before it wrote them, timed out{timeout} or was cancelled")
+                fail(g["id"], f"the group {g['id']} left no results: its play job failed before it wrote them, timed out{timeout} or was cancelled", "infrastructure")
             continue
         by_id = {}
         for r in got:
@@ -2040,20 +2086,20 @@ def merge(gs, files, jobs, run="", minutes=0, play_minutes=0):
             if sid in by_id:
                 rows.append(by_id[sid])
             else:
-                fail(sid, f"no result in the results of its group {g['id']}")
+                fail(sid, f"no result in the results of its group {g['id']}", "harness")
     if files.get("back") is None:
-        fail("back", "the back job left no results: the callers may be left at the ref")
+        fail("back", "the back job left no results: the callers may be left at the ref", "harness")
     else:
-        rows += [own(r) for r in files["back"] if isinstance(r, dict)]
+        rows += [own(r, "harness") for r in files["back"] if isinstance(r, dict)]
     for name, result in jobs.items():
         if result == "success":
             continue
         if name == "play" and minutes and result == "cancelled":
-            fail(name, f"a play job ran past its timeout of {minutes} minutes and was cancelled (timeout-minutes in release-lane.yml)")
+            fail(name, f"a play job ran past its timeout of {minutes} minutes and was cancelled (timeout-minutes in release-lane.yml)", "infrastructure")
         elif name == "play" and play_minutes and result == "failure":
-            fail(name, f"a play job ended in failure: a step that broke, or its play step past its timeout of {play_minutes} minutes (timeout-minutes in release-lane.yml)")
+            fail(name, f"a play job ended in failure: a step that broke, or its play step past its timeout of {play_minutes} minutes (timeout-minutes in release-lane.yml)", "infrastructure")
         else:
-            fail(name, f"the {name} job ended in {result or 'nothing'}")
+            fail(name, f"the {name} job ended in {result or 'nothing'}", "harness")
     return rows
 
 
@@ -2754,6 +2800,25 @@ def self_test():
     # #843: b failed, so it played twice: its issues of both attempts too.
     check("run: its issues are closed and locked after it", sum(1 for c in calls if c[:2] in (("issue", "close"), ("issue", "lock"))), 6)
     check("#843 run: a scenario that failed is played once more, one that passed once", [(r["id"], r.get("attempts"), r.get("flaky")) for r in res], [("a", 1, None), ("b", 2, None)])
+    check("#843 class: an `expect` that does not hold is the engine's", [r.get("class") for r in res], [None, "engine"])
+    waits = {"id": "w", "opens": {"issue": {"title": "t", "body": "b"}}, "steps": [{"wait": 5}], "expect": {"labels": ["x"]}}
+    check("#843 class: the player's own exception (a fixed wait) is the harness's",
+          play(waits, "o/t", "v7-next", {"b": "body"}, fake, lambda s: None, 1).get("class"), "harness")
+
+    def busy(*args, input=None):
+        if args[:2] == ("issue", "view"):
+            raise GhError("gh issue view: HTTP 502", 1, "", "HTTP 502")
+        return fake(*args, input=input)
+    gone = play(scen["scenarios"][1], "o/t", "v7-next", scen["bodies"], busy, lambda s: None, 0)
+    check("#843 class: GitHub failing until the scenario's time ran out is infrastructure's",
+          (gone["ok"], gone.get("class"), "until the scenario's time ran out" in " ".join(gone["why"])), (False, "infrastructure", True))
+
+    def denied(*args, input=None):
+        if args[:2] == ("issue", "create"):
+            raise GhError("gh issue create: HTTP 422 Validation Failed", 1, "", "")
+        return fake(*args, input=input)
+    check("#843 class: a `gh` error that is not GitHub failing is read as the engine's", play(scen["scenarios"][1], "o/t", "v7-next", scen["bodies"], denied, lambda s: None, 1).get("class"), "engine")
+    check("#843 class: a run GitHub held or never started is infrastructure's", (blocked({"held": ["u"]}), blocked({"checks": {"a": "startup_failure"}}), blocked({"checks": {"a": "failure"}})), (True, True, False))
     clock = iter([19 * 60])
     tried = []
     late = retried({"id": "c"}, lambda m: tried.append(m) or {"id": "c", "ok": False, "why": ["slow"], "run": ""}, 20, 20 * 60, lambda: next(clock))
@@ -3289,7 +3354,7 @@ def self_test():
         with contextlib.redirect_stdout(io.StringIO()):
             write_results([{"id": "a", "ok": True, "why": [], "run": ""}], out)
         check("#622: back reads the run's results and adds its row to them",
-              read_results(out) + [{"id": "callers", "ok": False, "why": ["x"], "run": ""}], [{"id": "a", "ok": True, "why": [], "run": ""}, {"id": "callers", "ok": False, "why": ["x"], "run": ""}])
+              read_results(out) + [{"id": "callers", "ok": False, "why": ["x"], "run": "", "class": "harness"}], [{"id": "a", "ok": True, "why": [], "run": ""}, {"id": "callers", "ok": False, "why": ["x"], "run": "", "class": "harness"}])
         check("#622: no results file reads as none", read_results(os.path.join(d, "none.md")), [])
         nested = os.path.join(d, "back", "results.md")
         with contextlib.redirect_stdout(io.StringIO()):
@@ -3389,7 +3454,7 @@ def self_test():
                 ("a missing scenario row", dict(every, serial=passed("a")), done, {"c"}),
                 ("a row from another group in place of its own", dict(every, b=passed("a")), done, {"b"}),
                 ("a back job that left nothing", dict(every, back=None), dict(done, back="cancelled"), {"back"}),
-                ("a move that failed, and no group played", {"move": [{"id": "callers", "ok": False, "why": ["x"], "run": ""}]}, dict(done, play="skipped", back="success"), {"callers", "play", "back"})):
+                ("a move that failed, and no group played", {"move": [{"id": "callers", "ok": False, "why": ["x"], "run": "", "class": "harness"}]}, dict(done, play="skipped", back="success"), {"callers", "play", "back"})):
             rows = merge_dir(lay(files), mgs, jobs, lane_run)
             bad = {r["id"] for r in rows if not r["ok"]}
             check(f"C3: merge gives a failing row for {how}, with the lane's run, and decide releases nothing",

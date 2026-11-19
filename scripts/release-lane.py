@@ -21,13 +21,17 @@ in the test repository; a breaking change waits on a person.
   release-lane.py decide --plan F --results F [--run URL]
         from the plan and the scenarios' results (scripts/release-scenarios.py
         run): `release`, `bug` (one failed: nothing tagged, nothing moved,
-        a bug naming the scenario and its run, in the issue schema's
-        sections so G1 passes it, #694) or `issue` (a `!`: the
-        release issue for a person, nothing tagged); JSON
+        and one filing per scenario that failed after its retry, #843, in
+        the issue schema's sections so G1 passes it, #694, with its
+        class, `classify`: an `engine` failure a bug, a `harness` or an
+        `infrastructure` one a Task, each with the scenario's mark) or
+        `issue` (a `!`: the release issue for a person, nothing tagged); JSON
   release-lane.py act --plan F --results F --repo R [--run URL]
         does what `decide` says, and names in a Flaky line (on stderr and
         in GITHUB_STEP_SUMMARY, #843) each scenario that failed, then
-        passed on its retry, which fails nothing. A release, only while main is still the
+        passed on its retry, which fails nothing. A failure is a comment on
+        its scenario's open report (the lane's mark and the scenario's),
+        else a new issue (#843). A release, only while main is still the
         plan's `sha` (else `none`): the release pull request (CHANGELOG.md
         from scripts/changelog.py build, its commit made through the API
         with GH_TOKEN by scripts/api-commit.py, so GitHub signs it, #780),
@@ -159,7 +163,7 @@ RUN_URL = re.compile(r"^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/acti
 REPRO_LANE = "bugfix-reproduced"
 
 
-def bug_body(happened, reproduce, problem, scope, criterion, criticality="Critical", lane_run=""):
+def bug_body(happened, reproduce, problem, scope, criterion, criticality="Critical", lane_run="", scenario="", task=False):
     """A bug the lane opens itself (#694), in the issue schema's sections
     (policy/issue-schema.yml): its mark first, the report's (What happened?,
     Steps to reproduce), then the PRD's (Problem, Scope, Out of scope,
@@ -169,36 +173,104 @@ def bug_body(happened, reproduce, problem, scope, criterion, criticality="Critic
     # after the lane's own: the lane accepts it by policy, that run its
     # reproduction (policy/autonomy.yml origin, the Problem's line).
     lane = f"<!-- dx-lane: {REPRO_LANE} run: {lane_run} -->\n" if lane_run else ""
-    return (f"{MARK}\n{lane}### What happened?\n\n{happened}\n\n### Steps to reproduce\n\n{reproduce}\n\n### Problem\n\n{problem}\n\n### Scope\n\n"
+    # #843: the scenario's own mark after the lane's, first in What
+    # happened? (the schema allows only its own marks before the first
+    # heading), which finds its open report; a Task's body starts with its
+    # first heading, the lane's mark under it, so the triage, which takes a
+    # body that starts with the mark as a bug (issue-triage.yml `nightly`),
+    # leaves it to a person.
+    mine = f"{scenario_mark(scenario)}\n" if scenario else ""
+    head, under = ("", f"{MARK}\n{mine}") if task else (f"{MARK}\n{lane}", mine)
+    return (f"{head}### What happened?\n\n{under}{happened}\n\n### Steps to reproduce\n\n{reproduce}\n\n### Problem\n\n{problem}\n\n### Scope\n\n"
             + "".join(f"- {item}\n" for item in scope)
             + "\n### Out of scope\n\n- Changing the gates or what they check.\n\n### Acceptance criteria\n\n"
             + f"- C1: {criterion}\n\n### Criticality\n\n{criticality}\n")
 
 
+# What failed a scenario (#843), each row's `class`, set where the row is
+# made (scripts/release-scenarios.py): the engine's own behaviour, the
+# player (its code, its fixtures, a precondition that did not hold before
+# the engine acted, the callers' move), or GitHub (failing or rate limited
+# until the scenario's time ran out, a job cancelled or past its timeout, a
+# run held or never started).
+CLASSES = ("engine", "harness", "infrastructure")
+# How each class is filed: its title, its Type, and what its PRD says.
+FILED = {
+    "engine": ("fix: release scenario {sid} fails", "Bug"),
+    "harness": ("test: release scenario {sid} fails in the harness", "Task"),
+    "infrastructure": ("ci: release scenario {sid} fails on infrastructure", "Task"),
+}
+WHERE = {
+    "engine": "in what the engine did: its `until` or `expect` did not hold, or could no longer hold",
+    "harness": "in the harness, not in what the engine did: scripts/release-scenarios.py, the scenario's fixtures in tests/release/scenarios.yml, "
+               "or a precondition of the scenario that did not hold before the engine acted",
+    "infrastructure": "on GitHub's side, not in what the engine did: GitHub failing or rate limited until the scenario's time ran out, "
+                      "a job cancelled or past its timeout, or a run GitHub held or never started",
+}
+FIX = {
+    "engine": "The cause of the failure above, in the engine, fixed with a test that would have caught it.",
+    "harness": "The cause of the failure above, in scripts/release-scenarios.py or the scenario's fixtures, fixed with a test that would have caught it.",
+    "infrastructure": "What made the scenario fail on GitHub's side (its limits, its polling, the job's time), made to hold, or the scenario made to wait it out.",
+}
+
+
+def classify(row):
+    """The class of a failing row (#843): its `class`, or `engine` for a
+    row with none (an older results file), so a failure is never hidden as
+    someone else's. Pure."""
+    c = str(row.get("class") or "")
+    return c if c in CLASSES else "engine"
+
+
+def scenario_mark(sid):
+    """The mark of a scenario's report (#843): its open report is found by
+    it, and the lane's next failure of it comments there. Pure."""
+    return f"<!-- dx-lane-scenario: {re.sub(r'[^A-Za-z0-9._-]', '-', str(sid))} -->"
+
+
+def filing(p, r, lane_run=""):
+    """The report of one scenario that failed after its retry (#843): its
+    class, title, Type and body, in the issue schema's sections, so G1
+    passes it. Only an engine failure is a bug: its body starts with the
+    lane's mark (the triage's bug) and carries the `bugfix-reproduced`
+    lane's, with the lane's run as its reproduction; a harness or an
+    infrastructure failure is a Task, the lane's mark under its first
+    heading. Pure."""
+    sid, cls = str(r.get("id")), classify(r)
+    title, kind = FILED[cls]
+    bug = cls == "engine"
+    run = lane_run if bug and RUN_URL.match(lane_run or "") else ""
+    why = visible("; ".join(str(w) for w in r.get("why") or []) or "failed")
+    tries = f" (it failed on each of its {r['attempts']} attempts)" if isinstance(r.get("attempts"), int) and r["attempts"] > 1 else ""
+    body = bug_body(
+        f"Class: {cls}\n\nThe release lane tried {p['version']} at `{p['major']}-next` in the test repository, and the scenario `{sid}` failed{tries}, {WHERE[cls]}. "
+        f"Nothing was tagged and `{p['major']}` did not move.\n\n- `{sid}`: {why} ({r.get('run') or 'no run'})"
+        + (f"\n\nThe lane's run: {lane_run}" if lane_run else ""),
+        f"Run the release lane (.github/workflows/release-lane.yml) on {p['version']}'s candidate: it plays every scenario of tests/release/scenarios.yml "
+        f"in the test repository at `{p['major']}-next` (scripts/release-scenarios.py play), `{sid}` among them.",
+        f"The release candidate {p['version']} fails the release scenario `{sid}` {WHERE[cls]}, so the lane releases nothing and `{p['major']}` stays where it is."
+        + (f"\nReproduced by: {lane_run} scenario `{sid}`." if run else ""),
+        [FIX[cls]],
+        f"Given {p['version']}'s candidate with the fix, when the release lane plays `{sid}` in the test repository, then it passes and the lane releases it.",
+        lane_run=run, scenario=sid, task=not bug)
+    return {"scenario": sid, "class": cls, "type": kind, "title": title.format(sid=sid), "body": body,
+            "run": str(r.get("run") or ""), "why": why}
+
+
 def decide(p, results, lane_run=""):
     """What the lane does, from its plan and the scenarios' results, and the
-    lane's run (`lane_run`) a bug names. Pure."""
+    lane's run (`lane_run`) a bug names: `bug` with one filing per scenario
+    that failed after its retry (#843, `filing`), the first's also at the
+    top (`scenario`, `run`, `title`, `body`). Pure."""
     if not p.get("release"):
         return {"do": "none", "why": p.get("why", "")}
     failed = [r for r in results if not r.get("ok")]
     if not results:
-        failed = [{"id": "(none ran)", "why": ["no scenario result"], "run": ""}]
+        failed = [{"id": "(none ran)", "why": ["no scenario result"], "run": "", "class": "harness"}]
     if failed:
-        first = failed[0]
-        lines = [f"- `{r['id']}`: {visible('; '.join(r.get('why') or []) or 'failed')} ({r.get('run') or 'no run'})" for r in failed]
-        ids = ", ".join(f"`{r['id']}`" for r in failed)
-        return {"do": "bug", "scenario": first["id"], "run": first.get("run", ""),
-                "title": f"fix: release candidate {p['version']} fails scenario {first['id']}",
-                "body": bug_body(
-                    f"The release lane tried {p['version']} at `{p['major']}-next` in the test repository, and a scenario failed. Nothing was tagged and `{p['major']}` did not move.\n\n"
-                    + "\n".join(lines) + (f"\n\nThe lane's run: {lane_run}" if lane_run else ""),
-                    f"Run the release lane (.github/workflows/release-lane.yml) on {p['version']}'s candidate: it plays every scenario of tests/release/scenarios.yml "
-                    f"in the test repository at `{p['major']}-next` (scripts/release-scenarios.py play).",
-                    f"The release candidate {p['version']} fails the release scenarios {ids}, so the lane releases nothing and `{p['major']}` stays where it is."
-                    + (f"\nReproduced by: {lane_run} scenario `{first['id']}`." if lane_run and RUN_URL.match(lane_run) else ""),
-                    [f"The cause of each failing scenario above ({ids}), in the engine or in the scenario's fixtures, fixed with a test that would have caught it."],
-                    f"Given {p['version']}'s candidate with the fix, when the release lane plays {ids} in the test repository, then each passes and the lane releases it.",
-                    lane_run=lane_run if RUN_URL.match(lane_run or "") else "")}
+        filings = [filing(p, r, lane_run) for r in failed]
+        first = filings[0]
+        return {"do": "bug", "scenario": first["scenario"], "run": first["run"], "title": first["title"], "body": first["body"], "filings": filings}
     if p.get("breaking"):
         return {"do": "issue", "why": p.get("why", "")}
     return {"do": "release", "version": p["version"]}
@@ -361,19 +433,66 @@ def now():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def open_bug(repo, title, body, run=sh):
+def open_bug(repo, title, body, run=sh, kind="Bug"):
     """A bug the lane opens itself (#694), checked first (scripts/engine-
     post.py: it passes G1, never `incomplete`), with the Type Bug and its
     mark first, so the triage and the reproduction take it as a person's
-    bug (issue-triage.yml `nightly`, issue-repro.yml NIGHTLY)."""
+    bug (issue-triage.yml `nightly`, issue-repro.yml NIGHTLY). A Task
+    (#843: a harness or an infrastructure failure) carries the mark too,
+    never first, so the triage leaves it to a person. Returns its URL."""
     engine_post().refuse("issue", body)
-    if not body.startswith(MARK):
+    if kind == "Bug" and not body.startswith(MARK):
         raise RuntimeError("the lane's bug does not start with its mark: the triage would never see it")
-    run("gh", "api", f"repos/{repo}/issues", "-f", f"title={title}", "-f", f"body={body}", "-f", "type=Bug", "--jq", ".html_url")
+    if kind != "Bug" and (body.startswith(MARK) or MARK not in body):
+        raise RuntimeError("the lane's task must carry its mark, never first: the triage would take it as a bug")
+    return run("gh", "api", f"repos/{repo}/issues", "-f", f"title={title}", "-f", f"body={body}", "-f", f"type={kind}", "--jq", ".html_url").strip()
 
 
-# A candidate's failure report, as decide() titles it.
+def open_issues(repo, run=sh):
+    """The open issues of `repo`, as the issues API lists them (pull
+    requests among them). Raises RuntimeError or ValueError."""
+    pages_ = json.loads(run("gh", "api", f"repos/{repo}/issues?state=open&per_page=100", "--paginate", "--slurp") or "[]")
+    return [i for page in pages_ for i in (page if isinstance(page, list) else [page]) if isinstance(i, dict)]
+
+
+def report_of(issues, sid):
+    """The number of the open report of the scenario `sid` (#843): an issue
+    whose body carries the lane's mark and that scenario's, or None. Pure."""
+    mine = [i["number"] for i in issues if not i.get("pull_request") and MARK in (i.get("body") or "") and scenario_mark(sid) in (i.get("body") or "")]
+    return min(mine) if mine else None
+
+
+def file_reports(p, filings, repo, run=sh, lane_run=""):
+    """Each filing (#843) as a comment on its scenario's open report, or a
+    new issue (a Bug for an engine failure, else a Task). Returns (filed,
+    warnings): [{scenario, class, issue, how}]; a list that cannot be read
+    files new issues, so no failure goes unsaid."""
+    warnings = []
+    try:
+        issues = open_issues(repo, run)
+    except (RuntimeError, ValueError) as err:
+        issues = []
+        warnings.append(f"The open failure reports could not be listed, so each failure opens its own: {err}")
+    filed = []
+    for f in filings:
+        n = report_of(issues, f["scenario"])
+        if n is not None:
+            body = (f"{MARK}\nThe release lane's candidate {p['version']} fails this scenario again.\n\nClass: {f['class']}\n\n"
+                    f"- `{f['scenario']}`: {f['why']} ({f['run'] or 'no run'})" + (f"\n\nThe lane's run: {lane_run}" if lane_run else ""))
+            run("gh", "issue", "comment", str(n), "--repo", repo, "--body", body)
+            filed.append({"scenario": f["scenario"], "class": f["class"], "issue": n, "how": "commented"})
+        else:
+            url = open_bug(repo, f["title"], f["body"], run, f["type"])
+            filed.append({"scenario": f["scenario"], "class": f["class"], "issue": url, "how": "opened"})
+    return filed, warnings
+
+
+# A candidate's failure report, as decide() titled it before #843.
 REPORT = re.compile(r"^fix: release candidate v(\d+)\.(\d+)\.(\d+) fails scenario ")
+# A scenario's report, as `filing` titles it (#843), with no version: a
+# release means every scenario passed, so each open one no longer holds.
+SCENARIO_REPORT = re.compile(r"^(fix: release scenario \S+ fails|test: release scenario \S+ fails in the harness|ci: release scenario \S+ fails on infrastructure)$")
+SCENARIO_MARK = re.compile(r"<!-- dx-lane-scenario: [^>]* -->")
 
 
 def stale_reports(issues, version):
@@ -381,12 +500,18 @@ def stale_reports(issues, version):
     are the lane's report of a candidate's failure (its mark first, its
     title) for a version at or below `version`, the one just released
     (#832). A rollback's bug and the breaking release's issue are other
-    titles. Pure."""
+    titles. A scenario's report (#843, `filing`: its title, the lane's mark
+    and the scenario's in its body) is stale at any release. Pure."""
     released = tuple(int(n) for n in version.lstrip("v").split("."))
     out = []
     for i in issues:
-        m = REPORT.match(i.get("title") or "")
-        if m and (i.get("body") or "").startswith(MARK) and not i.get("pull_request") and tuple(int(n) for n in m.groups()) <= released:
+        title, body = i.get("title") or "", i.get("body") or ""
+        if i.get("pull_request"):
+            continue
+        m = REPORT.match(title)
+        if m and body.startswith(MARK) and tuple(int(n) for n in m.groups()) <= released:
+            out.append(i["number"])
+        elif SCENARIO_REPORT.match(title) and MARK in body and SCENARIO_MARK.search(body):
             out.append(i["number"])
     return sorted(out)
 
@@ -396,10 +521,9 @@ def close_reports(repo, version, run=sh, lane_run=""):
     `version` is released, each with a comment naming it. Returns (closed,
     warnings): nothing here fails a release."""
     try:
-        pages_ = json.loads(run("gh", "api", f"repos/{repo}/issues?state=open&per_page=100", "--paginate", "--slurp") or "[]")
+        issues = open_issues(repo, run)
     except (RuntimeError, ValueError) as err:
         return [], [f"The open failure reports could not be listed, so none was closed: {err}"]
-    issues = [i for page in pages_ for i in (page if isinstance(page, list) else [page]) if isinstance(i, dict)]
     comment = (f"Released as {version}, which passed every scenario: this candidate's failure no longer holds a release."
                + (f"\n\nThe lane's run: {lane_run}" if lane_run else ""))
     closed, warnings = [], []
@@ -431,7 +555,10 @@ def act(p, results, repo, run=sh, sleep=time.sleep, root=".", lane_run=""):
         # #843: a flaky scenario fails nothing, and the summary names it.
         d["flaky"] = flaky(results)
     if d["do"] == "bug":
-        open_bug(repo, d["title"], d["body"], run)
+        # #843: one report per scenario, or a comment on its open one.
+        d["filed"], warnings = file_reports(p, d["filings"], repo, run, lane_run)
+        if warnings:
+            d["warnings"] = warnings
     elif d["do"] == "issue":
         ri = release_issue(p["version"][1:], d["why"], lane_run)
         engine_post().refuse("release", ri["title"], ri["labels"])
@@ -879,7 +1006,7 @@ def self_test():
         fake = Fake()
         failing = passed[:1] + [{"id": "spec-to-draft", "ok": False, "why": ["no label autopilot"], "run": "https://github.com/o/t/actions/runs/9"}]
         d = act(p, failing, "O/.github", run=fake, root=root)
-        bug = fake.named("fails scenario")
+        bug = fake.named("release scenario spec-to-draft fails")
         check("C5: one fails → a bug", d["do"], "bug")
         check("C5: nothing tagged, v7 not moved, nothing released", [c for c in fake.calls if c[:1] == ("git",) or c[:2] in (("gh", "release"), ("gh", "pr"))], [])
         check("C5: the bug names the scenario and its run", bool(bug) and "spec-to-draft" in " ".join(bug[0]) and "https://github.com/o/t/actions/runs/9" in " ".join(bug[0]), True)
@@ -896,8 +1023,11 @@ def self_test():
             got = schema(d["body"])
             check(f"C4: the bug's body, {how}, passes issue-schema.py check", (got.returncode, got.stdout if got.returncode else ""), (0, ""))
         d = decide(p, quoting, "https://github.com/O/.github/actions/runs/7")
-        check("C4: the bug starts with its mark, names every failing scenario and the lane's run, and hides no marker it quotes (its two marks aside, #699)",
-              (d["body"].startswith(MARK + "\n"), "`spec-to-draft`" in d["body"] and "`issue-complete`" in d["body"], "actions/runs/7" in d["body"], d["body"].count("<!--")), (True, True, True, 2))
+        check("#843 C4: one report per failing scenario, each starting with the lane's mark, naming its scenario and the lane's run, and hiding no marker it quotes (its three marks aside: the lane's, the scenario's, #699's)",
+              ([f["scenario"] for f in d["filings"]], [f["body"].startswith(MARK + "\n") for f in d["filings"]], [f"`{f['scenario']}`" in f["body"] for f in d["filings"]],
+               ["actions/runs/7" in f["body"] for f in d["filings"]], [f["body"].count("<!--") for f in d["filings"]]),
+              (["spec-to-draft", "issue-complete"], [True, True], [True, True], [True, True], [3, 3]))
+        check("#843: a row with no class is the engine's, never hidden as someone else's", (classify({"id": "x"}), classify({"class": "harness"}), classify({"class": "nope"})), ("engine", "harness", "engine"))
         check("#699 C6: the bug names the lane's run as its reproduction: the bugfix-reproduced lane's mark, and the Problem's line",
               (d["body"].split("\n")[1], "\nReproduced by: https://github.com/O/.github/actions/runs/7 scenario `spec-to-draft`." in d["body"],
                "dx-lane:" in decide(p, failing)["body"], "Reproduced by:" in decide(p, failing, "not a run")["body"]),
