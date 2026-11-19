@@ -2023,7 +2023,8 @@ def retried(s, attempt, minutes, deadline=None, clock=time.monotonic):
     less than a minute it is not played, and the row says so. The row gains
     `attempts` (1 or 2) and, after a retry, `first_why` (the first
     attempt's why); `flaky: true` when the retry passed, which makes it
-    `ok`."""
+    `ok` with no `class`; failing on both, it keeps the first failure's
+    `class`."""
     first = attempt(minutes)
     if first.get("ok"):
         return dict(first, attempts=1)
@@ -2037,8 +2038,13 @@ def retried(s, attempt, minutes, deadline=None, clock=time.monotonic):
     if "triggered" in first or "triggered" in second:
         # #843: what either attempt's runs triggered.
         out["triggered"] = sorted(set(first.get("triggered") or []) | set(second.get("triggered") or []))
+    # #843: the row's class comes from both attempts: passing on its retry
+    # it is flaky and no failure's; failing on both, the first failure's.
+    out.pop("class", None)
     if second.get("ok"):
         out["flaky"] = True
+    elif first.get("class") or second.get("class"):
+        out["class"] = first.get("class") or second.get("class")
     return out
 
 
@@ -2932,6 +2938,14 @@ def self_test():
     again = retried({"id": "c", "minutes": 15}, lambda m: tried.append(m) or {"id": "c", "ok": len(tried) > 1, "why": [] if len(tried) > 1 else ["fast"], "run": ""}, 20, 20 * 60, lambda: next(clock))
     check("#843 retry: the retry has what the play step has left less its margin, at most the scenario's limit; passing, it is ok and flaky",
           (tried, again["ok"], again.get("flaky"), again["first_why"], table([again]).count("pass (flaky: fast)")), ([20, 13], True, True, ["fast"], 1))
+    # #843: a retried row's class comes from both attempts.
+    both = iter([{"id": "k", "ok": False, "why": ["slow"], "run": "", "class": "infrastructure"}, {"id": "k", "ok": False, "why": ["no"], "run": "", "class": "engine"}])
+    check("#843 retry: failing on both attempts, the row keeps the first failure's class",
+          retried({"id": "k"}, lambda m: next(both), 20).get("class"), "infrastructure")
+    healed = iter([{"id": "k", "ok": False, "why": ["slow"], "run": "", "class": "engine"}, {"id": "k", "ok": True, "why": [], "run": "", "class": "harness"}])
+    got = retried({"id": "k"}, lambda m: next(healed), 20)
+    check("#843 retry: passing on its retry, the row is flaky and carries no failure's class",
+          (got["ok"], got.get("flaky"), "class" in got), (True, True, False))
     ccalls = []
 
     def cfake(*args, input=None):
