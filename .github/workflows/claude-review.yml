@@ -20,7 +20,9 @@ name: Claude review
 #      called at all, unless someone who decides settled one of its findings
 #      since (#699 C5, review-reply.yml's `dx-settled` mark, which also
 #      re-runs the review): then it reviews the head again, the settled
-#      findings in the brief with the settled threads.
+#      findings in the brief with the settled threads. A finding is settled
+#      in its own thread or in the conversation, one with a thread included
+#      (#871: that thread is resolved too).
 #   3. On a new push, Claude gets one brief file with everything: the diff
 #      since the last reviewed commit (or the whole PR the first time, or
 #      after a force-push, a rebase or a merge), the review profiles, the

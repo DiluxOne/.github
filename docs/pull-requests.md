@@ -203,7 +203,10 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    `DX_AUTOPILOT=off`: nothing is reverted, and the run says why.
 
 Mention `@dilux-bot` in a review thread or in the conversation and Claude
-answers there; it resolves its own thread when the point is settled.
+answers there; it resolves its own thread when the point is settled. An
+answer in the conversation can settle any of the review's findings, one
+raised inline included: the reply records it, resolves that finding's thread
+and, when the review blocked, runs it again on the same head (#871).
 
 The description's Credits block names who proposed what the change uses
 (CONTRIBUTING.md, "Who signs what"); the merge writes them as the commit's
