@@ -16,11 +16,13 @@ literals:
 
 - a slice whose bound calls `.index/.find/.rindex/.rfind("literal")`, or
   is a name assigned from such a call in the same function;
-- a fixed index into `.split/.partition/.rpartition("literal")`.
+- a fixed index into `.split/.rsplit/.partition/.rpartition("literal")`.
 
-The files that still slice are listed in KNOWN, which can only shrink: a
-listed file that no longer slices fails the check too, so it is removed
-from the list in the change that fixes it.
+The files that still slice are listed in KNOWN with their number of
+slices, which can only shrink: a listed file with more slices than its
+count fails, naming each of its slices, and one with fewer fails too, so
+its count is lowered (or the file removed) in the change that fixes it.
+A path given that does not exist fails rather than scanning nothing.
 
     literal-slices.py [dir-or-file ...]   default: tests/workflows tests/repro
     literal-slices.py --all [dir-or-file ...]   every slice, listed or not
@@ -36,31 +38,32 @@ SPLITS = {"split", "partition", "rpartition", "rsplit"}
 
 # Files that slice text still: the tests/repro reproductions from before the
 # check, and the tests/workflows files left for the follow-up (#845, worst
-# first: none of them slices more than once). Only shrinks.
+# first: none of them slices more than once), each with its number of
+# slices. Only shrinks.
 KNOWN = {
-    "tests/repro/test_issue_549.py",
-    "tests/repro/test_issue_556.py",
-    "tests/repro/test_issue_575.py",
-    "tests/repro/test_issue_577.py",
-    "tests/repro/test_issue_696.py",
-    "tests/repro/test_issue_774.py",
-    "tests/workflows/test_autopilot_cancelled_review.py",
-    "tests/workflows/test_autopilot_commit_cadence.py",
-    "tests/workflows/test_autopilot_pre_pr.py",
-    "tests/workflows/test_autopilot_rounds.py",
-    "tests/workflows/test_autopilot_sweep_draft.py",
-    "tests/workflows/test_claimed_bug_wiring.py",
-    "tests/workflows/test_configuration_doc.py",
-    "tests/workflows/test_credits_wiring.py",
-    "tests/workflows/test_flow_label_words.py",
-    "tests/workflows/test_hint_without_needs_human.py",
-    "tests/workflows/test_pr_screenshots_wiring.py",
-    "tests/workflows/test_queue_drop_fix.py",
-    "tests/workflows/test_release_bug_reproduced.py",
-    "tests/workflows/test_release_lane_wiring.py",
-    "tests/workflows/test_required_checks.py",
-    "tests/workflows/test_triage_non_write_users.py",
-    "tests/workflows/test_who_decides_wiring.py",
+    "tests/repro/test_issue_549.py": 1,
+    "tests/repro/test_issue_556.py": 1,
+    "tests/repro/test_issue_575.py": 1,
+    "tests/repro/test_issue_577.py": 1,
+    "tests/repro/test_issue_696.py": 2,
+    "tests/repro/test_issue_774.py": 1,
+    "tests/workflows/test_autopilot_cancelled_review.py": 1,
+    "tests/workflows/test_autopilot_commit_cadence.py": 1,
+    "tests/workflows/test_autopilot_pre_pr.py": 1,
+    "tests/workflows/test_autopilot_rounds.py": 1,
+    "tests/workflows/test_autopilot_sweep_draft.py": 1,
+    "tests/workflows/test_claimed_bug_wiring.py": 1,
+    "tests/workflows/test_configuration_doc.py": 1,
+    "tests/workflows/test_credits_wiring.py": 1,
+    "tests/workflows/test_flow_label_words.py": 1,
+    "tests/workflows/test_hint_without_needs_human.py": 1,
+    "tests/workflows/test_pr_screenshots_wiring.py": 1,
+    "tests/workflows/test_queue_drop_fix.py": 1,
+    "tests/workflows/test_release_bug_reproduced.py": 1,
+    "tests/workflows/test_release_lane_wiring.py": 1,
+    "tests/workflows/test_required_checks.py": 1,
+    "tests/workflows/test_triage_non_write_users.py": 1,
+    "tests/workflows/test_who_decides_wiring.py": 1,
 }
 
 
@@ -134,8 +137,10 @@ def scan(source, path="<test>"):
 
 def files_of(args):
     out = []
-    for arg in args:
+    for arg in map(str, args):
         full = arg if os.path.isabs(arg) else os.path.join(ROOT, arg)
+        if not os.path.exists(full):
+            raise FileNotFoundError(f"{arg} does not exist: nothing to scan")
         if os.path.isfile(full):
             out.append(full)
             continue
@@ -156,13 +161,17 @@ def check(args, known=None):
         if not found:
             continue
         seen.add(rel)
-        if rel in known:
+        allowed = known.get(rel, 0)
+        if len(found) < allowed:
+            lines.append(f"{rel} cuts text between literals {len(found)} times, not {allowed}: "
+                         f"lower the count in KNOWN in scripts/literal-slices.py")
+        if len(found) <= allowed:
             continue
         for line, name in found:
             lines.append(f"{rel}:{line} ({name}) cuts text between literals: test what the step does "
                          "(run it, tests/workflows/steps.py, or call its script), not its wording")
     scanned = {os.path.relpath(f, ROOT) for f in files_of(args)}
-    for rel in sorted(known & scanned - seen):
+    for rel in sorted(set(known) & scanned - seen):
         lines.append(f"{rel} no longer cuts text between literals: remove it from KNOWN in scripts/literal-slices.py")
     return (1 if lines else 0), lines
 
@@ -198,15 +207,29 @@ def self_test():
             f.write("def test_clean():\n    assert True\n")
         rel_new, rel_clean = os.path.relpath(new, ROOT), os.path.relpath(clean, ROOT)
         for args, known, want_code, want_in in [
-            ([tmp], set(), 1, f"{rel_new}:3 (test_new)"),
-            ([tmp], {rel_new}, 0, None),
-            ([tmp], {rel_new, rel_clean}, 1, f"{rel_clean} no longer cuts"),
-            ([clean], {rel_new}, 0, None),
+            ([tmp], {}, 1, f"{rel_new}:3 (test_new)"),
+            ([tmp], {rel_new: 1}, 0, None),
+            ([tmp], {rel_new: 1, rel_clean: 1}, 1, f"{rel_clean} no longer cuts"),
+            ([clean], {rel_new: 1}, 0, None),
+            ([tmp], {rel_new: 2}, 1, f"{rel_new} cuts text between literals 1 times, not 2"),
         ]:
             code, lines = check(args, known)
             if code != want_code or (want_in and not any(want_in in line for line in lines)):
                 bad += 1
                 print(f"FAIL check({args}, {known}) = {code}, {lines}")
+        # A slice added to a listed file fails, naming it.
+        with open(new, "a") as f:
+            f.write("\n\ndef test_more():\n    return ''.split('x')[1]\n")
+        code, lines = check([tmp], {rel_new: 1})
+        if code != 1 or not any(f"{rel_new}:7 (test_more)" in line for line in lines):
+            bad += 1
+            print(f"FAIL check after a slice was added to a listed file = {code}, {lines}")
+        try:
+            check([os.path.join(tmp, "gone")], {})
+            bad += 1
+            print("FAIL check on a path that does not exist did not fail")
+        except FileNotFoundError:
+            pass
     print("literal-slices: self-test", "failed" if bad else "passed")
     return 1 if bad else 0
 
@@ -216,8 +239,12 @@ def main(argv):
         return self_test()
     listed = KNOWN
     if argv[:1] == ["--all"]:
-        argv, listed = argv[1:], set()
-    code, lines = check(argv or ["tests/workflows", "tests/repro"], listed)
+        argv, listed = argv[1:], {}
+    try:
+        code, lines = check(argv or ["tests/workflows", "tests/repro"], listed)
+    except FileNotFoundError as e:
+        print(f"::error::{e}")
+        return 2
     for line in lines:
         print(f"::error::{line}")
     if not code:

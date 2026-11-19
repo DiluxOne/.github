@@ -3,6 +3,7 @@ scripts job, naming the test (#845, scripts/literal-slices.py).
 
 Each case runs the script as the scripts job does, on a test file written
 in `tmp_path`, and reads its exit code and output."""
+import os
 import re
 import subprocess
 import sys
@@ -99,3 +100,42 @@ def test_c3_the_files_left_are_on_the_list_that_only_shrinks():
     got = run("tests/workflows")
     assert got.returncode == 0, got.stdout
     assert f"{len(left) + len(slices_by_file('tests/repro'))} files still listed" in got.stdout
+
+
+def load():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("literal_slices", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_c2_a_slicing_test_appended_to_a_listed_file_fails_naming_it(tmp_path):
+    """KNOWN holds each file's number of slices, not the file as a whole:
+    a new slicing test in a listed file fails, and one fixed asks for the
+    count to come down."""
+    module = load()
+    listed = tmp_path / "test_listed.py"
+    listed.write_text(SLICING)
+    rel = os.path.relpath(listed, ROOT)
+    assert module.check([tmp_path], {rel: 1}) == (0, [])
+    listed.write_text(SLICING + "\n\n" + SPLITTING.replace("def test_the_jobs", "def test_the_new_one"))
+    code, lines = module.check([tmp_path], {rel: 1})
+    assert code == 1
+    assert any(f"{rel}:" in line and "(test_the_new_one)" in line for line in lines), lines
+    code, lines = module.check([tmp_path], {rel: 3})
+    assert code == 1
+    assert any("lower the count" in line for line in lines), lines
+
+
+def test_c2_every_listed_file_carries_its_count_today():
+    module = load()
+    assert isinstance(module.KNOWN, dict)
+    counts = slices_by_file("tests/workflows", "tests/repro")
+    assert module.KNOWN == counts
+
+
+def test_c2_a_path_that_does_not_exist_fails_instead_of_scanning_nothing(tmp_path):
+    got = run(tmp_path / "gone")
+    assert got.returncode != 0
+    assert "gone" in got.stdout + got.stderr
