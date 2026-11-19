@@ -90,7 +90,7 @@ jobs:
       always() && (needs.collect.result == 'success' || needs.collect.result == 'skipped') &&
       (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 350
     strategy:
       fail-fast: false
       matrix:
