@@ -134,8 +134,9 @@ def test_c2_the_rest_of_the_comment_is_the_next_runs_hint():
     cap = {"body": ap.cap_comment("the autopilot already ran 5 times on it (the cap is 5)"), "createdAt": "2026-11-19T09:00:00Z", "author": {"login": BOT}}
     before = {"body": "an old hint, before the cap", "createdAt": "2026-11-19T08:00:00Z", "author": {"login": "boss"}}
     more = {"body": "/autopilot more\nTry the other fixture first.", "createdAt": "2026-11-19T10:00:00Z", "author": {"login": "boss"}}
+    # A hint before the cap, which no run read, comes in too (#857).
     said = ap.answers([before, cap, more], {"boss"})
-    assert said == "boss: Try the other fixture first."
+    assert said == "boss: an old hint, before the cap\n\nboss: Try the other fixture first."
     # On the same line too; with no rest, nothing.
     assert ap.answers([cap, dict(more, body="/autopilot more use the fixture")], {"boss"}) == "boss: use the fixture"
     assert ap.answers([cap, dict(more, body="/autopilot more")], {"boss"}) == ""
@@ -260,8 +261,8 @@ def test_c5_the_cap_message_says_how_a_maintainer_gives_more_runs():
     assert "`/autopilot more <hint>`" in ap.cap_comment("the autopilot already ran 5 times on it (the cap is 5)")
     # Its extensions spent, the comment no longer offers one.
     assert "/autopilot more" not in ap.cap_comment("the autopilot already ran 15 times on it (the cap is 15)", 5, False)
-    env = next(st["env"] for st in wf("autopilot.yml")["jobs"]["prep"]["steps"] if "OPEN_TO_CLAIM" in (st.get("env") or {}))
-    assert "`/autopilot more <hint>`" in env["OPEN_TO_CLAIM"] and "`/claim`" in env["OPEN_TO_CLAIM"]
+    # The issue's comment, while extensions are left, offers it too.
+    assert "`/autopilot more <hint>`" in ap.open_to_claim(5, True) and "`/claim`" in ap.open_to_claim(5, True)
 
 
 def test_a_comment_that_only_starts_like_the_command_does_nothing(tmp_path, monkeypatch):
@@ -270,3 +271,65 @@ def test_a_comment_that_only_starts_like_the_command_does_nothing(tmp_path, monk
     assert w.more("boss", "0", "/autopilot moreover, a thought") == 0
     assert board(w.fx, 8) == before and w.replies() == []
     assert not any("--add-label" in c or "--remove-label" in c for c in w.calls)
+
+
+# --- The review's minors (#857) ---------------------------------------------
+
+def test_past_the_second_extension_the_issue_is_told_only_claim_and_closing(tmp_path, monkeypatch):
+    ap = autopilot()
+    # The pull request's cap comment and the issue's, from the same words.
+    spent = ap.cap_comment("the autopilot already ran 15 times on it (the cap is 15)", 5, False)
+    assert "`/claim`" in spent and "closes the pull request" in spent
+    left = ap.open_to_claim(5, True)
+    assert "`/autopilot more <hint>`" in left and "`/claim`" in left
+    none_left = ap.open_to_claim(5, False)
+    assert "/autopilot more" not in none_left
+    assert "`/claim`" in none_left and "closes the pull request" in none_left
+    assert none_left.rstrip().endswith("🤖 AI-generated · Claude Opus 5.5 (Anthropic)")
+    # `cap-comment --issue` reads the pull request's board.
+    w = World(tmp_path, monkeypatch, runs=15, extensions=TWO)
+    monkeypatch.setenv("PR", "8")
+    import contextlib
+    import io
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        assert w.ap.main(["cap-comment", "--issue", "the cap is 15"]) == 0
+    said = out.getvalue()
+    assert said.startswith("The autopilot reached its") and "/autopilot more" not in said and "`/claim`" in said
+    # The workflow posts that text on the issue at the runs cap; its own
+    # OPEN_TO_CLAIM (the rounds cap, and scripts older than it) offers no
+    # `/autopilot more`, which gives nothing there.
+    text = (ROOT / ".github/workflows/autopilot.yml").read_text(encoding="utf-8")
+    assert "autopilot.py cap-comment --issue" in text
+    env = next(st["env"] for st in wf("autopilot.yml")["jobs"]["prep"]["steps"] if "OPEN_TO_CLAIM" in (st.get("env") or {}))
+    assert "/autopilot more" not in env["OPEN_TO_CLAIM"] and "`/claim`" in env["OPEN_TO_CLAIM"]
+
+
+def test_the_sweep_has_no_board_plumbing_that_nothing_feeds():
+    import inspect
+    ap = autopilot()
+    assert "pr_board" not in inspect.signature(ap.sweep_step).parameters
+    assert "pr_board" not in (ROOT / "scripts/autopilot.py").read_text(encoding="utf-8")
+    assert "pr_board" not in (ROOT / ".github/workflows/autopilot-sweep.yml").read_text(encoding="utf-8")
+
+
+def test_who_decides_unread_is_said_once(tmp_path, monkeypatch):
+    ap = autopilot()
+    said = {"body": ap.more_reply("unread", ISSUE_URL, unread="x"), "createdAt": "2026-11-19T10:00:00Z", "author": {"login": BOT}}
+    assert said["body"].startswith(ap.MORE_UNREAD)
+    w = World(tmp_path, monkeypatch, comments=[said])
+    assert w.more("boss", "2") == 0
+    assert w.replies() == []
+    # It silences no other answer: a refusal after it is still said.
+    assert w.more("fork-dev", "1") == 0
+    assert len(w.replies()) == 1 and "dx-autopilot-more-refused" in w.replies()[0]
+
+
+def test_a_hint_before_the_cap_and_the_more_both_reach_the_next_run():
+    ap = autopilot()
+    stop = {"body": ap.STOP + " Stopped.", "createdAt": "2026-11-19T07:00:00Z", "author": {"login": BOT}}
+    stale = {"body": "a hint the last run had", "createdAt": "2026-11-19T06:00:00Z", "author": {"login": "boss"}}
+    hint = {"body": "The failing test is t.py", "createdAt": "2026-11-19T08:00:00Z", "author": {"login": "boss"}}
+    cap = {"body": ap.cap_comment("the cap is 5"), "createdAt": "2026-11-19T09:00:00Z", "author": {"login": BOT}}
+    more = {"body": "/autopilot more\nTry the other fixture first.", "createdAt": "2026-11-19T10:00:00Z", "author": {"login": "boss"}}
+    assert ap.answers([stale, stop, hint, cap, more], {"boss"}) == "boss: The failing test is t.py\n\nboss: Try the other fixture first."
