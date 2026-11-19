@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 843,
+  "prd_sha256": "fc9b27bb694e06be8b7fa9da118ea49cef11950ea5e727c5acd7fc5f56833996",
+  "prd": "### Problem\n\nThe release lane is mostly red for reasons that are not engine defects, so a red lane says little, releases wait, and its reports pile up as duplicates.\n\n### Scope\n\n- scripts/release-lane.py and scripts/release-scenarios.py: retry, classification, filing, coverage, with `--test` cases.\n- docs: what each class means.\n\n### Out of scope\n\n- What each scenario checks.\n\n### Acceptance criteria\n\n- C1: Given a scenario that fails once and passes on retry, when the lane plays it, then the candidate is not failed for it and the summary names it flaky.\n- C2: Given a scenario that fails twice, when the lane files it, then the issue says its class (engine, harness or infrastructure), only an engine failure is a bug, and an open issue for the same scenario gets a comment instead of a new issue.\n- C3: Given a scenario's runs, when coverage is computed, then it counts the workflow pairs those runs triggered, not the scenario's `covers:`.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-19T01:47:58Z",
+  "policy": "DiluxOne/.github@595c7cf1fc2aed863b96d30ceafbc37fdcea3f13",
+  "how": "own-bug"
+}
