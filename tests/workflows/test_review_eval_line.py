@@ -210,3 +210,47 @@ def test_a_finding_counts_inside_the_hunk_the_fix_changed_and_not_beside_it():
     assert find(file="s.py", line=25) is False
     assert find(file="s.py", line=12) is False
     assert find(file="t.py", line=22) is False
+
+
+# Review 4 of #847: a near miss of a doc name, an unreadable fix, and a
+# thread hunk as wide as the file.
+
+def test_a_doc_name_with_a_code_extension_is_code():
+    mod = load()
+    assert mod.is_doc("LICENSE") and mod.is_doc("readme.txt") and mod.is_doc("CHANGELOG.md")
+    assert not mod.is_doc("license.php")
+    assert not mod.is_doc("src/contributing.py")
+    assert not mod.not_a_fix("fix: the licence check", ["license.php"])
+
+
+def test_an_unreadable_fix_subject_or_file_list_is_no_fix():
+    mod = load()
+    assert mod.not_a_fix(None, ["a.php"]) is True
+    assert mod.not_a_fix("fix: a", None) is True
+
+
+def test_check_refuses_a_case_whose_fix_cannot_be_read_by_name(tmp_path, monkeypatch):
+    mod = load()
+    head, fix = a_typed_repo(tmp_path, "fix: the third line")
+    monkeypatch.setenv("DX_EVAL_GIT", str(tmp_path / "git"))
+    clones = mod.Clones(str(tmp_path / "work"))
+    monkeypatch.setattr(clones, "subject", lambda repo, oid: None)
+    why = mod.refused([{**case("o/r#7:flag", head, fix, 2), "hunk": [1, 4], "fixed": [[3, 3]]}], clones)
+    assert why == [f"o/r#7:flag: the subject or files of {fix} cannot be read from o/r"]
+
+
+def test_a_whole_file_thread_hunk_is_cut_to_the_lines_near_the_thread():
+    mod = load()
+    assert hasattr(mod, "near"), "no near in review-eval.py"
+    assert mod.near((1, 300), 150) == (150 - mod.NEAR, 150 + mod.NEAR)
+    assert mod.near((5, 8), 7) == (5, 8)
+    bot = {"login": mod.org.APP}
+    pr = {"number": 1, "title": "fix: a", "baseRefOid": "b", "headRefOid": "h", "isCrossRepository": False,
+          "commits": {"nodes": [{"commit": {"oid": x}} for x in ("c1", "c2")]},
+          "reviewThreads": {"nodes": [{"isOutdated": True, "path": "new.py", "originalLine": 150, "diffSide": "RIGHT", "resolvedBy": None,
+                                       "comments": {"nodes": [{"author": bot, "body": "x AI review", "diffHunk": "@@ -0,0 +1,300 @@\n", "originalCommit": {"oid": "c1"}}]}}]}}
+    seen = []
+    mod.cases_from("o/r", [pr], 5, lambda pr, head, path, hunk, after: seen.append(hunk) or None)
+    assert seen == [(150 - mod.NEAR, 150 + mod.NEAR)]
+    # A later edit at line 3 of the new file is no fix of a thread at 150.
+    assert mod.fix_hunks("@@ -3 +3 @@\n", seen[0]) == []

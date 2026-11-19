@@ -5,8 +5,9 @@ The cases are real pull requests of the organisation's public repositories
 (a private one's code would show in this public repository's logs):
 
   flag   the commit where the review raised a blocker or major that was
-         then fixed: its thread's `line` of `path` and its `hunk`, a line
-         of which `fix`, the first later commit of the pull request to
+         then fixed: its thread's `line` of `path` and its `hunk` (at
+         most NEAR (10) lines on each side of the line), a line of
+         which `fix`, the first later commit of the pull request to
          change one, changed (`fixed`, the lines it changed there). A
          thread that is only outdated or resolved, its hunk never changed,
          is no case (#844), nor one whose fix is a docs, ci, chore, style
@@ -115,6 +116,17 @@ def thread_hunk(diff_hunk):
     return (start, start + count - 1) if count >= 1 else None
 
 
+# A thread's hunk is the diff's around its line, which for a new or rewritten
+# file is the whole file; only NEAR lines on each side of the line count,
+# so a later edit elsewhere in the file is no fix of the thread.
+NEAR = 10
+
+
+def near(hunk, line):
+    """hunk (first, last) cut to NEAR lines on each side of line."""
+    return (max(hunk[0], line - NEAR), min(hunk[1], line + NEAR))
+
+
 def fix_hunks(diff, hunk):
     """The head-side lines [first, last] of each `git diff -U0` hunk that
     changes a line of hunk (first, last): what the fix changed there. An
@@ -144,16 +156,23 @@ def first_fix_in(commits, hunk, diff_of):
 NOT_FIX = ("docs", "ci", "chore", "style", "test")
 DOC_EXT = (".md", ".mdx", ".rst", ".adoc")
 DOC_NAMES = ("readme", "changelog", "license", "contributing")
+# A file of DOC_NAMES is docs with no extension or a text one, never as code
+# (license.php is code).
+NAME_EXT = ("", ".txt") + DOC_EXT
 
 
 def is_doc(path):
     base = os.path.basename(path).lower()
-    return path.split("/")[0] == "docs" or base.endswith(DOC_EXT) or base.split(".")[0] in DOC_NAMES
+    stem, ext = os.path.splitext(base)
+    return path.split("/")[0] == "docs" or base.endswith(DOC_EXT) or (stem in DOC_NAMES and ext in NAME_EXT)
 
 
 def not_a_fix(subject, files):
     """Whether a commit is no bug's fix: its Conventional Commit type is one
-    of NOT_FIX, or every file it changes is docs."""
+    of NOT_FIX, or every file it changes is docs. A subject or file list
+    that could not be read (None) is no proof of a fix: it is not one."""
+    if subject is None or files is None:
+        return True
     m = re.match(r"(\w+)(?:\([^)]*\))?!?:", subject or "")
     return bool(m and m.group(1).lower() in NOT_FIX) or bool(files and all(is_doc(f) for f in files))
 
@@ -195,15 +214,17 @@ class Clones:
         return ok()
 
     def subject(self, repo, oid):
+        """oid's subject; None when it cannot be read."""
         out = self.git(repo, "log", "-1", "--format=%s", oid)
-        return out.stdout.strip() if out is not None and out.returncode == 0 else ""
+        return out.stdout.strip() if out is not None and out.returncode == 0 else None
 
     def files(self, repo, oid):
-        """The files oid changes from its first parent (all, for a root)."""
+        """The files oid changes from its first parent (all, for a root);
+        None when they cannot be read."""
         out = self.git(repo, "diff", "--name-only", oid + "^", oid)
         if out is None or out.returncode != 0:
             out = self.git(repo, "diff-tree", "--root", "-r", "--no-commit-id", "--name-only", oid)
-        return out.stdout.split() if out is not None and out.returncode == 0 else []
+        return out.stdout.split() if out is not None and out.returncode == 0 else None
 
     def diff(self, repo, a, b, path):
         out = self.git(repo, "diff", "-U0", a, b, "--", path)
@@ -224,14 +245,16 @@ def refused(cases, clones):
         elif not clones.has(c["repo"], c.get("pr"), c["head"], fix):
             why.append(f"{c['id']}: {c['head']} or {fix} cannot be read from {c['repo']}")
         else:
-            hunk = c.get("hunk") or [line, line]
+            hunk = near(c.get("hunk") or [line, line], line)
             got = fix_hunks(clones.diff(c["repo"], c["head"], fix, c["path"]), hunk) if hunk[0] <= line <= hunk[1] else []
             if not got:
                 where = f"the hunk {hunk[0]}-{hunk[1]}" if c.get("hunk") else f"line {line}"
                 why.append(f"{c['id']}: {where} of {c['path']} was not changed by {fix}")
             elif c.get("fixed") is not None and c["fixed"] != got:
                 why.append(f"{c['id']}: its fixed lines {c['fixed']} are not those {fix} changed in the hunk, {got}")
-            elif not_a_fix(clones.subject(c["repo"], fix), clones.files(c["repo"], fix)):
+            elif None in (subject := clones.subject(c["repo"], fix), files := clones.files(c["repo"], fix)):
+                why.append(f"{c['id']}: the subject or files of {fix} cannot be read from {c['repo']}")
+            elif not_a_fix(subject, files):
                 why.append(f"{c['id']}: {fix} is not a bug's fix (a {', '.join(NOT_FIX)} commit, or docs alone)")
     return why
 
@@ -262,6 +285,7 @@ def cases_from(repo, prs, n, fix_of=None):
                         or t.get("diffSide") == "LEFT" or not hunk or not hunk[0] <= line <= hunk[1]):
                     continue
                 after = [c for c in commits[commits.index(head) + 1:] if c]
+                hunk = near(hunk, line)
                 got = fix_of(pr, head, t.get("path"), hunk, after) if fix_of else None
                 if got:
                     flag.append({"id": f"{repo}#{pr['number']}:flag", "repo": repo, "pr": pr["number"], "title": pr.get("title") or "",
@@ -477,6 +501,9 @@ def self_test():
     check("fix_hunks: the fix's hunks that touch the thread's; an addition at the line it follows", (fix_hunks("@@ -3,2 +3,1 @@\n@@ -20,0 +20,2 @@\n", (1, 8)), fix_hunks("@@ -20,0 +20,2 @@\n", (18, 25)), fix_hunks("@@ -3 +3 @@\n", (5, 9))), ([[3, 4]], [[20, 20]], []))
     check("first_fix_in: the first commit that changed the hunk", first_fix_in(["x", "y"], (1, 4), {"x": "@@ -9 +9 @@", "y": "@@ -3 +3 @@"}.get), ("y", [[3, 3]]))
     check("not_a_fix: docs, ci, chore, style, test, or docs alone", [not_a_fix(*a) for a in (("docs(readme): x", ["a.php"]), ("ci: x", ["a.php"]), ("fix: x", ["readme.txt", "docs/a.php", "A.md"]), ("fix: x", ["a.php", "A.md"]), ("feat!: x", ["a.php"]))], [True, True, True, False, False])
+    check("near: a whole-file hunk is cut to NEAR lines around the line", (near((1, 300), 150), near((5, 8), 7)), ((150 - NEAR, 150 + NEAR), (5, 8)))
+    check("is_doc: a doc name as code is code", [is_doc(f) for f in ("LICENSE", "readme.txt", "CHANGELOG.md", "license.php", "contributing.py")], [True, True, True, False, False])
+    check("not_a_fix: an unreadable subject or file list is no fix", (not_a_fix(None, ["a.php"]), not_a_fix("fix: x", None)), (True, True))
     check("cases: a thread whose line no commit changed is not a flag case", cases_from("o/r", prs[:1], 5, lambda *a: None), ([], []))
     check("line_changed: inside a -a,b hunk; never an addition alone", [line_changed("@@ -3,2 +3,1 @@\n@@ -9,0 +9,1 @@\n", n) for n in (2, 3, 4, 5, 9)], [False, True, True, False, False])
     check("first_fix: the first commit that changed the line", first_fix(["x", "y"], 3, {"x": "@@ -5 +5 @@", "y": "@@ -3 +3 @@"}.get), "y")
