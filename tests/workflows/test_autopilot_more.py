@@ -204,3 +204,37 @@ def test_c3_who_decides_unread_is_never_a_yes(tmp_path, monkeypatch):
     assert not any("--add-label" in c or "--remove-label" in c for c in w.calls)
     [reply] = w.replies()
     assert "dx-autopilot-more-refused" not in reply
+
+
+# --- C4: two extensions already ---------------------------------------------
+
+TWO = [{"by": "boss", "at": "2026-11-19T10:00:00Z", "comment": COMMENT_URL}, {"by": "boss", "at": "2026-11-20T10:00:00Z", "comment": COMMENT_URL}]
+
+
+def test_c4_the_planner_refuses_a_third():
+    ap = autopilot()
+    st = {"runs": [{"n": n, "free": False} for n in range(1, 16)], "extensions": TWO}
+    plan = ap.more_plan(True, st, True, 5, True, False)
+    assert plan["go"] is False and plan["reply"] == "spent" and plan["cap"] == 15
+
+
+def test_c4_a_third_is_refused_naming_claim_and_closing(tmp_path, monkeypatch):
+    w = World(tmp_path, monkeypatch, runs=15, extensions=TWO)
+    before = board(w.fx, 8)
+    assert w.more("boss", "0", "/autopilot more\none more, please") == 0
+    assert board(w.fx, 8) == before and len(board(w.fx, 8)["extensions"]) == 2
+    assert not any("--add-label" in c or "--remove-label" in c for c in w.calls)
+    [reply] = w.replies()
+    assert "`/claim`" in reply and "closes the pull request" in reply
+
+
+def test_c4_a_pull_request_below_its_cap_or_with_a_board_edited_by_hand_gets_none(tmp_path, monkeypatch):
+    ap = autopilot()
+    assert ap.more_plan(True, {"runs": [{"n": 1, "free": False}]}, True, 5, False, False)["reply"] == "below"
+    assert ap.more_plan(True, {}, False, 5, True, False)["reply"] == "hand"
+    w = World(tmp_path, monkeypatch, runs=3)
+    assert w.more("boss", "0") == 0
+    assert "extensions" not in board(w.fx, 8)
+    assert not any("--add-label" in c or "--remove-label" in c for c in w.calls)
+    [reply] = w.replies()
+    assert "not at its cap" in reply

@@ -3300,6 +3300,11 @@ A class on html.
           (more_plan(False, {}, True, 5, True, False)["go"], more_plan(False, {}, True, 5, True, False)["reply"], more_plan(False, {}, True, 5, True, True)["reply"],
            more_reply("refused", "https://github.com/o/r/issues/7").startswith(MORE_REFUSED), "https://github.com/o/r/issues/7" in more_reply("refused", "https://github.com/o/r/issues/7")),
           (False, "refused", "", True, True))
+    check("#856 C4: a second extension is given (cap 15); a third is refused, naming /claim and closing; below the cap or edited by hand, none",
+          (more_plan(True, {"extensions": [ext856]}, True, 5, True, False), more_plan(True, {"extensions": [ext856] * 2}, True, 5, True, False)["reply"],
+           "`/claim`" in more_reply("spent", "u", "8", 15) and "closes the pull request" in more_reply("spent", "u", "8", 15),
+           more_plan(True, {}, True, 5, False, False)["reply"], more_plan(True, {}, False, 5, True, False)["reply"]),
+          ({"go": True, "reply": "extended", "cap": 15}, "spent", True, "below", "hand"))
     cap856 = {"body": cap_comment("the cap is 5"), "createdAt": "2026-11-19T09:00:00Z", "author": {"login": BOT_LOGINS[0]}}
     check("#856 C2: answers() restarts at a cap end and gives the rest of a /autopilot more as the hint",
           (answers([{"body": "old", "createdAt": "2026-11-19T08:00:00Z", "author": {"login": "boss"}}, cap856,
