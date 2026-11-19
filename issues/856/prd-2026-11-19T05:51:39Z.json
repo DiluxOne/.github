@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 856,
+  "prd_sha256": "9e40be577b0f75f3251c3b8f210e9d49c2bcdfc9230f2661b3bb61c2cf7a3b92",
+  "prd": "### Problem\n\nThe autopilot gives up on pull requests that are close to done because the engine's own failures spent their runs, and a maintainer cannot continue them.\n\n### Scope\n\n- policy/autonomy.yml: `autopilot-runs: 8` and its comment.\n- scripts/autopilot.py: a run refused by apply-and-end because its commits do not build on the branch is recorded as free.\n- docs/agents.md: the cap and what a free run is.\n- Tests for the free run and the new cap.\n\n### Out of scope\n\n- Preventing the race itself (the sweep updating a branch while a run is on it).\n- `autopilot-rounds`.\n\n### Acceptance criteria\n\n- C1: Given policy/autonomy.yml, when it is read, then `autopilot-runs` is 8.\n- C2: Given a run that ends with apply-and-end's \"do not build on\" refusal, when its entry is written on the pull request's board, then it is free and does not count towards `autopilot-runs`; a test shows it.\n- C3: Given #830 and #847 at 5 counted runs, when this merges, then a maintainer's `autopilot:continue` on #735 and #844 starts a run again.\n\n### Criticality\n\nCritical",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-19T05:51:39Z",
+  "policy": "DiluxOne/.github@b2b7a72c953fbcf68ccf35e32f8de2602ebd1f61",
+  "how": "own-bug"
+}
