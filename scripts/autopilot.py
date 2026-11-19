@@ -728,7 +728,17 @@ def required_of(rules, runs, rows):
     return sorted(names)
 
 
-def criteria_unmet(body, head_files, changed=None, checks=None, required=None, decl=None, pr_type="", head_sha=""):
+def is_fixed(pattern, path):
+    """Whether PATH is a file of the test repository's fixed change (#860):
+    PATTERN, its pack's `fixed-change.file`, with `{n}`, `{id}` and
+    `{scenario}` each one path segment. False for no pattern. Pure."""
+    if not pattern:
+        return False
+    rx = re.sub(r"\\\{(?:n|id|scenario)\\\}", "[^/]+", re.escape(pattern))
+    return re.fullmatch(rx, path or "") is not None
+
+
+def criteria_unmet(body, head_files, changed=None, checks=None, required=None, decl=None, pr_type="", head_sha="", fixed=""):
     """[(id, why)] of the criteria not met (G6). Each criterion's test, named
     in the Spec, must exist at the head and be one of the files the pull
     request adds or changes: a path that was already there and that the
@@ -736,7 +746,10 @@ def criteria_unmet(body, head_files, changed=None, checks=None, required=None, d
     conclusion} at the head) given (#842), the check that runs the test
     (check_of, from DECL and PR_TYPE) must also be one of the base's
     REQUIRED checks and have concluded `success`: pending, skipped,
-    neutral, missing or any other conclusion is not met."""
+    neutral, missing or any other conclusion is not met. A test that is a
+    file of the fixed change (FIXED, the test repository's pattern, #860)
+    is met by being there and changed: it is what the fixed change writes,
+    and no check runs it."""
     ids = schema.check(body)["criteria"]
     sections, _ = schema.parse(body)
     tests = next((t for h, t in sections if h == "Spec: tests"), "")
@@ -749,7 +762,7 @@ def criteria_unmet(body, head_files, changed=None, checks=None, required=None, d
         if not present:
             unmet.append((i, f"no test at the head for {i}"))
             continue
-        if checks is None:
+        if checks is None or any(is_fixed(fixed, p) for p in present):
             continue
         why = []
         for p in present:
@@ -2296,7 +2309,7 @@ def g6_verdict(path):
 
 def decide(policy, body, risk, complexity, blocking, description_ok, files, head_files, autopilot_var, author=BOT, lane_name=LANE, repro_sha="",
            surface=(), issue_type="", criteria_verdict=False, issue_labels=(), sensitive=(), repro_outcome=None, widening=("unknown",),
-           head_checks=None, required_checks=None, decl=None, pr_type="", head_sha=""):
+           head_checks=None, required_checks=None, decl=None, pr_type="", head_sha="", fixed=""):
     """Gate G7. lane_name is the lane the issue is worked under (which_lane);
     for a reproduced bug, repro_sha is the SHA-256 of the reproduction test
     as it is at the head: it must be the one the PRD sealed. surface is what
@@ -2318,7 +2331,10 @@ def decide(policy, body, risk, complexity, blocking, description_ok, files, head
     (the `test-first:` declaration), pr_type (the title's type) and
     head_sha (#842): each criterion's test must have been run by a
     required check that concluded success at the head (criteria_unmet);
-    head_checks None (the old callers) asks only that the test be there."""
+    head_checks None (the old callers) asks only that the test be there.
+    fixed (#860): the test repository's fixed-change pattern, whose file
+    is met by being there and changed, with no check asked of it; "" for
+    every other repository."""
     if author != BOT:
         return False, f"the autopilot's pull requests are opened by {BOT}, not {author or 'unknown'}"
     if (autopilot_var or "").strip().lower() == "off":
@@ -2394,13 +2410,17 @@ def decide(policy, body, risk, complexity, blocking, description_ok, files, head
         unmet = [i for i in ids if not (criteria_verdict or {}).get(i)]
         if unmet:
             return False, f"the review does not find {', '.join(unmet)} met (G6)"
-    unmet = criteria_unmet(body, set(head_files), set(files), head_checks, required_checks, decl, pr_type, head_sha)
+    unmet = criteria_unmet(body, set(head_files), set(files), head_checks, required_checks, decl, pr_type, head_sha, fixed)
     absent = [i for i, why in unmet if why.startswith("no test at the head")]
     if absent:
         return False, "no test at the head for " + ", ".join(absent) + " (G6)"
     if unmet:
         return False, "; ".join(why for _, why in unmet) + " (G6)"
     passed = ", its required check green at the head" if head_checks is not None else ""
+    if head_checks is not None and fixed:
+        tests = next((t for h, t in schema.parse(body)[0] if h == "Spec: tests"), "")
+        if any(is_fixed(fixed, p) for p in re.findall(r"[\w./-]+\.[A-Za-z0-9]+", tests)):
+            passed = ", its required check green at the head or its test the fixed change's own file, which no check runs"
     return True, f"merges by policy: lane {lane_name}, risk {risk}, complexity {complexity}, every criterion with its test{passed}"
 
 
@@ -2420,13 +2440,15 @@ def check_evidence(env, repo):
     branch's rules, one per line), HEAD_RUNS (the head's workflow runs, one
     per line), TEST_FIRST_POLICY (the repository's .github/review-policy.yml
     at the base), TITLE (the pull request's) and HEAD. Always given: what
-    cannot be read counts as no check, so nothing is met."""
+    cannot be read counts as no check, so nothing is met. `fixed` (#860):
+    the fixed change's pattern (fixed_file), in the test repository alone."""
     rows = read_json_lines(env.get("HEAD_CHECKS") or "")
     policy_path = env.get("TEST_FIRST_POLICY") or ""
     policy = (schema.read_yaml(policy_path) if policy_path and os.path.exists(policy_path) and os.path.getsize(policy_path) else None) or {}
     return {"head_checks": head_checks(rows),
             "required_checks": required_of(read_json_lines(env.get("REQUIRED_CHECKS") or ""), read_json_lines(env.get("HEAD_RUNS") or ""), rows),
-            "decl": test_declaration(repo, policy), "pr_type": test_first.pr_type(env.get("TITLE", ""))[0], "head_sha": env.get("HEAD", "")}
+            "decl": test_declaration(repo, policy), "pr_type": test_first.pr_type(env.get("TITLE", ""))[0], "head_sha": env.get("HEAD", ""),
+            "fixed": fixed_file(org.load(), repo)}
 
 
 def fence(prd_text):
@@ -2968,6 +2990,16 @@ A class on html.
     check("#842 C2 criteria evidence: failure, pending, skipped, neutral or no run: not met",
           [ce(c) for c in ("failure", "pending", "skipped", "neutral", None)], [["C1"]] * 5)
     check("#842 C2 criteria evidence: a check that is not required: not met", ce("success", required=("lint",)), ["C1"])
+    fpat = "scenarios/{scenario}/{n}.test.md"
+    fspec = spec.replace("tests/e2e/toggle.spec.ts", "scenarios/s/12.test.md")
+    fhead = {"header.php", "scenarios/s/12.test.md"}
+    check("#860 the fixed change's own file is met with no check; elsewhere, or another test, it needs its check",
+          ([i for i, _ in criteria_unmet(fspec, fhead, fhead, {}, [], tdecl, "fix", "", fpat)],
+           [i for i, _ in criteria_unmet(fspec, fhead, fhead, {}, [], tdecl, "fix", "", "")],
+           [i for i, _ in criteria_unmet(spec, set(head), set(head), {}, [], tdecl, "fix", "", fpat)],
+           [i for i, _ in criteria_unmet(fspec, fhead, {"header.php"}, {}, [], tdecl, "fix", "", fpat)],
+           is_fixed(fpat, "scenarios/a/b/12.test.md")),
+          ([], ["C1"], ["C1"], ["C1"], False))
     unit = spec.replace("tests/e2e/toggle.spec.ts", "tests/unit/toggle.ts")
     check("#842 C2 criteria evidence: an entry with no check is Test first's, for a fix only",
           (ce("success", (TEST_FIRST_CHECK,), unit, "fix", {"header.php", "tests/unit/toggle.ts"}),

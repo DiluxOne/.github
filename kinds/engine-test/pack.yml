@@ -58,7 +58,10 @@ identity:
 # `{scenario}` the scenario of the issue's `dx-scenario` mark) and one
 # ticked box, so the scenarios try the flow, never the model. The file is
 # named `*.test.*` so that G6 (scripts/autopilot.py TESTISH) counts it as
-# its criterion's test, and a person's Normal Bug merges by policy (#835).
+# its criterion's test, and a person's Normal Bug merges by policy (#835);
+# no required check runs it (`scenarios/**` is among `test-first.not-tests`),
+# so G7 meets it by being written and changed by the pull request, and asks
+# no check of it (#860: autopilot.py check_evidence `fixed`, criteria_unmet).
 autopilot: fixed-change
 fixed-change:
   file: "scenarios/{scenario}/{n}.test.md"
@@ -93,7 +96,8 @@ repro:
 # scenario's file (`fixed-change`'s scenarios/<scenario>/<n>.test.md) is never
 # one, so a scenario's `feat` pull request has its "Test first" red; no
 # scenario's `expect` reads it, and the `pipeline` check decides on the
-# organisation's gates alone (org.yml `pipeline-gates`).
+# organisation's gates alone (org.yml `pipeline-gates`). G7 asks no required
+# check of that file (#860); any other test here still needs its own green.
 test-first:
   setup: []
   tests:
