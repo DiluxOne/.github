@@ -123,7 +123,12 @@ after GitHub's back-off within the scenario's limit, then named.
         ref, each one first deleting its leftover `scenario/<id>` branch
         and closing the issues and pull requests an earlier run of it left
         (the `dx-scenario: <id>` mark first in every body it opens), and
-        again after (#694); their table to FILE; exits 1 when one fails
+        again after (#694); a scenario that failed is played once more
+        (#843, `retried`) within what is left of N minutes, the play
+        step's, less RETRY_MARGIN, and passing then is `flaky`, its row
+        `pass (flaky: <first why>)`, which fails nothing; with less than
+        a minute left it is not, and says so; their table to FILE; exits
+        1 when one fails
   release-scenarios.py merge --dir DIR --groups JSON --job NAME=RESULT ...
                              --out FILE [--run URL] [--minutes N]
                              [--play-minutes M]
@@ -787,6 +792,9 @@ def table(results):
     lines = ["| Scenario | Result | Run |", "| --- | --- | --- |"]
     for r in results:
         why = f" ({'; '.join(r['why'])})" if r.get("why") else ""
+        if r.get("ok") and r.get("flaky"):
+            # #843: it failed, then passed on its retry.
+            why = f" (flaky: {'; '.join(r.get('first_why') or []) or 'failed once'})"
         lines.append(f"| `{r['id']}` | {'pass' if r['ok'] else 'fail'}{why} | {r.get('run') or ''} |")
     return "\n".join(lines) + "\n"
 
@@ -1873,18 +1881,54 @@ def core_problems(scenarios, pack):
     return out
 
 
-def play_group(conf, gid, repo, ref, run=gh, sleep=time.sleep, minutes=20, run_id=None):
+# The minutes a retry leaves the play step for its cleanup and its results
+# (#843): a retry is limited to what the step has left less these.
+RETRY_MARGIN = 2
+NOT_RETRIED = "not retried: no time left in the play step"
+
+
+def retried(s, attempt, minutes, deadline=None, clock=time.monotonic):
+    """The scenario `s` played by `attempt(minutes)`, and once more when it
+    failed (#843): the retry, after the `clear` its play starts with, is
+    limited to `min(limit(s), minutes)` and, with a `deadline` (the play
+    step's end, on `clock`), to what is left of it less RETRY_MARGIN; with
+    less than a minute it is not played, and the row says so. The row gains
+    `attempts` (1 or 2) and, after a retry, `first_why` (the first
+    attempt's why); `flaky: true` when the retry passed, which makes it
+    `ok`."""
+    first = attempt(minutes)
+    if first.get("ok"):
+        return dict(first, attempts=1)
+    budget = min(minutes, limit(s))
+    if deadline is not None:
+        budget = min(budget, (deadline - clock()) / 60 - RETRY_MARGIN)
+    if budget < 1:
+        return dict(first, attempts=1, why=list(first.get("why") or []) + [NOT_RETRIED])
+    second = attempt(budget)
+    out = dict(second, attempts=2, first_why=list(first.get("why") or []))
+    if second.get("ok"):
+        out["flaky"] = True
+    return out
+
+
+def play_group(conf, gid, repo, ref, run=gh, sleep=time.sleep, minutes=20, run_id=None, clock=time.monotonic):
     """The scenarios of the group `gid` (one, #694), in its order, at
     `ref` (the callers already there), with the test identity's token (the
     ambient GH_TOKEN): their rows, or one failing row when `gid` is no
-    group."""
+    group. `minutes` is the play step's time too (#843): a scenario that
+    failed is played once more within what is left of it (`retried`)."""
     scenarios = conf.get("scenarios") or []
     group = next((g for g in groups(scenarios) if g["id"] == gid), None)
     if group is None:
         return [{"id": gid, "ok": False, "why": [f"{gid} is no group of {SCENARIOS}"], "run": ""}]
     by_id, run_id = {s.get("id"): s for s in scenarios}, run_id or run_mark()
-    return [play(by_id[sid], repo, ref, conf.get("bodies") or {}, run, sleep, minutes, types=conf.get("types") or {}, run_id=run_id)
-            for sid in group["scenarios"]]
+    deadline = clock() + minutes * 60
+    out = []
+    for sid in group["scenarios"]:
+        s = by_id[sid]
+        out.append(retried(s, lambda m, s=s: play(s, repo, ref, conf.get("bodies") or {}, run, sleep, m, types=conf.get("types") or {}, run_id=run_id),
+                           minutes, deadline, clock))
+    return out
 
 
 def run_all(conf, repo, ref, only=(), run=gh, sleep=time.sleep, minutes=20, central=None, callers=None, moved_out=None, record=None, run_id=None):
@@ -1914,7 +1958,8 @@ def run_all(conf, repo, ref, only=(), run=gh, sleep=time.sleep, minutes=20, cent
     try:
         for s in conf.get("scenarios") or []:
             if not only or s["id"] in only:
-                results.append(play(s, repo, ref, bodies, run, sleep, minutes, types=conf.get("types") or {}, run_id=run_id))
+                # #843: a failure is played once more (`retried`).
+                results.append(retried(s, lambda m, s=s: play(s, repo, ref, bodies, run, sleep, m, types=conf.get("types") or {}, run_id=run_id), minutes))
     finally:
         if moved_out is None:
             results.extend(put_back(repo, ref, moved, callers, central, sleep, minutes))
@@ -1965,7 +2010,15 @@ def merge(gs, files, jobs, run="", minutes=0, play_minutes=0):
         rows.append({"id": rid, "ok": False, "why": [why], "run": run})
 
     def own(r):
-        return {"id": str(r.get("id")), "ok": r.get("ok") is True, "why": [str(w) for w in r.get("why") or []], "run": str(r.get("run") or "")}
+        out = {"id": str(r.get("id")), "ok": r.get("ok") is True, "why": [str(w) for w in r.get("why") or []], "run": str(r.get("run") or "")}
+        # #843: the retry's keys, kept.
+        if isinstance(r.get("attempts"), int):
+            out["attempts"] = r["attempts"]
+        if r.get("flaky") is True:
+            out["flaky"] = True
+        if isinstance(r.get("first_why"), list):
+            out["first_why"] = [str(w) for w in r["first_why"]]
+        return out
     if files.get("move") is None:
         fail("move", "the move job left no results")
     else:
@@ -2698,7 +2751,19 @@ def self_test():
                           {"id": "b", "covers": [], "opens": {"issue": {"title": "t"}}, "expect": {"labels": ["accepted"]}}], "bodies": {"b": "body"}}
     res = run_all(scen, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=3, central="O/.github")
     check("run: a scenario whose expect holds passes, one whose does not fails, named", [(r["id"], r["ok"], r["why"]) for r in res], [("a", True, []), ("b", False, ["no label accepted", "saw labels awaiting-acceptance; the bot's newest comment: none"])])
-    check("run: its issues are closed and locked after it", sum(1 for c in calls if c[:2] in (("issue", "close"), ("issue", "lock"))), 4)
+    # #843: b failed, so it played twice: its issues of both attempts too.
+    check("run: its issues are closed and locked after it", sum(1 for c in calls if c[:2] in (("issue", "close"), ("issue", "lock"))), 6)
+    check("#843 run: a scenario that failed is played once more, one that passed once", [(r["id"], r.get("attempts"), r.get("flaky")) for r in res], [("a", 1, None), ("b", 2, None)])
+    clock = iter([19 * 60])
+    tried = []
+    late = retried({"id": "c"}, lambda m: tried.append(m) or {"id": "c", "ok": False, "why": ["slow"], "run": ""}, 20, 20 * 60, lambda: next(clock))
+    check("#843 retry: with less than a minute left in the play step, past its margin, a failure is not played again and says so",
+          (tried, late["ok"], late["why"], late["attempts"]), ([20], False, ["slow", NOT_RETRIED], 1))
+    clock = iter([5 * 60])
+    tried = []
+    again = retried({"id": "c", "minutes": 15}, lambda m: tried.append(m) or {"id": "c", "ok": len(tried) > 1, "why": [] if len(tried) > 1 else ["fast"], "run": ""}, 20, 20 * 60, lambda: next(clock))
+    check("#843 retry: the retry has what the play step has left less its margin, at most the scenario's limit; passing, it is ok and flaky",
+          (tried, again["ok"], again.get("flaky"), again["first_why"], table([again]).count("pass (flaky: fast)")), ([20, 13], True, True, ["fast"], 1))
     ccalls = []
 
     def cfake(*args, input=None):

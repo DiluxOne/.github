@@ -25,7 +25,9 @@ in the test repository; a breaking change waits on a person.
         sections so G1 passes it, #694) or `issue` (a `!`: the
         release issue for a person, nothing tagged); JSON
   release-lane.py act --plan F --results F --repo R [--run URL]
-        does what `decide` says. A release, only while main is still the
+        does what `decide` says, and names in a Flaky line (on stderr and
+        in GITHUB_STEP_SUMMARY, #843) each scenario that failed, then
+        passed on its retry, which fails nothing. A release, only while main is still the
         plan's `sha` (else `none`): the release pull request (CHANGELOG.md
         from scripts/changelog.py build, its commit made through the API
         with GH_TOKEN by scripts/api-commit.py, so GitHub signs it, #780),
@@ -410,8 +412,24 @@ def close_reports(repo, version, run=sh, lane_run=""):
     return closed, warnings
 
 
+def flaky(results):
+    """The scenarios that failed, then passed on their retry (#843): one
+    line naming each and its first failure, or "" when none. Pure."""
+    rows = [r for r in results if r.get("ok") and r.get("flaky")]
+    if not rows:
+        return ""
+    named = []
+    for r in rows:
+        first = visible("; ".join(str(w) for w in r.get("first_why") or []) or "failed")
+        named.append(f"`{r.get('id')}` (it failed first: {first}, then passed on its retry)")
+    return "Flaky: " + "; ".join(named)
+
+
 def act(p, results, repo, run=sh, sleep=time.sleep, root=".", lane_run=""):
     d = decide(p, results, lane_run)
+    if flaky(results):
+        # #843: a flaky scenario fails nothing, and the summary names it.
+        d["flaky"] = flaky(results)
     if d["do"] == "bug":
         open_bug(repo, d["title"], d["body"], run)
     elif d["do"] == "issue":
@@ -1025,6 +1043,13 @@ def main(argv):
     if a.mode == "act":
         d = act(load(a.plan), results_of(a.results), a.repo, lane_run=a.run)
         print(json.dumps(d))
+        if d.get("flaky"):
+            # stdout stays the JSON the workflow reads: the Flaky line goes
+            # to the log as a warning and to the lane's summary (#843).
+            print(f"::warning::{d['flaky']}", file=sys.stderr)
+            if os.environ.get("GITHUB_STEP_SUMMARY"):
+                with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
+                    fh.write(f"\n{d['flaky']}\n")
         for w in d.get("warnings", []):
             print(f"::warning::{w}", file=sys.stderr)
         if d.get("error"):
