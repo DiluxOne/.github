@@ -3296,6 +3296,10 @@ A class on html.
     check("#856 C2: the hint is what follows the command; another comment is none",
           (more_hint("/autopilot more\nTry X."), more_hint("  /autopilot more do Y"), more_hint("/autopilot more"), more_hint("/autopilot moreover"),
            more_hint("please /autopilot more"), more_hint("/claim")), ("Try X.", "do Y", "", None, None, None))
+    check("#856 C3: someone who-decides does not allow gets no run and one reply, with the issue's link",
+          (more_plan(False, {}, True, 5, True, False)["go"], more_plan(False, {}, True, 5, True, False)["reply"], more_plan(False, {}, True, 5, True, True)["reply"],
+           more_reply("refused", "https://github.com/o/r/issues/7").startswith(MORE_REFUSED), "https://github.com/o/r/issues/7" in more_reply("refused", "https://github.com/o/r/issues/7")),
+          (False, "refused", "", True, True))
     cap856 = {"body": cap_comment("the cap is 5"), "createdAt": "2026-11-19T09:00:00Z", "author": {"login": BOT_LOGINS[0]}}
     check("#856 C2: answers() restarts at a cap end and gives the rest of a /autopilot more as the hint",
           (answers([{"body": "old", "createdAt": "2026-11-19T08:00:00Z", "author": {"login": "boss"}}, cap856,

@@ -161,3 +161,46 @@ def test_c2_the_more_job_reads_it_on_an_issue():
     assert 'deciders.py may continue "$LOGIN"' in run and "autopilot.py more" in run
     # Untrusted text from the event's file, never an expression in the script.
     assert "${{" not in run
+
+
+# --- C3: someone `who-decides` does not allow -------------------------------
+
+def test_c3_the_planner_gives_no_run_and_answers_once():
+    ap = autopilot()
+    st = {"runs": [{"n": n, "free": False} for n in range(1, 6)]}
+    assert ap.more_plan(False, st, True, 5, True, False) == {"go": False, "reply": "refused", "cap": None}
+    assert ap.more_plan(False, st, True, 5, True, True) == {"go": False, "reply": "", "cap": None}
+
+
+def test_c3_a_contributor_gets_one_reply_and_the_board_is_unchanged(tmp_path, monkeypatch):
+    w = World(tmp_path, monkeypatch)
+    before = board(w.fx, 8)
+    assert w.more("fork-dev", "1", "/autopilot more\nplease, just one more") == 0
+    assert board(w.fx, 8) == before and "extensions" not in board(w.fx, 8)
+    # No run: no label moved, nothing on the pull request.
+    assert not any("--add-label" in c or "--remove-label" in c for c in w.calls)
+    assert not any(c.startswith(("pr edit", "pr comment")) for c in w.calls)
+    [reply] = w.replies()
+    assert "<!-- dx-autopilot-more-refused -->" in reply
+    assert "A maintainer decides" in reply and ISSUE_URL in reply
+    assert reply.rstrip().endswith("🤖 AI-generated · Claude Opus 5.5 (Anthropic)")
+
+
+def test_c3_a_repeat_gets_no_second_reply(tmp_path, monkeypatch):
+    ap = autopilot()
+    said = {"body": ap.more_reply("refused", ISSUE_URL), "createdAt": "2026-11-19T10:00:00Z", "author": {"login": BOT}}
+    w = World(tmp_path, monkeypatch, comments=[said])
+    before = board(w.fx, 8)
+    assert w.more("fork-dev", "1") == 0
+    assert w.replies() == [] and board(w.fx, 8) == before
+    assert not any("--add-label" in c or "--remove-label" in c for c in w.calls)
+
+
+def test_c3_who_decides_unread_is_never_a_yes(tmp_path, monkeypatch):
+    w = World(tmp_path, monkeypatch)
+    before = board(w.fx, 8)
+    assert w.more("boss", "2") == 0
+    assert board(w.fx, 8) == before
+    assert not any("--add-label" in c or "--remove-label" in c for c in w.calls)
+    [reply] = w.replies()
+    assert "dx-autopilot-more-refused" not in reply
