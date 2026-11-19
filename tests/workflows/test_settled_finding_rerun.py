@@ -124,3 +124,90 @@ def test_the_settled_findings_reach_the_brief_as_settled_threads(tmp_path):
     settled = json.loads((tmp_path / "temp" / "settled-threads.json").read_text())
     assert [t["finding"] for t in settled] == ["The cap is not checked"]
     assert settled[0]["replies"][0]["body"] == "https://x/5"
+
+
+# #871: `settled-rerun` settles, in the pull request's conversation, a finding
+# the review posted inline as a thread of its own. The reply must see the
+# bot's open threads, record the settlement and resolve the finding's thread.
+THREAD_ID = "PRRT_kwDOtoken"
+NODES = [
+    {"id": THREAD_ID, "isResolved": False, "path": "app/token.py", "line": 12,
+     "comments": {"nodes": [{"databaseId": 1, "author": {"login": BOT.removesuffix("[bot]")},
+                             "body": "**blocker**: The token is written to the log\n\nIt leaks."}]}},
+    {"id": "PRRT_done", "isResolved": True, "path": "a.py", "line": 1,
+     "comments": {"nodes": [{"databaseId": 2, "author": {"login": BOT.removesuffix("[bot]")}, "body": "**major**: Old\n\nx"}]}},
+    {"id": "PRRT_human", "isResolved": False, "path": "b.py", "line": 2,
+     "comments": {"nodes": [{"databaseId": 3, "author": {"login": "alice"}, "body": "**blocker**: Not the bot"}]}},
+]
+
+
+def pr_and_thread(tmp_path):
+    """review-reply.yml's "Pull request and thread" on an issue_comment, gh
+    answering the repository, the conversation and the review threads."""
+    (tmp_path / "nodes.jsonl").write_text("\n".join(json.dumps(n) for n in NODES) + "\n")
+    gh = f"""case "$*" in
+  *headRepository*) echo o/r ;;
+  "pr view"*"--json comments"*) echo '{{"comments":[{{"author":"alice","body":"@dilux-bot settled"}}]}}' ;;
+  "api graphql"*) cat {tmp_path}/nodes.jsonl ;;
+  *) echo "unexpected gh $*" >&2; exit 1 ;;
+esac"""
+    env = {"SLUG": BOT.removesuffix("[bot]"), "PR": "8", "COMMENT_ID": "5", "EVENT": "issue_comment"}
+    return run(step("review-reply.yml", "pr"), tmp_path, env=env, stubs={"gh": gh})
+
+
+def test_a_conversation_comment_shows_the_reply_the_bots_open_threads(tmp_path):
+    ran = pr_and_thread(tmp_path)
+    assert ran.code == 0, ran.stderr
+    assert ran.output.get("run") == "true"
+    thread = json.loads((ran.temp / "thread.json").read_text())
+    assert thread.get("comments"), thread
+    assert [t["id"] for t in thread.get("review_threads", [])] == [THREAD_ID]
+    first = thread["review_threads"][0]
+    assert first["path"] == "app/token.py" and first["line"] == 12
+    assert first["comment"].startswith("**blocker**: The token is written to the log")
+    saved = ran.temp / "bot-threads.json"
+    assert saved.exists(), "the bot's open threads are not saved for the post step"
+    assert [t["id"] for t in json.loads(saved.read_text())] == [THREAD_ID]
+
+
+def post(tmp_path, settles, threads):
+    """review-reply.yml's "Post the reply" on an issue_comment whose verdict
+    SETTLES, with THREADS the bot's open threads the first step saved."""
+    (tmp_path / "temp").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "temp" / "bot-threads.json").write_text(json.dumps(threads))
+    out = json.dumps({"reply": "Fixed: the token is no longer logged.", "resolve": False, "settles": settles})
+    env = {"OUT": out, "PR": "8", "THREAD": "", "BOT_THREAD": "false", "COMMENT_ID": "5",
+           "EVENT": "issue_comment", "MODEL": "m", "GH_TOKEN": "t", "GITHUB_SERVER_URL": "https://github.com"}
+    return run(step("review-reply.yml", "post"), tmp_path, env=env, stubs={"gh": "true"})
+
+
+BOT_THREADS = [{"id": THREAD_ID, "path": "app/token.py", "line": 12,
+                "comment": "**blocker**: The token is written to the log\n\nIt leaks."}]
+
+
+def test_settling_a_finding_with_a_thread_in_the_conversation_reruns_and_resolves_it(tmp_path):
+    ran = post(tmp_path, "The token is written to the log", BOT_THREADS)
+    assert ran.code == 0, ran.stderr
+    assert ran.output.get("settled") == "true"
+    body = ran.of("gh")[0]
+    assert body[:2] == ["pr", "comment"]
+    assert "<!-- dx-settled " in body[body.index("--body") + 1]
+    assert ran.output.get("resolve") == "true"
+    assert (ran.temp / "resolve.txt").exists() and (ran.temp / "resolve.txt").read_text().strip() == THREAD_ID
+
+
+def test_settling_a_finding_with_no_thread_still_settles_and_resolves_nothing(tmp_path):
+    ran = post(tmp_path, "The changelog is missing", BOT_THREADS)
+    assert ran.code == 0, ran.stderr
+    assert ran.output.get("settled") == "true"
+    body = ran.of("gh")[0]
+    assert "<!-- dx-settled " in body[body.index("--body") + 1]
+    assert "resolve" not in ran.output
+    assert not (ran.temp / "resolve.txt").exists()
+
+
+def test_a_title_that_only_begins_another_finding_resolves_nothing(tmp_path):
+    ran = post(tmp_path, "The token", BOT_THREADS)
+    assert ran.code == 0, ran.stderr
+    assert ran.output.get("settled") == "true"
+    assert "resolve" not in ran.output
