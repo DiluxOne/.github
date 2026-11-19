@@ -12,7 +12,18 @@ import subprocess
 from pathlib import Path
 
 import yaml
-from steps import run, step
+
+try:
+    import steps
+except ModuleNotFoundError:  # #845: with no helper, each test fails on its assertion, not on this import
+    import types
+
+    def _missing(*_args, **_kwargs):
+        helper = Path(__file__).with_name("steps.py")
+        assert helper.is_file(), f"{helper.name}, which runs a workflow's step with stubs, is missing"
+
+    steps = types.SimpleNamespace(evaluate=_missing, receipt=_missing, run=_missing, step=_missing, where=_missing, workflow=_missing)
+run, step = steps.run, steps.step
 
 ROOT = Path(__file__).resolve().parents[2]
 CONVENTIONS = ROOT / "scripts" / "conventions.sh"

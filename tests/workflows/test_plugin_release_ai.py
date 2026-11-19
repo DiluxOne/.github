@@ -6,6 +6,17 @@ from pathlib import Path
 
 import yaml
 
+try:
+    import steps as steps_lib
+except ModuleNotFoundError:  # #845: with no helper, each test fails on its assertion, not on this import
+    import types
+
+    def _missing(*_args, **_kwargs):
+        helper = Path(__file__).with_name("steps.py")
+        assert helper.is_file(), f"{helper.name}, which runs a workflow's step with stubs, is missing"
+
+    steps_lib = types.SimpleNamespace(evaluate=_missing, receipt=_missing, run=_missing, step=_missing, where=_missing, workflow=_missing)
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -101,7 +112,7 @@ def publish(tmp_path, issues=(), prs=(), fail_list=False):
     with gh listing ISSUES and PRS (number, title) as open."""
     import json
     import subprocess
-    from steps import run, step
+    run, step = steps_lib.run, steps_lib.step
 
     real = str(ROOT / "scripts" / "agent-manifests.py")
     catalog = tmp_path / "work" / "catalog"

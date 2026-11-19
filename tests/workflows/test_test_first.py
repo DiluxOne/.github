@@ -360,7 +360,14 @@ def test_c6_policy_self_test_holds_every_pack_to_a_declaration():
     text = (ROOT / "scripts" / "policy.py").read_text(encoding="utf-8")
     assert "test-first" in text
     got = subprocess.run(["python3", str(ROOT / "scripts" / "policy.py"), "--test"], capture_output=True, text=True)
-    assert got.returncode == 0, got.stdout[-2000:]
+    # The Test first check runs this test in a copy of the tree with no .git
+    # (scripts/repro-run.sh run-ref): there the self-test's one check of this
+    # repository's tracked files cannot list them, and every other check holds.
+    checkout = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--git-dir"], capture_output=True).returncode == 0
+    failed = [line for line in got.stdout.splitlines() if line.startswith("FAIL")]
+    if not checkout:
+        failed = [line for line in failed if not line.startswith("FAIL this repository: its tracked files could be listed")]
+    assert not failed and (got.returncode == 0 or not checkout), got.stdout[-2000:]
     for kind in KINDS:
         assert f"ok   pack {kind}: it declares its tests (test-first)" in got.stdout
 

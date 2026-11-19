@@ -10,7 +10,19 @@ import json
 import re
 import subprocess
 
-from steps import evaluate, run, step, workflow
+from pathlib import Path
+
+try:
+    import steps
+except ModuleNotFoundError:  # #845: with no helper, each test fails on its assertion, not on this import
+    import types
+
+    def _missing(*_args, **_kwargs):
+        helper = Path(__file__).with_name("steps.py")
+        assert helper.is_file(), f"{helper.name}, which runs a workflow's step with stubs, is missing"
+
+    steps = types.SimpleNamespace(evaluate=_missing, receipt=_missing, run=_missing, step=_missing, where=_missing, workflow=_missing)
+evaluate, run, step, workflow = steps.evaluate, steps.run, steps.step, steps.workflow
 
 def ready_runs(action, labels):
     ctx = {"github.event_name": "issues", "github.event.sender.type": "User", "github.event.action": action,
