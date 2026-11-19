@@ -156,6 +156,25 @@ def test_c2_a_feat_whose_test_passes_at_the_base_fails_as_missing():
     assert not ok and message.startswith("A test that fails before the change is missing: ")
 
 
+def test_845_c1_a_feat_whose_only_new_test_errors_at_the_base_does_not_count_as_failing_first(fresh):
+    base = fresh.commit({".github/review-policy.yml": POLICY, "src/__init__.py": ""}, "chore: base")
+    # The module is new: at the base the test's import fails (ImportError), no assertion ran.
+    head = fresh.commit({"src/calc.py": FIXED, "tests/unit/test_calc.py": TEST}, "feat: add adds")
+    ok, message, plan, results = check(fresh, "feat: add adds", base, head)
+    assert plan["result"] == "run", plan["message"]
+    assert results == [{"test": "tests/unit/test_calc.py", "base": "broken", "head": "passed"}]
+    assert not ok, message
+    assert message.startswith("A test that fails before the change is missing: `tests/unit/test_calc.py`")
+    # What to do about it: assert on what the feature does, so the base fails an assertion.
+    assert "breaks there without failing an assertion" in message
+    assert "asserts on what it runs" in message
+
+
+def test_845_c1_a_feat_whose_test_fails_an_assertion_at_the_base_still_passes():
+    ok, message = TF.verdict("feat", [{"test": "tests/unit/test_x.py", "base": "reproduced", "head": "passed"}])
+    assert ok and message == "Test first: `tests/unit/test_x.py` fails at the base and passes at the head."
+
+
 def test_c3_a_fix_whose_added_test_also_passes_at_the_base_fails_saying_it_does_not_show_the_bug(fresh):
     base = fresh.commit({".github/review-policy.yml": POLICY, "src/__init__.py": "", "src/calc.py": BUGGY}, "chore: base")
     # A test of what the bug does not touch: it passes before the fix too.

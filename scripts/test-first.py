@@ -39,8 +39,10 @@ The verdict:
   - every test must pass at the head;
   - `fix`: one test at least fails at the base on an assertion
     (`reproduced`), else the test does not show the bug;
-  - `feat`: one test at least fails or breaks at the base, else the test
-    that fails before the change is missing;
+  - `feat`: one test at least fails at the base on an assertion
+    (`reproduced`), the same as a `fix`; one that only breaks there (an
+    ImportError, a missing file: `broken`) asserted nothing, so the test
+    that fails before the change is missing (#845);
   - a test that could not run (`limit`: setup or time) fails the check as
     "could not run", never passes it.
 
@@ -311,10 +313,12 @@ def verdict(kind_of_pr, results):
                            "failing an assertion. A fix's test fails on the code as it was, on an assertion of what the bug breaks, "
                            "and passes with the fix.")
     else:
-        proving = [r for r in results if r["base"] in ("reproduced", "broken")]
+        proving = [r for r in results if r["base"] == "reproduced"]
         if not proving:
-            return False, (f"A test that fails before the change is missing: {names(results)} also passes at the base, so it "
-                           "tests nothing the feature adds.")
+            return False, (f"A test that fails before the change is missing: {names(results)} also passes at the base, or "
+                           "breaks there without failing an assertion (an ImportError, a missing file), so it tests nothing "
+                           "the feature adds. A feature's test asserts on what it runs (a script's exit code and output, a "
+                           "function's result), so that the base fails an assertion.")
     return True, f"Test first: {names(proving)} fails at the base and passes at the head."
 
 
@@ -399,7 +403,10 @@ def self_test():
     ok, msg = verdict("fix", [{"test": "t.py", "base": "broken", "head": "passed"}])
     check("C3: one that only breaks at the base is named the same way", (ok, msg.startswith("The test does not show the bug")), (False, True))
     ok, msg = verdict("feat", [{"test": "t.py", "base": "broken", "head": "passed"}])
-    check("a feat's test that breaks at the base (the code is new) passes", ok, True)
+    check("#845: a feat's test that only breaks at the base (the code is new) fails as a missing test",
+          (ok, msg.startswith("A test that fails before the change is missing") and "asserts on what it runs" in msg), (False, True))
+    ok, msg = verdict("feat", [{"test": "t.py", "base": "reproduced", "head": "passed"}])
+    check("#845: a feat's test that fails an assertion at the base passes", ok, True)
     ok, msg = verdict("feat", [{"test": "t.py", "base": "passed", "head": "passed"}])
     check("a feat's test that passes at the base fails as a missing test", (ok, msg.startswith("A test that fails before the change is missing")), (False, True))
     ok, msg = verdict("fix", [{"test": "t.py", "base": "reproduced", "head": "reproduced"}])

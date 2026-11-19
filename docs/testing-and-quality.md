@@ -13,7 +13,7 @@ How a change proves what it does, in every DiluxOne repository. The rule is [tes
 | `fix` or `feat` that adds or changes no test | Fails: "A test that fails before the change is missing", with where its tests go. A release scenario, a fixture or an expected output is never a test. |
 | A test that does not pass at the head | Fails, naming it. |
 | `fix` whose tests all pass at the base, or only break there (an import error) | Fails: "The test does not show the bug", naming it. A fix's test fails on an assertion at the base. |
-| `feat` whose tests all pass at the base | Fails as a missing test: the test tests nothing the feature adds. |
+| `feat` whose tests all pass at the base, or only break there (an import error, a missing file) | Fails as a missing test: the test tests nothing the feature adds. A feature's test asserts on what it runs (a script's exit code and output, a function's result), so it fails an assertion at the base, the same as a fix's (#845). |
 | A test that could not run (its setup failed, or it took longer than its way's `minutes`) | Fails as "could not run": no verdict never passes. |
 | Otherwise | Passes: "Test first: `<test>` fails at the base and passes at the head". |
 

@@ -111,7 +111,9 @@ repro:
 
 # The "Test first" check (#734, scripts/test-first.py): a fix or a feature
 # here carries a pytest test under tests/ that fails at the base and passes
-# at the head, run by the `python` way above. A script's own `--test` case
+# at the head, run by the `python` way above. At the base it fails on an
+# assertion, a feature's as a fix's (#845): one that only breaks there (an
+# ImportError, a missing file) asserted nothing. A script's own `--test` case
 # cannot run at the base apart from its code, so it alone is no test here.
 # The release scenarios, fixtures, the reproduction's examples and the
 # review's evaluation set are never a test. Read from the base commit.
