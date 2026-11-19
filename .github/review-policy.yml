@@ -96,13 +96,16 @@ repro:
       minutes: 10
       list: [".github/workflows/*.yml", "workflow-templates/*.yml"]
       example: tests/examples/test_workflow.py
-      # #841: a test that calls no process (subprocess, os.system) is
-      # broken, "the test runs no step", whatever its report says.
+      # #841: a test that does not run the step's command (its `run:`, or a
+      # script a workflow calls) through a process call (subprocess,
+      # os.system) is broken, "the test runs no step", whatever its report
+      # says.
       runs-step: true
       guide: |
         A pytest test that RUNS the step the report names and asserts on what it did. Asserting on the
-        workflow's text alone is no reproduction: a test that runs no process is broken, "the test runs
-        no step", whatever it asserts.
+        workflow's text alone is no reproduction, nor is running some other command (`echo hi`): a test
+        that does not run the step's `run:` (or the script it calls) through `subprocess` is broken, "the
+        test runs no step", whatever it asserts.
         - Read the workflow as YAML (PyYAML, `yaml.safe_load`) and find the step by its `name` or `id`,
           never by its position; take its `run:` script and its `env:`.
         - Run it with `subprocess.run(["bash", "-c", script], env=..., capture_output=True, text=True)`,

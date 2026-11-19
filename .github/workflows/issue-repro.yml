@@ -11,7 +11,9 @@ name: Issue reproduction
 # under tests/Unit/Repro/ (`unit`, WordPress plugins), a Playwright test on
 # wp-env under tests/e2e/repro/ (`browser`, WordPress plugins), or any
 # command that writes a JUnit report (DiluxOne/.github's own: a pytest test
-# of a script, or one that reads a workflow's file, #376). No stack is
+# of a script, #376, or one that runs a workflow's step, its `run:` or the
+# script it calls, with stubs on PATH, #841: a test that runs no step's
+# command is broken, "the test runs no step"). No stack is
 # assumed: a layer with no way declared, or a way whose `needs` are missing,
 # builds nothing, before any model runs: the issue gets `needs-human`, its
 # board says `no-way` and why, and the comment says how to declare a way, with
