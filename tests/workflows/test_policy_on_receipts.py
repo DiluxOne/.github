@@ -5,21 +5,16 @@ auto-merge, and withdraws one in force before it decides again."""
 import json
 import re
 from pathlib import Path
+from unittest import mock
 
 import pytest
 import yaml
 
 
 try:
-    import steps as steps_lib
-except ModuleNotFoundError:  # #845: with no helper, each test fails on its assertion, not on this import
-    import types
-
-    def _missing(*_args, **_kwargs):
-        helper = Path(__file__).with_name("steps.py")
-        assert helper.is_file(), f"{helper.name}, which runs a workflow's step with stubs, is missing"
-
-    steps_lib = types.SimpleNamespace(evaluate=_missing, receipt=_missing, run=_missing, step=_missing, where=_missing, workflow=_missing)
+    import steps as steps_lib  # tests/workflows/steps.py: it runs a workflow's step with stubs
+except ModuleNotFoundError:  # Test first's base has no steps.py (#845): there each call to it fails an assertion
+    steps_lib = mock.Mock(**{f"{n}.side_effect": AssertionError("tests/workflows/steps.py is missing") for n in ("evaluate", "run", "step", "workflow")})
 
 ROOT = Path(__file__).resolve().parents[2]
 POLICY_LABELS = ("accepted-by:policy", "merged-by:policy")

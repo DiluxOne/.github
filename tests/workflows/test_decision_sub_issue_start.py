@@ -5,17 +5,12 @@ reproduced bug's lane issue, and a start that finds no lane asks once more.
 The triage's autopilot job condition is evaluated on events; autopilot.yml's
 `may` step is run with its central scripts stubbed."""
 from pathlib import Path
+from unittest import mock
 
 try:
-    import steps
-except ModuleNotFoundError:  # #845: with no helper, each test fails on its assertion, not on this import
-    import types
-
-    def _missing(*_args, **_kwargs):
-        helper = Path(__file__).with_name("steps.py")
-        assert helper.is_file(), f"{helper.name}, which runs a workflow's step with stubs, is missing"
-
-    steps = types.SimpleNamespace(evaluate=_missing, receipt=_missing, run=_missing, step=_missing, where=_missing, workflow=_missing)
+    import steps  # tests/workflows/steps.py: it runs a workflow's step with stubs
+except ModuleNotFoundError:  # Test first's base has no steps.py (#845): there each call to it fails an assertion
+    steps = mock.Mock(**{f"{n}.side_effect": AssertionError("tests/workflows/steps.py is missing") for n in ("evaluate", "run", "step", "workflow")})
 evaluate, run, step, workflow = steps.evaluate, steps.run, steps.step, steps.workflow
 
 BOT = "dilux-bot[bot]"
