@@ -262,3 +262,11 @@ def test_c5_the_cap_message_says_how_a_maintainer_gives_more_runs():
     assert "/autopilot more" not in ap.cap_comment("the autopilot already ran 15 times on it (the cap is 15)", 5, False)
     env = next(st["env"] for st in wf("autopilot.yml")["jobs"]["prep"]["steps"] if "OPEN_TO_CLAIM" in (st.get("env") or {}))
     assert "`/autopilot more <hint>`" in env["OPEN_TO_CLAIM"] and "`/claim`" in env["OPEN_TO_CLAIM"]
+
+
+def test_a_comment_that_only_starts_like_the_command_does_nothing(tmp_path, monkeypatch):
+    w = World(tmp_path, monkeypatch)
+    before = board(w.fx, 8)
+    assert w.more("boss", "0", "/autopilot moreover, a thought") == 0
+    assert board(w.fx, 8) == before and w.replies() == []
+    assert not any("--add-label" in c or "--remove-label" in c for c in w.calls)

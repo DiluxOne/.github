@@ -6147,6 +6147,12 @@ def main(argv):
         # exit (0 may, 1 may not, 2 could not tell).
         allowed_rc = (os.environ.get("ALLOWED") or "2").strip()
         login = os.environ.get("LOGIN", "")
+        body = open(os.environ["COMMENT"], encoding="utf-8").read() if os.environ.get("COMMENT") and os.path.exists(os.environ["COMMENT"]) else ""
+        if more_hint(body) is None:
+            # GitHub's startsWith matched more than the command
+            # (`/autopilot moreover`): nothing to do, nothing said.
+            print(f"Not a `{MORE}` comment: nothing to do.")
+            return 0
         view = json.loads(gh("issue", "view", str(number), "--repo", repo, "--json", "url,comments,closedByPullRequestsReferences") or "{}")
         issue_url = view.get("url") or f"https://github.com/{repo}/issues/{number}"
 
