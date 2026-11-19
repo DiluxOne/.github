@@ -123,7 +123,16 @@ after GitHub's back-off within the scenario's limit, then named.
         ref, each one first deleting its leftover `scenario/<id>` branch
         and closing the issues and pull requests an earlier run of it left
         (the `dx-scenario: <id>` mark first in every body it opens), and
-        again after (#694); their table to FILE; exits 1 when one fails
+        again after (#694); a scenario that failed is played once more
+        (#843, `retried`) within what is left of N minutes, the play
+        step's, less RETRY_MARGIN, and passing then is `flaky`, its row
+        `pass (flaky: <first why>)`, which fails nothing; with less than
+        a minute left it is not, and says so; their table to FILE; exits
+        1 when one fails. Each row keeps in `triggered` (#843) the pairs
+        its runs triggered (`run_triggered`, read once at its end). A
+        failing row says its `class` (#843, CLASSES:
+        engine, harness or infrastructure), which release-lane.py files
+        each its own way
   release-scenarios.py merge --dir DIR --groups JSON --job NAME=RESULT ...
                              --out FILE [--run URL] [--minutes N]
                              [--play-minutes M]
@@ -133,7 +142,10 @@ after GitHub's back-off within the scenario's limit, then named.
         file is missing (its job failed, timed out or was cancelled), a
         scenario with no row, and a job whose RESULT is not success (a play
         job's naming its timeout of N minutes, and its play step's of M,
-        #690); exits 1 when a row fails
+        #690), then the pairs no row's runs triggered (#843,
+        `run_coverage`: "Pairs no scenario triggered: …", a warning that
+        fails nothing, never counting `covers:`, which `coverage` reads as
+        each scenario's plan); exits 1 when a row fails
   release-scenarios.py run --repo OWNER/NAME [--ref v7-next] [--only ID ...]
                            [--out FILE] [--minutes N]
         moves the test repository's callers to the ref through a pull
@@ -787,6 +799,9 @@ def table(results):
     lines = ["| Scenario | Result | Run |", "| --- | --- | --- |"]
     for r in results:
         why = f" ({'; '.join(r['why'])})" if r.get("why") else ""
+        if r.get("ok") and r.get("flaky"):
+            # #843: it failed, then passed on its retry.
+            why = f" (flaky: {'; '.join(r.get('first_why') or []) or 'failed once'})"
         lines.append(f"| `{r['id']}` | {'pass' if r['ok'] else 'fail'}{why} | {r.get('run') or ''} |")
     return "\n".join(lines) + "\n"
 
@@ -1090,7 +1105,105 @@ def scenario_text(sid, name, where, run_id):
     return text + (f"DX_API_TOKEN=dxfake_{re.sub(r'[^A-Za-z0-9]', '', str(run_id))}\n" if name == "token" else "")
 
 
-def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, types=None, run_id=None):
+# What failed a scenario (#843), a failing row's `class`, set where the row
+# is made (scripts/release-lane.py files each its own way): `engine`, its
+# `until` or `expect` did not hold, or could no longer, against what the
+# engine did; `harness`, the player itself (an exception that is no `gh`
+# error, a fixture or body missing, a group or a result missing, the
+# callers' move, a `before` or a land that did not hold before the engine
+# acted); `infrastructure`, GitHub failing or rate limited until the
+# scenario's time ran out, a play job cancelled or past its timeout, a group
+# that left no results, a run GitHub held or never started.
+CLASSES = ("engine", "harness", "infrastructure")
+
+
+def blocked(seen):
+    """Whether what a poll saw is GitHub's doing, not the engine's (#843): a
+    run on the head GitHub holds for approval, or a check that never
+    started (`startup_failure`). Pure."""
+    seen = seen or {}
+    return bool(seen.get("held")) or "startup_failure" in (seen.get("checks") or {}).values()
+
+
+def caller_pairs(root=ROOT, pack=None):
+    """{caller's file name: its pairs} for the test repository's callers
+    (#843), each file's `pairs` alone, so a run maps through the caller at
+    its `path`. Pure but for reading the files."""
+    out = {}
+    for pattern in test_callers(test_pack(root) if pack is None else pack):
+        for path in sorted(glob.glob(os.path.join(root, pattern))):
+            out[os.path.basename(path)] = {p for p in pairs(root, (os.path.relpath(path, root),)) if p.rsplit(":", 1)[1] not in UNPLAYABLE}
+    return out
+
+
+def run_triggered(runs, sid, titles, branches, wired, start, end):
+    """The pairs the runs of the test repository (as the runs API lists
+    them: path, event, display_title, head_branch, created_at) triggered
+    for the scenario `sid` (#843): those created between `start` and `end`
+    (ISO times) that belong to it (a title that ends with `[<sid>]` or is
+    one of `titles`, the pull requests it observed, or a head branch among
+    `branches`, its own and theirs), each through the caller at its `path`
+    (`wired`, `caller_pairs`) and its event. Sorted. Pure."""
+    out = set()
+    for r in runs:
+        if not isinstance(r, dict):
+            continue
+        at = str(r.get("created_at") or "")
+        if at and not (start <= at <= end):
+            continue
+        title, branch = str(r.get("display_title") or ""), str(r.get("head_branch") or "")
+        if not (title.endswith(f"[{sid}]") or title in titles or branch in branches):
+            continue
+        name, event = os.path.basename(str(r.get("path") or "").split("@", 1)[0]), str(r.get("event") or "")
+        out |= {p for p in wired.get(name, ()) if p.rsplit(":", 1)[1] == event}
+    return sorted(out)
+
+
+def run_coverage(rows, wanted):
+    """The workflow pairs of `wanted` no row triggered (#843): counted from
+    each row's `triggered`, what its runs did, never its `covers:`, which
+    stays its plan (`coverage`). A transition or a step of the flow is no
+    workflow pair, and is never named here. Sorted. Pure."""
+    done = {p for r in rows if isinstance(r, dict) for p in r.get("triggered") or []}
+    return sorted(w for w in wanted if not str(w).startswith(STATIC) and w not in done)
+
+
+def runs_json(text):
+    """The items of `gh api --paginate --jq` output, one JSON array per
+    page: every page's, joined. Pure."""
+    out, at, decoder = [], 0, json.JSONDecoder()
+    text = text or ""
+    while True:
+        while at < len(text) and text[at].isspace():
+            at += 1
+        if at >= len(text):
+            return out
+        value, at = decoder.raw_decode(text, at)
+        out.extend(value if isinstance(value, list) else [value])
+
+
+def now_iso():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, types=None, run_id=None, wired=None):
+    """`_play`, and then, once (#843), the runs of `repo` created since it
+    started that belong to it, in its row's `triggered` (`run_triggered`,
+    through `wired`, `caller_pairs` when None); a read that fails leaves
+    no `triggered`, never a failure."""
+    start, seen = now_iso(), {"titles": set(), "branches": {branch_of(s)}}
+    row = _play(s, repo, ref, bodies, run, sleep, minutes, fork, types, run_id, seen)
+    end = now_iso()
+    try:
+        runs = runs_json(run("api", "--paginate", f"repos/{repo}/actions/runs?created=>={start}&per_page=100",
+                             "--jq", "[.workflow_runs[] | {path, event, display_title, head_branch, created_at}]"))
+        row["triggered"] = run_triggered(runs, s["id"], seen["titles"], seen["branches"], caller_pairs() if wired is None else wired, start, end)
+    except (RuntimeError, ValueError, OSError):
+        pass
+    return row
+
+
+def _play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, types=None, run_id=None, observed=None):
     """One scenario in `repo`: clears what an earlier run of it left
     (`clear`), opens what it opens (its `before` first), takes its steps,
     polls until its `expect` holds or `minutes` pass, then cleans up and
@@ -1103,6 +1216,16 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
     spec = opens.get("pull") or opens.get("issue") or {}
     sid, own = s["id"], branch_of(s)
     left = [min(minutes, limit(s)) * 60]
+    # #843: set once `look` ran out of time with `gh` still failing.
+    gone = [False]
+
+    def failed(why, url, cls="engine", seen=None):
+        """A failing row of its class: GitHub's (`infrastructure`) whatever
+        the step when `gh` kept failing or a run was held or never
+        started."""
+        if gone[0] or blocked(seen):
+            cls = "infrastructure"
+        return {"id": sid, "ok": False, "why": why, "run": url, "class": cls}
 
     def look(on, want=None, closes=None):
         """`on` observed, a transient `gh` error (#698: a rate limit, a
@@ -1117,6 +1240,11 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
         while True:
             try:
                 seen = observe(repo, on[0], on[1], run, heads(want))
+                pull = seen.get("pull") or {}
+                if observed is not None:
+                    # #843: the pull requests it observed, whose runs are its.
+                    observed["titles"] |= {str(pull["title"])} if pull.get("title") else set()
+                    observed["branches"] |= {str(pull["branch"])} if pull.get("branch") else set()
                 if closes:
                     seen["closes"] = closes
                 if rest != (want or {}) and not holds(rest, seen):
@@ -1127,6 +1255,7 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
                 if not transient(e):
                     raise
                 if left[0] <= 0:
+                    gone[0] = True
                     return None, f"{str(e).split(': ', 1)[0]} rate limited or failing at GitHub until the scenario's time ran out: {str(e).split(': ', 1)[-1][:200]}"
                 wait = min(backoff(e, tries), max(left[0], 1))
                 sleep(wait)
@@ -1189,7 +1318,7 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
                 if there != content:
                     why = land(str(first["lands"]), path, content)
                     if why:
-                        return {"id": sid, "ok": False, "why": [w.replace("push ", "before: lands ", 1) for w in why], "run": ""}
+                        return failed([w.replace("push ", "before: lands ", 1) for w in why], "", "harness")
                 continue
             befores.append(open_issue(repo, first.get("issue") or {}, bodies, f"{sid}: before", run, sid, types))
             made.append(("issue", befores[-1]))
@@ -1241,7 +1370,7 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
                     seen, failing = look((what, number))
                     target = ((seen or {}).get("pull") or {}).get("number")
                     if not target:
-                        return {"id": sid, "ok": False, "why": [failing or f"retitle: no pull request closes #{number} to retitle"], "run": (seen or {}).get("run", "")}
+                        return failed([failing or f"retitle: no pull request closes #{number} to retitle"], (seen or {}).get("run", ""), seen=seen)
                 run("pr", "edit", str(target), "--repo", repo, "--title", str(arg))
             elif verb == "push":
                 # #698: on the head branch of the pull request it observes
@@ -1254,12 +1383,13 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
                         seen, failing = look((what, number))
                         head = ((seen or {}).get("pull") or {}).get("branch")
                         if not head:
-                            return {"id": sid, "ok": False, "why": [failing or f"push {arg}: no pull request closes #{number} to push to"], "run": (seen or {}).get("run", "")}
+                            return failed([failing or f"push {arg}: no pull request closes #{number} to push to"], (seen or {}).get("run", ""), seen=seen)
                     write_file(repo, head, path, scenario_text(sid, arg, "the pull request", run_id), run)
                 if arg in LANDS:
                     why = land(arg, path)
                     if why:
-                        return {"id": sid, "ok": False, "why": why, "run": ""}
+                        # A land is the scenario's own setup (#843).
+                        return failed(why, "", "harness")
             elif verb == "until":
                 # #694: polled every POLL seconds, never a fixed wait: on
                 # the scenario's own issue or pull request, or with `of:
@@ -1268,14 +1398,20 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
                 on = (("issue", befores[0]) if (arg or {}).get("of") == "before" and befores else (what, number))
                 seen, why = poll(want, on, None if on[1] != number else closes)
                 if why:
-                    return {"id": sid, "ok": False, "why": [f"until {json.dumps(want, sort_keys=True)}: {w}" for w in why], "run": seen.get("run", "")}
+                    return failed([f"until {json.dumps(want, sort_keys=True)}: {w}" for w in why], seen.get("run", ""), seen=seen)
             elif verb == "wait":
                 # Refused by `timing`; never slept.
                 raise ValueError(f"a fixed wait of {arg} seconds: wait `until` a state")
         seen, why = poll(s.get("expect") or {}, (what, number), closes)
-        return {"id": sid, "ok": not why, "why": why, "run": seen.get("run", "")}
+        if why:
+            return failed(why, seen.get("run", ""), seen=seen)
+        return {"id": sid, "ok": True, "why": [], "run": seen.get("run", "")}
     except (RuntimeError, ValueError) as e:
-        return {"id": sid, "ok": False, "why": [str(e)], "run": ""}
+        # #843: a transient `gh` error is GitHub's; any other exception
+        # that is no `gh` error, the player's; another `gh` error is read
+        # as the engine's, so no failure is hidden as someone else's.
+        cls = "infrastructure" if transient(e) else "engine" if isinstance(e, GhError) else "harness"
+        return failed([str(e)], "", cls)
     finally:
         cleanup(repo, made, run)
         clear(repo, sid, run, own, lands)
@@ -1611,7 +1747,7 @@ def put_back(repo, ref, moved, callers=gh, central=None, sleep=time.sleep, minut
     try:
         point_callers(repo, ref, callers, central, back={m["name"]: m["before"] for m in moved}, sleep=sleep, minutes=minutes)
     except (RuntimeError, ValueError) as e:
-        return [{"id": "callers", "ok": False, "why": [f"the callers were not put back from {ref}: {e}"], "run": ""}]
+        return [{"id": "callers", "ok": False, "why": [f"the callers were not put back from {ref}: {e}"], "run": "", "class": "harness"}]
     return []
 
 
@@ -1633,7 +1769,7 @@ def read_moved(path, ref):
             raise ValueError("not a list of moved callers")
         return moved, []
     except (OSError, ValueError) as e:
-        return [], [{"id": "callers", "ok": False, "why": [f"could not read what moved to {ref}, the callers may be left there: {e}"], "run": ""}]
+        return [], [{"id": "callers", "ok": False, "why": [f"could not read what moved to {ref}, the callers may be left there: {e}"], "run": "", "class": "harness"}]
 
 
 def at_candidate(repo, ref, run=gh, central=None):
@@ -1662,7 +1798,7 @@ def at_candidate(repo, ref, run=gh, central=None):
         got = json.loads(run("api", f"repos/{repo}/contents/.github/workflows/{name}") or "{}")
         for line in off_ref(base64.b64decode(got.get("content") or "").decode(), central, ref):
             why.append(f".github/workflows/{name} {line}: calls the engine off {ref} after the move")
-    return [{"id": "callers", "ok": False, "why": [w], "run": ""} for w in why]
+    return [{"id": "callers", "ok": False, "why": [w], "run": "", "class": "harness"} for w in why]
 
 
 def move_callers(repo, ref, callers=gh, central=None, sleep=time.sleep, minutes=20, record=None):
@@ -1677,13 +1813,13 @@ def move_callers(repo, ref, callers=gh, central=None, sleep=time.sleep, minutes=
     except (RuntimeError, ValueError) as e:
         if record:
             record([])
-        return [], [{"id": "callers", "ok": False, "why": [f"the callers did not reach {ref}: {e}"], "run": ""}]
+        return [], [{"id": "callers", "ok": False, "why": [f"the callers did not reach {ref}: {e}"], "run": "", "class": "harness"}]
     if record:
         record(moved)
     try:
         return moved, at_candidate(repo, ref, callers, central)
     except (RuntimeError, ValueError) as e:
-        return moved, [{"id": "callers", "ok": False, "why": [f"could not tell whether every pipeline of {repo} runs at {ref}: {e}"], "run": ""}]
+        return moved, [{"id": "callers", "ok": False, "why": [f"could not tell whether every pipeline of {repo} runs at {ref}: {e}"], "run": "", "class": "harness"}]
 
 
 GROUP_ID = re.compile(r"[a-z0-9-]+")
@@ -1873,18 +2009,63 @@ def core_problems(scenarios, pack):
     return out
 
 
-def play_group(conf, gid, repo, ref, run=gh, sleep=time.sleep, minutes=20, run_id=None):
+# The minutes a retry leaves the play step for its cleanup and its results
+# (#843): a retry is limited to what the step has left less these.
+RETRY_MARGIN = 2
+NOT_RETRIED = "not retried: no time left in the play step"
+
+
+def retried(s, attempt, minutes, deadline=None, clock=time.monotonic):
+    """The scenario `s` played by `attempt(minutes)`, and once more when it
+    failed (#843): the retry, after the `clear` its play starts with, is
+    limited to `min(limit(s), minutes)` and, with a `deadline` (the play
+    step's end, on `clock`), to what is left of it less RETRY_MARGIN; with
+    less than a minute it is not played, and the row says so. The row gains
+    `attempts` (1 or 2) and, after a retry, `first_why` (the first
+    attempt's why); `flaky: true` when the retry passed, which makes it
+    `ok` with no `class`; failing on both, it keeps the first failure's
+    `class`."""
+    first = attempt(minutes)
+    if first.get("ok"):
+        return dict(first, attempts=1)
+    budget = min(minutes, limit(s))
+    if deadline is not None:
+        budget = min(budget, (deadline - clock()) / 60 - RETRY_MARGIN)
+    if budget < 1:
+        return dict(first, attempts=1, why=list(first.get("why") or []) + [NOT_RETRIED])
+    second = attempt(budget)
+    out = dict(second, attempts=2, first_why=list(first.get("why") or []))
+    if "triggered" in first or "triggered" in second:
+        # #843: what either attempt's runs triggered.
+        out["triggered"] = sorted(set(first.get("triggered") or []) | set(second.get("triggered") or []))
+    # #843: the row's class comes from both attempts: passing on its retry
+    # it is flaky and no failure's; failing on both, the first failure's.
+    out.pop("class", None)
+    if second.get("ok"):
+        out["flaky"] = True
+    elif first.get("class") or second.get("class"):
+        out["class"] = first.get("class") or second.get("class")
+    return out
+
+
+def play_group(conf, gid, repo, ref, run=gh, sleep=time.sleep, minutes=20, run_id=None, clock=time.monotonic):
     """The scenarios of the group `gid` (one, #694), in its order, at
     `ref` (the callers already there), with the test identity's token (the
     ambient GH_TOKEN): their rows, or one failing row when `gid` is no
-    group."""
+    group. `minutes` is the play step's time too (#843): a scenario that
+    failed is played once more within what is left of it (`retried`)."""
     scenarios = conf.get("scenarios") or []
     group = next((g for g in groups(scenarios) if g["id"] == gid), None)
     if group is None:
-        return [{"id": gid, "ok": False, "why": [f"{gid} is no group of {SCENARIOS}"], "run": ""}]
+        return [{"id": gid, "ok": False, "why": [f"{gid} is no group of {SCENARIOS}"], "run": "", "class": "harness"}]
     by_id, run_id = {s.get("id"): s for s in scenarios}, run_id or run_mark()
-    return [play(by_id[sid], repo, ref, conf.get("bodies") or {}, run, sleep, minutes, types=conf.get("types") or {}, run_id=run_id)
-            for sid in group["scenarios"]]
+    deadline = clock() + minutes * 60
+    out = []
+    for sid in group["scenarios"]:
+        s = by_id[sid]
+        out.append(retried(s, lambda m, s=s: play(s, repo, ref, conf.get("bodies") or {}, run, sleep, m, types=conf.get("types") or {}, run_id=run_id),
+                           minutes, deadline, clock))
+    return out
 
 
 def run_all(conf, repo, ref, only=(), run=gh, sleep=time.sleep, minutes=20, central=None, callers=None, moved_out=None, record=None, run_id=None):
@@ -1914,17 +2095,26 @@ def run_all(conf, repo, ref, only=(), run=gh, sleep=time.sleep, minutes=20, cent
     try:
         for s in conf.get("scenarios") or []:
             if not only or s["id"] in only:
-                results.append(play(s, repo, ref, bodies, run, sleep, minutes, types=conf.get("types") or {}, run_id=run_id))
+                # #843: a failure is played once more (`retried`).
+                results.append(retried(s, lambda m, s=s: play(s, repo, ref, bodies, run, sleep, m, types=conf.get("types") or {}, run_id=run_id), minutes))
     finally:
         if moved_out is None:
             results.extend(put_back(repo, ref, moved, callers, central, sleep, minutes))
     return results
 
 
-def write_results(results, out):
+def untriggered_line(missing):
+    """The table's line naming the pairs no scenario's runs triggered
+    (#843), a warning that fails nothing; "" when none. Pure."""
+    return f"\nPairs no scenario triggered: {', '.join(f'`{p}`' for p in missing)}\n" if missing else ""
+
+
+def write_results(results, out, untriggered=None):
     """The table of `results` to stdout, and to `out` with the record the
-    lane's next job reads."""
-    text = table(results)
+    lane's next job reads; with `untriggered` (#843, `run_coverage`), its
+    line after the table and its own record, which release-lane.py act
+    names as a warning."""
+    text = table(results) + untriggered_line(untriggered)
     sys.stdout.write(text)
     if out:
         # The job's --out may name a directory no step made (#693).
@@ -1932,6 +2122,8 @@ def write_results(results, out):
         with open(out, "w", encoding="utf-8") as fh:
             fh.write(text)
             fh.write(f"\n<!-- dx-scenarios {json.dumps(results)} -->\n")
+            if untriggered:
+                fh.write(f"<!-- dx-untriggered {json.dumps(untriggered)} -->\n")
 
 
 def read_results(path):
@@ -1961,23 +2153,39 @@ def merge(gs, files, jobs, run="", minutes=0, play_minutes=0):
     rows = []
     timeout = f" (its play step at {play_minutes} minutes, its job at {minutes}: timeout-minutes in release-lane.yml)" if minutes else ""
 
-    def fail(rid, why):
-        rows.append({"id": rid, "ok": False, "why": [why], "run": run})
+    def fail(rid, why, cls):
+        rows.append({"id": rid, "ok": False, "why": [why], "run": run, "class": cls})
 
-    def own(r):
-        return {"id": str(r.get("id")), "ok": r.get("ok") is True, "why": [str(w) for w in r.get("why") or []], "run": str(r.get("run") or "")}
+    def own(r, cls=None):
+        out = {"id": str(r.get("id")), "ok": r.get("ok") is True, "why": [str(w) for w in r.get("why") or []], "run": str(r.get("run") or "")}
+        # #843: a failing row's class, as its writer set it; a move's or a
+        # back's row is the harness's.
+        if not out["ok"]:
+            c = r.get("class") if r.get("class") in CLASSES else cls
+            if c:
+                out["class"] = c
+        # #843: the retry's keys, kept.
+        if isinstance(r.get("attempts"), int):
+            out["attempts"] = r["attempts"]
+        if r.get("flaky") is True:
+            out["flaky"] = True
+        if isinstance(r.get("first_why"), list):
+            out["first_why"] = [str(w) for w in r["first_why"]]
+        if isinstance(r.get("triggered"), list):
+            out["triggered"] = [str(p) for p in r["triggered"]]
+        return out
     if files.get("move") is None:
-        fail("move", "the move job left no results")
+        fail("move", "the move job left no results", "harness")
     else:
-        rows += [own(r) for r in files["move"] if isinstance(r, dict)]
+        rows += [own(r, "harness") for r in files["move"] if isinstance(r, dict)]
     if not gs:
-        fail("groups", "no groups of scenarios to read: none played")
+        fail("groups", "no groups of scenarios to read: none played", "harness")
     for g in gs:
         got = files.get(g["id"])
         if got is None:
             # A play job that was skipped is its own failing row below.
             if jobs.get("play") != "skipped":
-                fail(g["id"], f"the group {g['id']} left no results: its play job failed before it wrote them, timed out{timeout} or was cancelled")
+                fail(g["id"], f"the group {g['id']} left no results: its play job failed before it wrote them, timed out{timeout} or was cancelled", "infrastructure")
             continue
         by_id = {}
         for r in got:
@@ -1987,20 +2195,20 @@ def merge(gs, files, jobs, run="", minutes=0, play_minutes=0):
             if sid in by_id:
                 rows.append(by_id[sid])
             else:
-                fail(sid, f"no result in the results of its group {g['id']}")
+                fail(sid, f"no result in the results of its group {g['id']}", "harness")
     if files.get("back") is None:
-        fail("back", "the back job left no results: the callers may be left at the ref")
+        fail("back", "the back job left no results: the callers may be left at the ref", "harness")
     else:
-        rows += [own(r) for r in files["back"] if isinstance(r, dict)]
+        rows += [own(r, "harness") for r in files["back"] if isinstance(r, dict)]
     for name, result in jobs.items():
         if result == "success":
             continue
         if name == "play" and minutes and result == "cancelled":
-            fail(name, f"a play job ran past its timeout of {minutes} minutes and was cancelled (timeout-minutes in release-lane.yml)")
+            fail(name, f"a play job ran past its timeout of {minutes} minutes and was cancelled (timeout-minutes in release-lane.yml)", "infrastructure")
         elif name == "play" and play_minutes and result == "failure":
-            fail(name, f"a play job ended in failure: a step that broke, or its play step past its timeout of {play_minutes} minutes (timeout-minutes in release-lane.yml)")
+            fail(name, f"a play job ended in failure: a step that broke, or its play step past its timeout of {play_minutes} minutes (timeout-minutes in release-lane.yml)", "infrastructure")
         else:
-            fail(name, f"the {name} job ended in {result or 'nothing'}")
+            fail(name, f"the {name} job ended in {result or 'nothing'}", "harness")
     return rows
 
 
@@ -2698,7 +2906,46 @@ def self_test():
                           {"id": "b", "covers": [], "opens": {"issue": {"title": "t"}}, "expect": {"labels": ["accepted"]}}], "bodies": {"b": "body"}}
     res = run_all(scen, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=3, central="O/.github")
     check("run: a scenario whose expect holds passes, one whose does not fails, named", [(r["id"], r["ok"], r["why"]) for r in res], [("a", True, []), ("b", False, ["no label accepted", "saw labels awaiting-acceptance; the bot's newest comment: none"])])
-    check("run: its issues are closed and locked after it", sum(1 for c in calls if c[:2] in (("issue", "close"), ("issue", "lock"))), 4)
+    # #843: b failed, so it played twice: its issues of both attempts too.
+    check("run: its issues are closed and locked after it", sum(1 for c in calls if c[:2] in (("issue", "close"), ("issue", "lock"))), 6)
+    check("#843 run: a scenario that failed is played once more, one that passed once", [(r["id"], r.get("attempts"), r.get("flaky")) for r in res], [("a", 1, None), ("b", 2, None)])
+    check("#843 class: an `expect` that does not hold is the engine's", [r.get("class") for r in res], [None, "engine"])
+    waits = {"id": "w", "opens": {"issue": {"title": "t", "body": "b"}}, "steps": [{"wait": 5}], "expect": {"labels": ["x"]}}
+    check("#843 class: the player's own exception (a fixed wait) is the harness's",
+          play(waits, "o/t", "v7-next", {"b": "body"}, fake, lambda s: None, 1).get("class"), "harness")
+
+    def busy(*args, input=None):
+        if args[:2] == ("issue", "view"):
+            raise GhError("gh issue view: HTTP 502", 1, "", "HTTP 502")
+        return fake(*args, input=input)
+    gone = play(scen["scenarios"][1], "o/t", "v7-next", scen["bodies"], busy, lambda s: None, 0)
+    check("#843 class: GitHub failing until the scenario's time ran out is infrastructure's",
+          (gone["ok"], gone.get("class"), "until the scenario's time ran out" in " ".join(gone["why"])), (False, "infrastructure", True))
+
+    def denied(*args, input=None):
+        if args[:2] == ("issue", "create"):
+            raise GhError("gh issue create: HTTP 422 Validation Failed", 1, "", "")
+        return fake(*args, input=input)
+    check("#843 class: a `gh` error that is not GitHub failing is read as the engine's", play(scen["scenarios"][1], "o/t", "v7-next", scen["bodies"], denied, lambda s: None, 1).get("class"), "engine")
+    check("#843 class: a run GitHub held or never started is infrastructure's", (blocked({"held": ["u"]}), blocked({"checks": {"a": "startup_failure"}}), blocked({"checks": {"a": "failure"}})), (True, True, False))
+    clock = iter([19 * 60])
+    tried = []
+    late = retried({"id": "c"}, lambda m: tried.append(m) or {"id": "c", "ok": False, "why": ["slow"], "run": ""}, 20, 20 * 60, lambda: next(clock))
+    check("#843 retry: with less than a minute left in the play step, past its margin, a failure is not played again and says so",
+          (tried, late["ok"], late["why"], late["attempts"]), ([20], False, ["slow", NOT_RETRIED], 1))
+    clock = iter([5 * 60])
+    tried = []
+    again = retried({"id": "c", "minutes": 15}, lambda m: tried.append(m) or {"id": "c", "ok": len(tried) > 1, "why": [] if len(tried) > 1 else ["fast"], "run": ""}, 20, 20 * 60, lambda: next(clock))
+    check("#843 retry: the retry has what the play step has left less its margin, at most the scenario's limit; passing, it is ok and flaky",
+          (tried, again["ok"], again.get("flaky"), again["first_why"], table([again]).count("pass (flaky: fast)")), ([20, 13], True, True, ["fast"], 1))
+    # #843: a retried row's class comes from both attempts.
+    both = iter([{"id": "k", "ok": False, "why": ["slow"], "run": "", "class": "infrastructure"}, {"id": "k", "ok": False, "why": ["no"], "run": "", "class": "engine"}])
+    check("#843 retry: failing on both attempts, the row keeps the first failure's class",
+          retried({"id": "k"}, lambda m: next(both), 20).get("class"), "infrastructure")
+    healed = iter([{"id": "k", "ok": False, "why": ["slow"], "run": "", "class": "engine"}, {"id": "k", "ok": True, "why": [], "run": "", "class": "harness"}])
+    got = retried({"id": "k"}, lambda m: next(healed), 20)
+    check("#843 retry: passing on its retry, the row is flaky and carries no failure's class",
+          (got["ok"], got.get("flaky"), "class" in got), (True, True, False))
     ccalls = []
 
     def cfake(*args, input=None):
@@ -2795,7 +3042,21 @@ def self_test():
           (calls694.index(("issue", "close", "3", "--repo", "o/t")) < calls694.index(next(c for c in calls694 if c[:2] == ("issue", "create"))),
            ("issue", "close", "4", "--repo", "o/t") in calls694), (True, False))
     check("C1: after it plays, its branch is deleted again and its leftovers looked for again",
-          (calls694[-1][:2], sum(1 for c in calls694 if c == delete) >= 2), (("pr", "list"), True))
+          ([c for c in calls694 if "actions/runs?created=" not in " ".join(c)][-1][:2], sum(1 for c in calls694 if c == delete) >= 2), (("pr", "list"), True))
+    check("#843: the runs it triggered are read once, last", ("actions/runs?created=" in " ".join(calls694[-1]), sum(1 for c in calls694 if "actions/runs?created=" in " ".join(c))), (True, 1))
+    wired843 = {"issues.yml": {"issue-triage.yml:issues", "issue-triage.yml:issue_comment"}, "test-pull-request.yml": {"conventions.yml:pull_request"}}
+    runs843 = [{"path": ".github/workflows/issues.yml", "event": "issues", "display_title": "feat: x [s]", "head_branch": "main", "created_at": "2026-01-01T00:05:00Z"},
+               {"path": ".github/workflows/issues.yml", "event": "issue_comment", "display_title": "feat: x [s]", "head_branch": "main", "created_at": "2026-01-01T00:20:00Z"},
+               {"path": ".github/workflows/test-pull-request.yml@refs/heads/main", "event": "pull_request", "display_title": "feat: its pull", "head_branch": "feat/1-x", "created_at": "2026-01-01T00:06:00Z"},
+               {"path": ".github/workflows/test-pull-request.yml", "event": "pull_request", "display_title": "fix: y [other]", "head_branch": "fix/scenario-other", "created_at": "2026-01-01T00:06:00Z"}]
+    check("#843 run_triggered: its runs, by title or branch, within its time, through the caller at their path and their event",
+          run_triggered(runs843, "s", {"feat: its pull"}, {"test/scenario-s"}, wired843, "2026-01-01T00:00:00Z", "2026-01-01T00:10:00Z"),
+          ["conventions.yml:pull_request", "issue-triage.yml:issues"])
+    check("#843 run_coverage: what no row triggered, never what `covers:` says, and no transition",
+          run_coverage([{"covers": ["a:issues"], "triggered": ["b:issues"]}, {"id": "x"}], {"a:issues", "b:issues", "next_step:start"}), ["a:issues"])
+    check("#843 retry: what either attempt triggered is kept",
+          retried({"id": "t"}, lambda m: {"id": "t", "ok": m == 10, "why": [], "run": "", "triggered": ["a:issues"] if m == 20 else ["b:issues"]}, 20)["triggered"], ["a:issues", "b:issues"])
+    check("#843 the table names the pairs no scenario triggered, a warning line", untriggered_line(["a:issues"]), "\nPairs no scenario triggered: `a:issues`\n")
     lcalls = []
 
     def lanefake(*a, input=None):
@@ -3224,7 +3485,7 @@ def self_test():
         with contextlib.redirect_stdout(io.StringIO()):
             write_results([{"id": "a", "ok": True, "why": [], "run": ""}], out)
         check("#622: back reads the run's results and adds its row to them",
-              read_results(out) + [{"id": "callers", "ok": False, "why": ["x"], "run": ""}], [{"id": "a", "ok": True, "why": [], "run": ""}, {"id": "callers", "ok": False, "why": ["x"], "run": ""}])
+              read_results(out) + [{"id": "callers", "ok": False, "why": ["x"], "run": "", "class": "harness"}], [{"id": "a", "ok": True, "why": [], "run": ""}, {"id": "callers", "ok": False, "why": ["x"], "run": "", "class": "harness"}])
         check("#622: no results file reads as none", read_results(os.path.join(d, "none.md")), [])
         nested = os.path.join(d, "back", "results.md")
         with contextlib.redirect_stdout(io.StringIO()):
@@ -3324,7 +3585,7 @@ def self_test():
                 ("a missing scenario row", dict(every, serial=passed("a")), done, {"c"}),
                 ("a row from another group in place of its own", dict(every, b=passed("a")), done, {"b"}),
                 ("a back job that left nothing", dict(every, back=None), dict(done, back="cancelled"), {"back"}),
-                ("a move that failed, and no group played", {"move": [{"id": "callers", "ok": False, "why": ["x"], "run": ""}]}, dict(done, play="skipped", back="success"), {"callers", "play", "back"})):
+                ("a move that failed, and no group played", {"move": [{"id": "callers", "ok": False, "why": ["x"], "run": "", "class": "harness"}]}, dict(done, play="skipped", back="success"), {"callers", "play", "back"})):
             rows = merge_dir(lay(files), mgs, jobs, lane_run)
             bad = {r["id"] for r in rows if not r["ok"]}
             check(f"C3: merge gives a failing row for {how}, with the lane's run, and decide releases nothing",
@@ -3772,7 +4033,9 @@ def main(argv):
         a = p.parse_args(argv[1:])
         jobs = dict(j.split("=", 1) if "=" in j else (j, "") for j in a.job)
         results = merge_dir(a.dir, read_groups(a.groups), jobs, a.run, a.minutes, a.play_minutes)
-        write_results(results, a.out)
+        # #843: what the runs triggered, never what `covers:` says; a
+        # warning that fails nothing.
+        write_results(results, a.out, run_coverage(results, played(ROOT, test_pack())))
         return 0 if all(r["ok"] for r in results) else 1
     if argv[:1] == ["back"]:
         import argparse
