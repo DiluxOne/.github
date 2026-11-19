@@ -2599,7 +2599,7 @@ def self_test():
     check("C2: the real file: no two scenarios write to the same core path of the test repository", partition(real["scenarios"], real_groups, rpack), [])
     check("C2: each scenario writes under its own directory, its fixed change too, and only core-one-at-a-time's is the core (#709)",
           (sorted(core_writes({"id": "x"}, rpack)), {org_key(p, rpack) for p in core_writes({"id": "x"}, rpack)}, {org_key(p, rpack) for p in core_writes({"id": "core-one-at-a-time"}, rpack)}),
-          (["scenarios/x/*", "scenarios/x/*.md"], {None}, {""}))
+          (["scenarios/x/*", "scenarios/x/*.test.md"], {None}, {""}))
     shared = {"fixed-change": {"file": "scenarios/{n}.md"}, "core": ["scenarios/*"]}
     check("C2: partition fails when two scenarios could write to the same core path (a fixed change outside their own directory)",
           partition([{"id": "a", "expect": {"comments": [CORE_MARK]}}, {"id": "b", "expect": {"comments": [CORE_MARK]}}], groups([{"id": "a"}, {"id": "b"}]), shared),
