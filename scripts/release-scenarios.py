@@ -2616,16 +2616,35 @@ def test_repro(root=ROOT):
 LANE = os.path.join(".github", "workflows", "release-lane.yml")
 
 
+# The minutes the play step keeps past the player's deadline (#878): to
+# write its results and exit before GitHub stops it.
+PLAY_SPARE = 3
+
+
 def lane_problems(lane):
     """What is wrong with the release lane's jobs (`lane`, release-lane.yml
     read; #707): a `play` job whose `runs-on` can name DX_RUNNER_HEAVY (or
     any self-hosted runner), where the test repository's own jobs run, so
-    the play jobs that wait for them hold the runners they need. Pure."""
+    the play jobs that wait for them hold the runners they need; and (#878)
+    a play step (its id `play`) that passes the player no `--minutes`, or
+    one that leaves it less than PLAY_SPARE minutes of the step's
+    timeout-minutes to write its results and exit. Pure."""
     play = ((lane or {}).get("jobs") or {}).get("play") or {}
     runs = json.dumps(play.get("runs-on"))
     if "DX_RUNNER_HEAVY" in runs or "self-hosted" in runs:
         return [f"{LANE}: the `play` job runs on {play.get('runs-on')}, where the test repository's own jobs run: "
                 "its jobs that wait for them would hold those runners; it runs on ubuntu-latest"]
+    step = next((s for s in play.get("steps") or [] if isinstance(s, dict) and s.get("id") == "play"), None)
+    if step is None:
+        return []
+    m = re.search(r"--minutes\s+(\d+)", str(step.get("run") or ""))
+    timeout = int(step.get("timeout-minutes") or 0)
+    if not m:
+        return [f"{LANE}: the play step passes release-scenarios.py play no --minutes: "
+                f"the player's deadline must be below the step's {timeout} minutes"]
+    if int(m.group(1)) > timeout - PLAY_SPARE:
+        return [f"{LANE}: the play step passes --minutes {m.group(1)}, which leaves less than {PLAY_SPARE} "
+                f"of its {timeout} minutes to write its results and exit"]
     return []
 
 

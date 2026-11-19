@@ -187,3 +187,19 @@ def test_a_write_cut_in_the_middle_leaves_the_last_whole_file(monkeypatch, tmp_p
     monkeypatch.undo()
     assert [(r["id"], r["ok"]) for r in scen.read_results(out)] == [("slow-setup", False)]
     assert [p.name for p in tmp_path.iterdir()] == ["results.md"]
+
+
+def test_the_lane_passes_the_players_deadline_below_the_play_steps_timeout():
+    # The maintainer's answer on #878 (A): the step stays at 20 minutes, the
+    # job at 30, and the workflow passes --minutes 17.
+    lane = scen.load_yaml(ROOT / ".github/workflows/release-lane.yml")
+    job = lane["jobs"]["play"]
+    step = next(s for s in job["steps"] if s.get("id") == "play")
+    assert (job["timeout-minutes"], step["timeout-minutes"]) == (30, 20)
+    assert "--minutes 17" in " ".join(step["run"].split())
+    assert scen.lane_problems(lane) == []
+    # The check refuses a play step that passes no deadline, or one that
+    # leaves it no time to write its results.
+    for run in ("release-scenarios.py play --group g", "release-scenarios.py play --minutes 19"):
+        broken = {"jobs": {"play": dict(job, steps=[dict(step, run=run)])}}
+        assert any("--minutes" in p for p in scen.lane_problems(broken)), run
