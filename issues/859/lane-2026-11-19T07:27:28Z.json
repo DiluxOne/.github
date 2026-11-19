@@ -1,0 +1,14 @@
+{
+  "kind": "lane-decision",
+  "issue": 859,
+  "lane": "platform",
+  "decided_by": "policy",
+  "decided": "policy",
+  "rule": "policy/autonomy.yml#lanes.platform",
+  "policy": "DiluxOne/.github@1cfd61d97e78f590130b038eb370fc81b7a9737e",
+  "at": "2026-11-19T07:27:28Z",
+  "run": "105",
+  "evidence": {
+    "run": "https://github.com/DiluxOne/.github/actions/runs/44472287042"
+  }
+}
