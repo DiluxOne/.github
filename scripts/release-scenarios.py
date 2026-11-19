@@ -32,8 +32,9 @@ complete feature, and its `{files}` the files of its diff, one
 `comment`, `label`, `unlabel`, `edit`, `push`, `dispatch`, `retitle` (the
 title of the pull request it observes, an issue's the autopilot's, #699),
 and `until`,
-an `expect` polled every 50 seconds (#726: every scenario at once shares
-the test identity's 5000 requests an hour) on its issue or pull request, or with
+an `expect` polled every 75 seconds (#726: every scenario at once shares
+the test identity's 5000 requests an hour, #878: with their setup, cleanup
+and retry) on its issue or pull request, or with
 `of: before` on its first `before` issue, never a fixed wait: #694; a
 `comment` or a `label` with `of: before` acts on that issue too, #713; a
 file is written in a commit GitHub signs, `createCommitOnBranch` (#709); a
@@ -124,10 +125,16 @@ after GitHub's back-off within the scenario's limit, then named.
         and closing the issues and pull requests an earlier run of it left
         (the `dx-scenario: <id>` mark first in every body it opens), and
         again after (#694); a scenario that failed is played once more
-        (#843, `retried`) within what is left of N minutes, the play
-        step's, less RETRY_MARGIN, and passing then is `flaky`, its row
+        (#843, `retried`) within what is left of N minutes, the player's
+        own deadline below the play step's timeout (#878), less the first
+        attempt's own time (RETRY_ALLOWANCE minutes at least) and a poll,
+        and passing then is `flaky`, its row
         `pass (flaky: <first why>)`, which fails nothing; with less than
-        a minute left it is not, and says so; their table to FILE; exits
+        a minute left it is not, and says so; a transient `gh` error is
+        retried within it (#878, `patient`); their table to FILE, written
+        before the first attempt and after each, a scenario not ended yet
+        a failing `infrastructure` row (ENDED), and again on a SIGTERM
+        or SIGINT, so a step killed in the middle still leaves it; exits
         1 when one fails. Each row keeps in `triggered` (#843) the pairs
         its runs triggered (`run_triggered`, read once at its end). A
         failing row says its `class` (#843, CLASSES:
@@ -697,8 +704,9 @@ def by_hand(expect, seen):
 
 # Every wait polls its state (#694): never a fixed sleep. Every scenario
 # polls at once with the test identity's token (#726), which GitHub allows
-# RATE_LIMIT requests an hour: `poll_budget` stays under it.
-POLL = 50
+# RATE_LIMIT requests an hour: `call_budget`, its polls with (#878) every
+# scenario's setup, cleanup and retry, stays under it at 75 seconds.
+POLL = 75
 RATE_LIMIT = 5000
 # A scenario's limit, in minutes: its own `minutes`, or LIMIT; none past
 # MAX_LIMIT, which the play step's timeout-minutes in release-lane.yml
@@ -774,11 +782,52 @@ def poll_budget(scenarios):
     return sum(calls(s) * 3600 // POLL for s in scenarios)
 
 
-def timing(scenarios):
+# The attempts a scenario can take in a play step (#843: one retry).
+ATTEMPTS = 2
+
+
+def setup_calls(s, bodies=None):
+    """The `gh` calls one attempt of the scenario `s` makes besides its
+    polls (#878), as `_play` makes them: its `clear` before and after (its
+    branches deleted, the lane's leftovers and the two searches), each
+    issue it opens (its creation, comments and labels) and its cleanup (the
+    view, the pull request that closes it, its close and lock), its pull
+    request (its branch, its file, its creation, from a fork its fork and
+    login), each land on main (its branch, its file, its pull request, its
+    close), each step, and the read of the runs it triggered. Pure."""
+    sid, opens, bodies = s.get("id") or "?", s.get("opens") or {}, bodies or {}
+    lands = [str(b["lands"]) for b in s.get("before") or [] if isinstance(b, dict) and "lands" in b]
+    cleared = len(dict.fromkeys([f"scenario/{sid}", branch_of(s)] + [landing(sid, a) for a in (*LANDS, *lands)])) + 3
+    n = 2 * cleared + 2
+    for spec, _ in opened_issues(s, bodies):
+        first = spec.get("comments") or []
+        n += 1 + len(first) + (1 if first and spec.get("labels") else 0) + 4
+    landed = len(lands) + sum(1 for st in s.get("steps") or [] if isinstance(st, dict) and st.get("push") in LANDS)
+    n += 7 * landed + len(lands)
+    if "pull" in opens:
+        n += 7 + (2 if (opens.get("pull") or {}).get("fork") else 0)
+    for st in s.get("steps") or []:
+        if not isinstance(st, dict):
+            continue
+        verb = next((k for k in st if k != "of"), None)
+        looked = 3 if "issue" in opens and verb in ("retitle", "push") else 0
+        n += looked + (2 if verb == "push" and st.get("push") != "behind" else 0 if verb in ("push", "until", "wait") else 1)
+    return n
+
+
+def call_budget(scenarios, bodies=None):
+    """The `gh` calls an hour every scenario played at once makes (#878):
+    its polls (`poll_budget`) and, for each of its ATTEMPTS, its setup and
+    cleanup (`setup_calls`). Pure."""
+    return poll_budget(scenarios) + sum(ATTEMPTS * setup_calls(s, bodies) for s in scenarios)
+
+
+def timing(scenarios, bodies=None):
     """What is wrong with the plan's waits (#694): a fixed `wait` step
     (every wait is an `until` that polls its state), an `until` that names
     no expectation, a limit past MAX_LIMIT minutes, and (#726) polls that,
-    every scenario at once, pass the test identity's RATE_LIMIT. Pure."""
+    every scenario at once, with (#878) the setup, cleanup and retry of
+    each (`call_budget`), pass the test identity's RATE_LIMIT. Pure."""
     out = []
     for s in scenarios:
         sid = s.get("id") or "?"
@@ -789,8 +838,9 @@ def timing(scenarios):
                 out.append(f"scenario {sid}: an `until` with no expectation")
         if limit(s) > MAX_LIMIT:
             out.append(f"scenario {sid}: its limit is {limit(s)} minutes, past {MAX_LIMIT}")
-    if poll_budget(scenarios) > RATE_LIMIT:
-        out.append(f"the plan's {len(scenarios)} scenarios poll GitHub {poll_budget(scenarios)} times an hour, every {POLL} seconds, past the test identity's {RATE_LIMIT}")
+    calls = call_budget(scenarios, bodies)
+    if calls > RATE_LIMIT:
+        out.append(f"the plan's {len(scenarios)} scenarios call GitHub {calls} times an hour, polling every {POLL} seconds, with their setup, cleanup and retry, past the test identity's {RATE_LIMIT}")
     return out
 
 
@@ -1079,6 +1129,33 @@ def backoff(e, tries, now=None):
     return min(POLL * 2 ** tries, 120)
 
 
+# How many times `patient` retries a transient `gh` error (#878).
+GH_TRIES = 3
+
+
+def patient(run, sleep=None, deadline=None, clock=None):
+    """`run` retrying a transient `gh` error (#878, `transient`) after its
+    `backoff`, up to GH_TRIES times and never past `deadline` (on `clock`):
+    a rate limit or a 5xx in a scenario's setup or cleanup is waited out,
+    not a failure at once. Any other error, or one past its tries or the
+    deadline, is raised as it came."""
+    sleep = sleep or time.sleep
+    clock = clock or time.monotonic
+
+    def call(*args, **kw):
+        tries = 0
+        while True:
+            try:
+                return run(*args, **kw)
+            except GhError as e:
+                wait = backoff(e, tries)
+                if not transient(e) or tries >= GH_TRIES or (deadline is not None and clock() + wait > deadline):
+                    raise
+                sleep(wait)
+                tries += 1
+    return call
+
+
 def run_mark(env=None, now=None, rand=None):
     """The id of this run of the lane (#778), which every text `play` writes
     under scenarios/<id>/ carries: `GITHUB_RUN_ID-GITHUB_RUN_ATTEMPT` in the
@@ -1193,6 +1270,12 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
     no `triggered`, never a failure."""
     start, seen = now_iso(), {"titles": set(), "branches": {branch_of(s)}}
     row = _play(s, repo, ref, bodies, run, sleep, minutes, fork, types, run_id, seen)
+    if seen.get("tidy") is not None:
+        # #878: its cleanup failed: GitHub's when transient, else the
+        # player's.
+        e = seen["tidy"]
+        row = {"id": s["id"], "ok": False, "why": list(row.get("why") or []) + [f"its cleanup failed: {e}"], "run": row.get("run", ""),
+               "class": "infrastructure" if transient(e) else "harness"}
     end = now_iso()
     try:
         runs = runs_json(run("api", "--paginate", f"repos/{repo}/actions/runs?created=>={start}&per_page=100",
@@ -1413,8 +1496,15 @@ def _play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None,
         cls = "infrastructure" if transient(e) else "engine" if isinstance(e, GhError) else "harness"
         return failed([str(e)], "", cls)
     finally:
-        cleanup(repo, made, run)
-        clear(repo, sid, run, own, lands)
+        # #878: an error that escapes the cleanup kills no process: `play`
+        # makes it a failing row.
+        try:
+            cleanup(repo, made, run)
+            clear(repo, sid, run, own, lands)
+        except Exception as e:  # noqa: BLE001 - any error, a row
+            if observed is None:
+                raise
+            observed["tidy"] = e
 
 
 def bot_login(login):
@@ -2009,28 +2099,37 @@ def core_problems(scenarios, pack):
     return out
 
 
-# The minutes a retry leaves the play step for its cleanup and its results
-# (#843): a retry is limited to what the step has left less these.
-RETRY_MARGIN = 2
+# The least minutes a retry leaves the play step for what is not its polls
+# (#878): its clear, steps, cleanup and the read of its runs. The retry
+# leaves the first attempt's own time for them when that is more.
+RETRY_ALLOWANCE = 3
 NOT_RETRIED = "not retried: no time left in the play step"
 
 
-def retried(s, attempt, minutes, deadline=None, clock=time.monotonic):
+def retried(s, attempt, minutes, deadline=None, clock=None, slept=None):
     """The scenario `s` played by `attempt(minutes)`, and once more when it
-    failed (#843): the retry, after the `clear` its play starts with, is
-    limited to `min(limit(s), minutes)` and, with a `deadline` (the play
-    step's end, on `clock`), to what is left of it less RETRY_MARGIN; with
-    less than a minute it is not played, and the row says so. The row gains
+    failed (#843): the retry is limited to `min(limit(s), minutes)` and,
+    with a `deadline` (the player's end, on `clock`), to what is left of it
+    less (#878) an allowance for what is not its polls, the first
+    attempt's own time (its time on `clock` but what it slept, `slept`
+    the seconds slept so far), RETRY_ALLOWANCE minutes at least, and one
+    POLL its last poll may overrun by; with less than a minute it is not
+    played, and the row says so. The row gains
     `attempts` (1 or 2) and, after a retry, `first_why` (the first
     attempt's why); `flaky: true` when the retry passed, which makes it
     `ok` with no `class`; failing on both, it keeps the first failure's
     `class`."""
+    clock = clock or time.monotonic
+    began, napped = (clock(), slept() if slept else 0) if deadline is not None else (0, 0)
     first = attempt(minutes)
     if first.get("ok"):
         return dict(first, attempts=1)
     budget = min(minutes, limit(s))
     if deadline is not None:
-        budget = min(budget, (deadline - clock()) / 60 - RETRY_MARGIN)
+        now = clock()
+        own = (now - began) - ((slept() - napped) if slept else 0)
+        allowance = max(RETRY_ALLOWANCE * 60, own) + POLL
+        budget = min(budget, (deadline - now - allowance) / 60)
     if budget < 1:
         return dict(first, attempts=1, why=list(first.get("why") or []) + [NOT_RETRIED])
     second = attempt(budget)
@@ -2048,24 +2147,94 @@ def retried(s, attempt, minutes, deadline=None, clock=time.monotonic):
     return out
 
 
-def play_group(conf, gid, repo, ref, run=gh, sleep=time.sleep, minutes=20, run_id=None, clock=time.monotonic):
+# The row of a scenario the play step ended before (#878): what the group's
+# file says until its attempt ends, and what a signal leaves.
+ENDED = "the play step ended before the scenario did"
+
+
+def ended(sid, why=()):
+    """The failing `infrastructure` row of the scenario `sid` the play step
+    ended before (#878, ENDED), after the `why` of an attempt that failed.
+    Pure."""
+    return {"id": sid, "ok": False, "why": list(why) + [ENDED], "run": "", "class": "infrastructure"}
+
+
+def play_group(conf, gid, repo, ref, run=None, sleep=None, minutes=20, run_id=None, clock=None, record=None):
     """The scenarios of the group `gid` (one, #694), in its order, at
     `ref` (the callers already there), with the test identity's token (the
-    ambient GH_TOKEN): their rows, or one failing row when `gid` is no
-    group. `minutes` is the play step's time too (#843): a scenario that
-    failed is played once more within what is left of it (`retried`)."""
+    ambient GH_TOKEN, `gh` when `run` is None): their rows, or one failing
+    row when `gid` is no group. `minutes` is the player's own deadline, on
+    `clock` (#878: below the play step's timeout, which release-lane.yml
+    passes as `--minutes`): a scenario that failed is played once more
+    within what is left of it (`retried`), and a transient `gh` error is
+    retried within it (`patient`). `record`, when given, is called with
+    the rows so far before the first attempt and after each, a scenario
+    not played yet or still playing an `ended` row, so a step killed in the
+    middle still leaves them. An error that escapes an attempt is its
+    failing `harness` row, never the process's end."""
+    sleep, clock = sleep or time.sleep, clock or time.monotonic
     scenarios = conf.get("scenarios") or []
     group = next((g for g in groups(scenarios) if g["id"] == gid), None)
     if group is None:
         return [{"id": gid, "ok": False, "why": [f"{gid} is no group of {SCENARIOS}"], "run": "", "class": "harness"}]
     by_id, run_id = {s.get("id"): s for s in scenarios}, run_id or run_mark()
     deadline = clock() + minutes * 60
+    run = patient(gh if run is None else run, sleep, deadline, clock)
+    slept = [0.0]
+
+    def nap(seconds):
+        slept[0] += seconds
+        sleep(seconds)
+
     out = []
+
+    def note(current=()):
+        if record:
+            done = {r["id"] for r in out} | {r["id"] for r in current}
+            record(out + list(current) + [ended(sid) for sid in group["scenarios"] if sid not in done])
+
+    note()
     for sid in group["scenarios"]:
         s = by_id[sid]
-        out.append(retried(s, lambda m, s=s: play(s, repo, ref, conf.get("bodies") or {}, run, sleep, m, types=conf.get("types") or {}, run_id=run_id),
-                           minutes, deadline, clock))
+
+        def attempt(m, s=s):
+            try:
+                row = play(s, repo, ref, conf.get("bodies") or {}, run, nap, m, types=conf.get("types") or {}, run_id=run_id)
+            except Exception as e:  # noqa: BLE001 - any error, a row
+                row = {"id": s["id"], "ok": False, "why": [f"the player broke: {type(e).__name__}: {e}"], "run": "", "class": "harness"}
+            note([row if row.get("ok") else ended(s["id"], row.get("why") or [])])
+            return row
+
+        out.append(retried(s, attempt, minutes, deadline, clock, lambda: slept[0]))
+        note()
     return out
+
+
+def play_watched(conf, gid, repo, ref, minutes, out):
+    """`play_group` with its rows written to `out` before its first attempt
+    and after each (#878), and again on a SIGTERM or SIGINT (GitHub signals
+    a step past its timeout before it kills it), which then ends the
+    process: a group always leaves its file. The handlers it set are put
+    back. Its rows."""
+    import signal
+    rows = []
+
+    def record(now):
+        rows[:] = now
+        if out:
+            write_results(now, out, echo=False)
+
+    def stop(signum, frame):
+        if out:
+            write_results(rows, out)
+        raise SystemExit(128 + signum)
+
+    before = {sig: signal.signal(sig, stop) for sig in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        return play_group(conf, gid, repo, ref, minutes=minutes, record=record)
+    finally:
+        for sig, handler in before.items():
+            signal.signal(sig, handler)
 
 
 def run_all(conf, repo, ref, only=(), run=gh, sleep=time.sleep, minutes=20, central=None, callers=None, moved_out=None, record=None, run_id=None):
@@ -2109,21 +2278,33 @@ def untriggered_line(missing):
     return f"\nPairs no scenario triggered: {', '.join(f'`{p}`' for p in missing)}\n" if missing else ""
 
 
-def write_results(results, out, untriggered=None):
-    """The table of `results` to stdout, and to `out` with the record the
+def write_results(results, out, untriggered=None, echo=True):
+    """The table of `results` to stdout (but with `echo` false, #878: the
+    rows a group writes while it plays), and to `out` with the record the
     lane's next job reads; with `untriggered` (#843, `run_coverage`), its
     line after the table and its own record, which release-lane.py act
     names as a warning."""
     text = table(results) + untriggered_line(untriggered)
-    sys.stdout.write(text)
+    if echo:
+        sys.stdout.write(text)
     if out:
         # The job's --out may name a directory no step made (#693).
         os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
-        with open(out, "w", encoding="utf-8") as fh:
-            fh.write(text)
-            fh.write(f"\n<!-- dx-scenarios {json.dumps(results)} -->\n")
-            if untriggered:
-                fh.write(f"<!-- dx-untriggered {json.dumps(untriggered)} -->\n")
+        # #878: whole or not at all, through a file of its own: a signal's
+        # write never meets one it cut in the middle.
+        import tempfile
+        fd, part = tempfile.mkstemp(dir=os.path.dirname(out) or ".", prefix=".results-")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(text)
+                fh.write(f"\n<!-- dx-scenarios {json.dumps(results)} -->\n")
+                if untriggered:
+                    fh.write(f"<!-- dx-untriggered {json.dumps(untriggered)} -->\n")
+            os.replace(part, out)
+        except BaseException:
+            if os.path.exists(part):
+                os.unlink(part)
+            raise
 
 
 def read_results(path):
@@ -2621,16 +2802,20 @@ def self_test():
     busy709 = {sid for sid, n, path in issues709 if _ap.core_busy([path], rpack["core"], [{"number": m, "files": [q]} for _, m, q in issues709 if m != n], mine=n)}
     check("#709 C1: from the real pack, with every scenario's fixed change open at once, only core-one-at-a-time can wait on the core", busy709, {"core-one-at-a-time"})
     plan_real = scenario_plan(real["scenarios"])
-    check("C3: the real plan: no fixed wait, every wait an `until`, polling every 50 seconds, each limit 15 minutes or less",
-          (timing(real["scenarios"]), {p["poll"] for p in plan_real}, max(p["minutes"] for p in plan_real) <= 15, len(plan_real) == len(real["scenarios"]),
-           [st for s in real["scenarios"] for st in s.get("steps") or [] if "wait" in st]), ([], {50}, True, True, []))
-    check("#726: the real plan, every scenario polling at once, stays under the test identity's rate limit; a plan of many scenarios is refused",
-          (poll_budget(real["scenarios"]) < RATE_LIMIT, poll_budget([{"opens": {"issue": {}}}, {"opens": {"pull": {}}, "expect": {"check": {"c": "success"}}}]),
+    check("C3: the real plan: no fixed wait, every wait an `until`, polling every 75 seconds, each limit 15 minutes or less",
+          (timing(real["scenarios"], real["bodies"]), {p["poll"] for p in plan_real}, max(p["minutes"] for p in plan_real) <= 15, len(plan_real) == len(real["scenarios"]),
+           [st for s in real["scenarios"] for st in s.get("steps") or [] if "wait" in st]), ([], {75}, True, True, []))
+    check("#726 #878: the real plan, every scenario polling at once with its setup, cleanup and retry, stays under the test identity's rate limit; a plan of many scenarios is refused",
+          (call_budget(real["scenarios"], real["bodies"]) < RATE_LIMIT, poll_budget([{"opens": {"issue": {}}}, {"opens": {"pull": {}}, "expect": {"check": {"c": "success"}}}]),
            timing([{"id": f"s{i}", "opens": {"pull": {}}, "expect": {"check": {"c": "success"}}} for i in range(30)])),
-          (True, 360, ["the plan's 30 scenarios poll GitHub 6480 times an hour, every 50 seconds, past the test identity's 5000"]))
+          (True, 240, ["the plan's 30 scenarios call GitHub 5700 times an hour, polling every 75 seconds, with their setup, cleanup and retry, past the test identity's 5000"]))
+    check("#878: a scenario's setup calls: its clear twice, its issue and its cleanup, its pull request, its steps, a land on main",
+          [setup_calls(s) for s in ({"id": "i", "opens": {"issue": {}}}, {"id": "p", "opens": {"pull": {}}},
+                                    {"id": "p", "opens": {"pull": {}}, "steps": [{"comment": "x"}, {"until": {"labels": ["y"]}}, {"push": "conflict"}]})],
+          [21, 23, 40])
     check("C3: timing names a fixed wait, an empty `until` and a limit past 15 minutes",
           timing([{"id": "w", "steps": [{"wait": 60}, {"until": {"of": "before"}}], "minutes": 16}]),
-          ["scenario w: waits a fixed 60 seconds; wait `until` the state it waits for, polled every 50 seconds", "scenario w: an `until` with no expectation",
+          ["scenario w: waits a fixed 60 seconds; wait `until` the state it waits for, polled every 75 seconds", "scenario w: an `until` with no expectation",
            "scenario w: its limit is 16 minutes, past 15"])
     check("C3: the play step's 20 minutes stay above every scenario's limit", MAX_LIMIT < 20, True)
     check("C3: hopeless: merged when it should not, closed unmerged, a check that ended otherwise, an absent label once settled",
@@ -2695,19 +2880,19 @@ def self_test():
     got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "steps": [{"until": {"labels": ["claimed"]}}, {"comment": "/unclaim"}], "expect": {"labels": ["done"]}},
                "o/t", "v7-next", {}, fake, st["sleeps"].append, 10)
     comment = st["calls"].index(next(c for c in st["calls"] if c[:2] == ("issue", "comment")))
-    check("C3: an `until` polls every 50 seconds until its state holds, then the next step goes on",
-          (got["ok"], st["sleeps"], comment > [i for i, c in enumerate(st["calls"]) if c[:2] == ("issue", "view")][2]), (True, [50, 50], True))
+    check("C3: an `until` polls every 75 seconds until its state holds, then the next step goes on",
+          (got["ok"], st["sleeps"], comment > [i for i, c in enumerate(st["calls"]) if c[:2] == ("issue", "view")][2]), (True, [75, 75], True))
     st, fake = polled([{"labels": []}])
     got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "steps": [{"until": {"labels": ["claimed"]}}, {"comment": "x"}], "expect": {}}, "o/t", "v7-next", {}, fake, st["sleeps"].append, 1)
     check("C3: an `until` that never holds fails at the scenario's limit, named, and takes no further step",
-          (got["ok"], got["why"], len(st["sleeps"]), any(c[:2] == ("issue", "comment") for c in st["calls"])), (False, ['until {"labels": ["claimed"]}: no label claimed', f'until {{"labels": ["claimed"]}}: {NONE}'], 2, False))
+          (got["ok"], got["why"], len(st["sleeps"]), any(c[:2] == ("issue", "comment") for c in st["calls"])), (False, ['until {"labels": ["claimed"]}: no label claimed', f'until {{"labels": ["claimed"]}}: {NONE}'], 1, False))
     st, fake = polled([{"labels": [{"name": "incomplete"}]}], runs=lambda n: [{"url": "u", "status": "completed"}])
     got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "expect": {"labels": ["awaiting-acceptance"], "absent": ["incomplete"]}}, "o/t", "v7-next", {}, fake, st["sleeps"].append, 15)
     check("C3: a scenario stops as soon as its expectation can no longer hold, not at its limit",
-          (got["ok"], st["sleeps"], got["why"][-1]), (False, [50], "it can no longer hold: label incomplete stays, with nothing left running"))
+          (got["ok"], st["sleeps"], got["why"][-1]), (False, [75], "it can no longer hold: label incomplete stays, with nothing left running"))
     st, fake = polled([{"labels": []}])
     got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "minutes": 2, "expect": {"labels": ["x"]}}, "o/t", "v7-next", {}, fake, st["sleeps"].append, 20)
-    check("C3: a scenario's own limit bounds its polls (2 minutes: 3 polls of 50 seconds)", (got["ok"], len(st["sleeps"]), set(st["sleeps"])), (False, 3, {50}))
+    check("C3: a scenario's own limit bounds its polls (2 minutes: 2 polls of 75 seconds)", (got["ok"], len(st["sleeps"]), set(st["sleeps"])), (False, 2, {75}))
     st, fake = polled([{"labels": []}])
     got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "steps": [{"wait": 300}], "expect": {}}, "o/t", "v7-next", {}, fake, st["sleeps"].append, 1)
     check("C3: a fixed wait is never slept", (got["ok"], st["sleeps"]), (False, []))
@@ -2725,9 +2910,9 @@ def self_test():
           (got["ok"], got["why"], [c for c in forked if c[:2] == ("repo", "fork")]), (False, [FORK_NEEDS], []))
     lane = load_yaml(os.path.join(ROOT, ".github", "workflows", "release-lane.yml"))["jobs"]
     pstep = next(st for st in lane["play"]["steps"] if st.get("id") == "play")
-    check("C9: the limits the 20-minute run relies on: every scenario at once, each under the play step's 20 minutes, polled every 50 seconds",
+    check("C9: the limits the 20-minute run relies on: every scenario at once, each under the play step's 20 minutes, polled every 75 seconds",
           ("max-parallel" in (lane["play"].get("strategy") or {}), max(limit(s) for s in real["scenarios"]) < pstep["timeout-minutes"] <= 20, POLL,
-           pstep["env"].get(FORK_SECRET)), (False, True, 50, "${{ secrets.DX_TEST_FORK_TOKEN }}"))
+           pstep["env"].get(FORK_SECRET)), (False, True, 75, "${{ secrets.DX_TEST_FORK_TOKEN }}"))
     titles = []
 
     def ordered(*a, input=None):
@@ -2928,16 +3113,21 @@ def self_test():
         return fake(*args, input=input)
     check("#843 class: a `gh` error that is not GitHub failing is read as the engine's", play(scen["scenarios"][1], "o/t", "v7-next", scen["bodies"], denied, lambda s: None, 1).get("class"), "engine")
     check("#843 class: a run GitHub held or never started is infrastructure's", (blocked({"held": ["u"]}), blocked({"checks": {"a": "startup_failure"}}), blocked({"checks": {"a": "failure"}})), (True, True, False))
-    clock = iter([19 * 60])
+    clock, naps = iter([0, 15 * 60]), iter([0, 14 * 60])
     tried = []
-    late = retried({"id": "c"}, lambda m: tried.append(m) or {"id": "c", "ok": False, "why": ["slow"], "run": ""}, 20, 20 * 60, lambda: next(clock))
-    check("#843 retry: with less than a minute left in the play step, past its margin, a failure is not played again and says so",
+    late = retried({"id": "c"}, lambda m: tried.append(m) or {"id": "c", "ok": False, "why": ["slow"], "run": ""}, 20, 20 * 60, lambda: next(clock), lambda: next(naps))
+    check("#843 #878 retry: with less than a minute left in the player's time, past its allowance and a poll, a failure is not played again and says so",
           (tried, late["ok"], late["why"], late["attempts"]), ([20], False, ["slow", NOT_RETRIED], 1))
-    clock = iter([5 * 60])
+    clock, naps = iter([0, 5 * 60]), iter([0, 4 * 60])
     tried = []
-    again = retried({"id": "c", "minutes": 15}, lambda m: tried.append(m) or {"id": "c", "ok": len(tried) > 1, "why": [] if len(tried) > 1 else ["fast"], "run": ""}, 20, 20 * 60, lambda: next(clock))
-    check("#843 retry: the retry has what the play step has left less its margin, at most the scenario's limit; passing, it is ok and flaky",
-          (tried, again["ok"], again.get("flaky"), again["first_why"], table([again]).count("pass (flaky: fast)")), ([20, 13], True, True, ["fast"], 1))
+    again = retried({"id": "c", "minutes": 15}, lambda m: tried.append(m) or {"id": "c", "ok": len(tried) > 1, "why": [] if len(tried) > 1 else ["fast"], "run": ""}, 20, 20 * 60, lambda: next(clock), lambda: next(naps))
+    check("#843 #878 retry: the retry has what the player has left less RETRY_ALLOWANCE (the first attempt took 1 minute of its own) and a poll, at most the scenario's limit; passing, it is ok and flaky",
+          (tried, again["ok"], again.get("flaky"), again["first_why"], table([again]).count("pass (flaky: fast)")), ([20, 10.75], True, True, ["fast"], 1))
+    clock, naps = iter([0, 9 * 60]), iter([0, 3 * 60])
+    tried = []
+    retried({"id": "c", "minutes": 15}, lambda m: tried.append(m) or {"id": "c", "ok": False, "why": ["slow"], "run": ""}, 20, 20 * 60, lambda: next(clock), lambda: next(naps))
+    check("#878 retry: a first attempt whose own time (its setup and cleanup) passes RETRY_ALLOWANCE leaves the retry that much more",
+          tried, [20, 20 - 9 - 6 - POLL / 60])
     # #843: a retried row's class comes from both attempts.
     both = iter([{"id": "k", "ok": False, "why": ["slow"], "run": "", "class": "infrastructure"}, {"id": "k", "ok": False, "why": ["no"], "run": "", "class": "engine"}])
     check("#843 retry: failing on both attempts, the row keeps the first failure's class",
@@ -3183,7 +3373,7 @@ def self_test():
     st, fake = searchless(fail=99, retry="")
     got = play({"id": "s", "minutes": 2, "opens": {"issue": {"title": "feat: x", "body": "f"}}, "expect": {"pull": {"closes": True}}}, "o/t", "v7-next", {"f": "f"}, fake, st["sleeps"].append, 20)
     check("#698: one rate-limited until the scenario's time runs out fails then, naming it, backing off within its limit",
-          (got["ok"], got["why"][0].startswith("gh issue view 9 rate limited"), sum(st["sleeps"]), st["sleeps"][:3]), (False, True, 120, [50, 70]))
+          (got["ok"], got["why"][0].startswith("gh issue view 9 rate limited"), sum(st["sleeps"]), st["sleeps"][:3]), (False, True, 120, [75, 45]))
     st = {"n": 0}
 
     def broken(*a, input=None):
@@ -3194,7 +3384,7 @@ def self_test():
     check("#698: a `gh` error that is not transient still fails at once", (got["ok"], st["n"]), (False, 0))
     check("#698 backoff: retry-after, then the reset, then POLL doubled up to 120",
           (backoff(GhError("x", stderr="Retry-After: 7"), 0), backoff(GhError("x", stderr="x-ratelimit-reset: 1060"), 0, now=1000), backoff(GhError("x"), 0), backoff(GhError("x"), 5)),
-          (7, 60, 50, 120))
+          (7, 60, POLL, 120))
     check("#698 transient: a rate limit, a secondary one, a 5xx; not a 404",
           [transient(GhError(m)) for m in ("gh api: HTTP 429", "You have exceeded a secondary rate limit", "gh api: HTTP 502: Bad Gateway", "gh api: HTTP 404: Not Found")] + [transient(RuntimeError("rate limit"))],
           [True, True, True, False, False])
@@ -3987,8 +4177,9 @@ def main(argv):
         write_results(results, a.out)
         return 0 if all(r["ok"] for r in results) else 1
     if argv[:1] == ["plan"] and len(argv) == 1:
-        scenarios = load_yaml(os.path.join(ROOT, SCENARIOS)).get("scenarios") or []
-        wrong = timing(scenarios)
+        conf = load_yaml(os.path.join(ROOT, SCENARIOS))
+        scenarios = conf.get("scenarios") or []
+        wrong = timing(scenarios, conf.get("bodies") or {})
         for line in wrong:
             print(line, file=sys.stderr)
         print(json.dumps(scenario_plan(scenarios), separators=(",", ":")))
@@ -4017,7 +4208,7 @@ def main(argv):
         if argv[0] == "move":
             results = move_callers(a.repo, a.ref, callers_gh(), minutes=a.minutes, record=lambda m: write_moved(m, a.moved))[1]
         else:
-            results = play_group(load_yaml(os.path.join(ROOT, SCENARIOS)), a.group, a.repo, a.ref, minutes=a.minutes)
+            results = play_watched(load_yaml(os.path.join(ROOT, SCENARIOS)), a.group, a.repo, a.ref, a.minutes, a.out)
         write_results(results, a.out)
         return 0 if all(r["ok"] for r in results) else 1
     if argv[:1] == ["merge"]:
