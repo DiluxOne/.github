@@ -15,22 +15,31 @@ The cases are real pull requests of the organisation's public repositories
 
 Each case is reviewed again, with the rules as they stand in the checkout,
 by scripts/local-review.sh (the same brief, profiles and model the pull
-request's review uses). The score is the share of `flag` cases found and of
-`clean` cases blocked; review-eval.yml fails a change to the review whose
-score is worse than evals/review/baseline.json by more than one case on
-either side (a model does not answer the same twice).
+request's review uses), PLAYS (3) times, each on a fresh checkout, and
+scored on its median: found, or blocked, when 2 of 3 plays say so (a play
+that could not be reviewed is dropped; fewer than 2 reviewed is
+unreviewed). The set holds at least MIN_CASES (10) cases of each kind, or
+it is neither run nor scored (#844). The score is the share of `flag` cases
+found and of `clean` cases blocked; review-eval.yml fails a change to the
+review whose score is worse than evals/review/baseline.json by more than
+one case on either side.
 
   review-eval.py collect [N]   write evals/review/cases.json: N cases of each
-                               kind (default 6), from the review's threads
+                               kind (default 10), from the review's threads
                                (GH_TOKEN, read)
   review-eval.py check [FILE]  validate the set (default cases.json): exit 1
                                naming each flag case whose line its fix did
                                not change (git, the public repositories)
-  review-eval.py run           check the set, then review every case; results on stdout (JSON)
-                               (the Claude Code CLI, git, the checkout)
-  review-eval.py score FILE    the results in FILE against the baseline:
-                               a table on stdout, exit 1 when worse
-  review-eval.py baseline FILE write the results in FILE as the baseline
+  review-eval.py run [--play N]
+                               check the set, then review every case, all
+                               the plays or play N alone; results on stdout
+                               (JSON) (the Claude Code CLI, git, the checkout)
+  review-eval.py score FILE... the results in the FILEs (one per play, or a
+                               whole run) against the baseline: a table on
+                               stdout, exit 1 when worse
+  review-eval.py baseline FILE...
+                               write the results as the baseline (a whole
+                               run of every play alone)
   review-eval.py --test        self-test
 """
 import json
@@ -48,6 +57,10 @@ import org  # noqa: E402  the organisation, from org.yml (#191)
 CASES = os.path.join(ROOT, "evals", "review", "cases.json")
 BASELINE = os.path.join(ROOT, "evals", "review", "baseline.json")
 SLACK = 1
+# A set of at least MIN_CASES of each kind, each case reviewed PLAYS times
+# and scored on its median (C3, #844): one odd answer moves no case.
+MIN_CASES = 10
+PLAYS = 3
 
 QUERY = """
 query($q: String!) {
@@ -273,12 +286,50 @@ def run_case(case, central, work):
         return None
 
 
+def short(items):
+    """Why the set is too small to score, or '': fewer than MIN_CASES flag
+    or clean cases (items are cases or results)."""
+    why = [f"{sum(1 for c in items if c.get('expect') == k)} {k} cases, fewer than {MIN_CASES}"
+           for k in ("flag", "clean") if sum(1 for c in items if c.get("expect") == k) < MIN_CASES]
+    return "; ".join(why)
+
+
+def unplayed(results):
+    """The cases not played PLAYS times, by name."""
+    return [r.get("id") for r in results if len(r.get("plays") or []) != PLAYS]
+
+
+def merge(runs):
+    """The plays of several runs (one per play, --play N) case by case."""
+    out, at = [], {}
+    for run in runs:
+        for r in run:
+            if r["id"] not in at:
+                at[r["id"]] = {"id": r["id"], "expect": r["expect"], "plays": []}
+                out.append(at[r["id"]])
+            at[r["id"]]["plays"] += list(r.get("plays") or [])
+    return out
+
+
+def median(r):
+    """A case's result over its plays: True (as expected), False, or None
+    when fewer than 2 plays were reviewed. A flag case is found, and a
+    clean one blocked, when 2 plays say so (2 of 3)."""
+    played = [p for p in r.get("plays") or [] if p is not None]
+    if len(played) < 2:
+        return None
+    if r["expect"] == "flag":
+        return sum(1 for p in played if p) >= 2
+    return sum(1 for p in played if not p) < 2
+
+
 def score(results):
-    flag = [r for r in results if r["expect"] == "flag" and r["ok"] is not None]
-    clean = [r for r in results if r["expect"] == "clean" and r["ok"] is not None]
-    return {"found": sum(1 for r in flag if r["ok"]), "flag": len(flag),
-            "blocked": sum(1 for r in clean if not r["ok"]), "clean": len(clean),
-            "unreviewed": sum(1 for r in results if r["ok"] is None)}
+    ok = [(r["expect"], median(r)) for r in results]
+    flag = [m for e, m in ok if e == "flag" and m is not None]
+    clean = [m for e, m in ok if e == "clean" and m is not None]
+    return {"found": sum(1 for m in flag if m), "flag": len(flag),
+            "blocked": sum(1 for m in clean if not m), "clean": len(clean),
+            "unreviewed": sum(1 for _, m in ok if m is None), "plays": PLAYS}
 
 
 def worse(now, base):
@@ -294,10 +345,14 @@ def worse(now, base):
 
 
 def table(results, now, base):
-    out = ["| Case | Expects | Result |", "| --- | --- | --- |"]
+    out = ["| Case | Expects | Plays | Result |", "| --- | --- | --- | --- |"]
+    words = {"flag": ("found", "missed"), "clean": ("clean", "blocked")}
     for r in results:
-        res = "could not review" if r["ok"] is None else ("as expected" if r["ok"] else "**missed**" if r["expect"] == "flag" else "**blocked**")
-        out.append(f"| {r['id']} | {r['expect']} | {res} |")
+        yes, no = words.get(r["expect"], ("as expected", "not"))
+        plays = ", ".join("not reviewed" if p is None else yes if p else no for p in r.get("plays") or [])
+        m = median(r)
+        res = "could not review" if m is None else ("as expected" if m else "**missed**" if r["expect"] == "flag" else "**blocked**")
+        out.append(f"| {r['id']} | {r['expect']} | {plays} | {res} |")
     out += ["", f"Found {now['found']} of {now['flag']} known bugs (baseline {base.get('found', '?')} of {base.get('flag', '?')}); "
             f"blocked {now['blocked']} of {now['clean']} clean pull requests (baseline {base.get('blocked', '?')}); {now['unreviewed']} not reviewed."]
     return "\n".join(out)
@@ -338,14 +393,19 @@ def self_test():
     check("verdict: flag missed (a minor, another file, a pre-existing one)", verdict(case_f, {"findings": [{"severity": "minor", "file": "a.php"}, {"severity": "major", "file": "b.php"}, {"severity": "blocker", "file": "a.php", "pre_existing": True}]}), False)
     check("verdict: clean kept clean; clean blocked", (verdict({"expect": "clean"}, {"findings": [{"severity": "minor"}]}), verdict({"expect": "clean"}, {"findings": [{"severity": "major"}]})), (True, False))
     check("verdict: no review is unknown", verdict(case_f, None), None)
-    res = [{"id": "1", "expect": "flag", "ok": True}, {"id": "2", "expect": "flag", "ok": False}, {"id": "3", "expect": "clean", "ok": False}, {"id": "4", "expect": "clean", "ok": None}]
+    res = [{"id": "1", "expect": "flag", "plays": [True, True, False]}, {"id": "2", "expect": "flag", "plays": [False, True, False]},
+           {"id": "3", "expect": "clean", "plays": [False, False, True]}, {"id": "4", "expect": "clean", "plays": [None, None, True]}]
     now = score(res)
-    check("score: found, blocked, unreviewed", now, {"found": 1, "flag": 2, "blocked": 1, "clean": 1, "unreviewed": 1})
+    check("score: each case's median; found, blocked, unreviewed", now, {"found": 1, "flag": 2, "blocked": 1, "clean": 1, "unreviewed": 1, "plays": PLAYS})
+    check("median: 2 reviewed plays that split find no bug and block nothing", (median({"expect": "flag", "plays": [True, None, False]}), median({"expect": "clean", "plays": [True, None, False]})), (False, True))
+    check("merge: the plays of each run, case by case", merge([[{"id": "1", "expect": "flag", "plays": [True]}], [{"id": "1", "expect": "flag", "plays": [False]}]]), [{"id": "1", "expect": "flag", "plays": [True, False]}])
+    check("short: fewer than MIN_CASES of a kind", (short(res), short([{"expect": k} for k in ("flag", "clean") for _ in range(MIN_CASES)])), (f"2 flag cases, fewer than {MIN_CASES}; 2 clean cases, fewer than {MIN_CASES}", ""))
+    check("unplayed: a case not played PLAYS times", unplayed(res + [{"id": "5", "expect": "flag", "plays": [True]}]), ["5"])
     check("worse: within one case of the baseline is not worse", worse(now, {"found": 2, "flag": 2, "blocked": 0}), "")
     check("worse: two fewer bugs found is", worse({**now, "found": 0}, {"found": 2, "flag": 2, "blocked": 0}).startswith("it found 0 of 2"), True)
     check("worse: two more clean ones blocked is", "it blocked 2" in worse({**now, "blocked": 2}, {"found": 1, "flag": 2, "blocked": 0}), True)
     check("worse: more than one case unreviewed is", ("could not be reviewed" in worse({"found": 1, "flag": 1, "blocked": 0, "clean": 8, "unreviewed": 2}, {"found": 1, "flag": 1}), worse({"found": 1, "flag": 1, "blocked": 0, "clean": 9, "unreviewed": 1}, {"found": 1, "flag": 1})), (True, ""))
-    check("table: says what was missed", "**missed**" in table(res, now, {}), True)
+    check("table: says what was missed, and each play", ("**missed**" in table(res, now, {}), "| 1 | flag | found, found, missed | as expected |" in table(res, now, {})), (True, True))
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
@@ -354,7 +414,7 @@ def main(argv):
     if argv == ["--test"]:
         return self_test()
     if argv[:1] == ["collect"]:
-        cases = collect(int(argv[1]) if len(argv) > 1 else 6)
+        cases = collect(int(argv[1]) if len(argv) > 1 else MIN_CASES)
         os.makedirs(os.path.dirname(CASES), exist_ok=True)
         with open(CASES, "w", encoding="utf-8") as fh:
             json.dump(cases, fh, indent=2)
@@ -364,23 +424,38 @@ def main(argv):
     if argv[:1] == ["check"] and len(argv) <= 2:
         with open(argv[1] if len(argv) == 2 else CASES, encoding="utf-8") as fh:
             return check(json.load(fh))
-    if argv == ["run"]:
+    if argv[:1] == ["run"] and (len(argv) == 1 or (len(argv) == 3 and argv[1] == "--play" and argv[2] in [str(n) for n in range(1, PLAYS + 1)])):
         with open(CASES, encoding="utf-8") as fh:
             cases = json.load(fh)
         # A set that does not hold is refused before any paid review (#844).
+        if short(cases):
+            print(f"review-eval.py: the set has {short(cases)}", file=sys.stderr)
+            return 1
         if check(cases):
             return 1
-        work = tempfile.mkdtemp(prefix="dx-eval-")
-        results = []
-        for c in cases:
-            ok = run_case(c, ROOT, work)
-            print(f"  {c['id']}: {ok}", file=sys.stderr)
-            results.append({"id": c["id"], "expect": c["expect"], "ok": ok})
+        plays = [int(argv[2])] if len(argv) == 3 else list(range(1, PLAYS + 1))
+        results = [{"id": c["id"], "expect": c["expect"], "plays": []} for c in cases]
+        for n in plays:
+            # Each play on its own clones: a fresh checkout and last.json.
+            work = tempfile.mkdtemp(prefix=f"dx-eval-{n}-")
+            for c, r in zip(cases, results):
+                ok = run_case(c, ROOT, work)
+                print(f"  play {n}, {c['id']}: {ok}", file=sys.stderr)
+                r["plays"].append(ok)
         print(json.dumps(results, indent=2))
         return 0
-    if argv[:1] in (["score"], ["baseline"]) and len(argv) == 2:
-        with open(argv[1], encoding="utf-8") as fh:
-            results = json.load(fh)
+    if argv[:1] in (["score"], ["baseline"]) and len(argv) >= 2:
+        runs = []
+        for f in argv[1:]:
+            with open(f, encoding="utf-8") as fh:
+                runs.append(json.load(fh))
+        results = merge(runs)
+        if short(results):
+            print(f"review-eval.py: the set has {short(results)}; it is not scored", file=sys.stderr)
+            return 1
+        if unplayed(results):
+            print(f"review-eval.py: not played {PLAYS} times: {', '.join(unplayed(results))}", file=sys.stderr)
+            return 1
         now = score(results)
         if argv[0] == "baseline":
             if now["unreviewed"]:
@@ -394,10 +469,13 @@ def main(argv):
         try:
             with open(BASELINE, encoding="utf-8") as fh:
                 base = json.load(fh)
+            # A baseline of another number of plays is not comparable.
+            if base.get("plays") != PLAYS:
+                raise ValueError("plays")
         except (OSError, ValueError):
             # No baseline is no gate: that fails, it never passes quietly.
             print(table(results, now, {}))
-            print(f"\n**No baseline** at {BASELINE}: write one with `review-eval.py baseline`.")
+            print(f"\n**No baseline** of {PLAYS} plays at {BASELINE}: write one with `review-eval.py baseline`.")
             return 1
         print(table(results, now, base))
         why = worse(now, base)
