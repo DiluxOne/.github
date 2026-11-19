@@ -538,7 +538,7 @@ def step_names(tree, workflows):
                 and isinstance(n.args[0], ast.Constant) and n.args[0].value == "run"):
             return True
         if isinstance(n, ast.Constant) and isinstance(n.value, str):
-            return any(m.group(0) in called for m in SCRIPT_FILE.finditer(os.path.basename(n.value.rstrip("/")) or n.value))
+            return any(m.group(0) in called for m in SCRIPT_FILE.finditer(n.value))
         return False
 
     def is_step(expr):
