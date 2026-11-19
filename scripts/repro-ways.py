@@ -45,6 +45,10 @@ A way is one entry of `repro.ways`:
   context   files the writer reads whole; list: globs it sees by name;
   example   a glob whose first match it reads as the house style
   guide     what the writer must do and avoid, for this way
+  runs-step true when the way's test must run a step (#841): a test with
+            no call that runs a process (`subprocess.run`, `call`,
+            `check_call`, `check_output`, `Popen`, `os.system`) is broken,
+            "the test runs no step", whatever its report says
   shots     for a browser way, the command that runs a pull request's
             affected specs ({tests}) through the screenshot configuration
             (scripts/screenshots.py, #564)
@@ -71,7 +75,10 @@ LEVEL=pr): the pack's, then the repository's.
   repro-ways.py verdict JUNIT NAME [ASSERTION]
                           reproduced|passed|broken|environment from a JUnit
                           report, for the test file NAME (every case, when
-                          no case names it nor any file: node:test's, #501)
+                          no case names it nor any file: node:test's, #501);
+                          broken, its reason on stderr, when SPEC (the way's,
+                          JSON from resolve) has `runs-step` and its `test`
+                          runs no step (#841)
   repro-ways.py affected  the tests a pull request runs, from the changed
                           paths on stdin: JSON {"targeted", "tests", "repro",
                           "smoke"}
@@ -108,11 +115,11 @@ sys.path.insert(0, HERE)
 import repos_conf  # noqa: E402  repos.yml's one entry per repository (#562)
 LAYERS = ("logic", "browser", "cli", "api", "workflow")
 KEYS = {"layer", "noun", "test", "needs", "sandbox", "setup", "theme", "run", "junit", "case", "assertion", "teardown",
-        "minutes", "context", "list", "example", "guide", "shots", "fixed"}
+        "minutes", "context", "list", "example", "guide", "shots", "fixed", "runs-step"}
 SANDBOXES = ("php-unit",)
 # How the comments say each layer is reproduced.
 WHERE = {"logic": "with a test of the code's logic", "browser": "in a browser", "cli": "through a command's output",
-         "api": "through its API", "workflow": "with a test that reads the workflow's file (its triggers, steps and conditions)"}
+         "api": "through its API", "workflow": "with a test that runs the workflow's step with stubs (its script, its conditions, what it calls)"}
 HOW = ("declare one in `repro.ways` of the repository's .github/review-policy.yml (or of its kind's pack, "
        "kinds/<kind>/pack.yml in DiluxOne/.github): the `layer` it reproduces, the `test` the agent writes "
        "(with `{n}`), the `run` command and the `junit` report it writes; scripts/repro-ways.py says what each key means")
@@ -190,6 +197,8 @@ def problems(conf):
                 out.append(f"repro.ways.{name}.assertion: a regular expression")
         if way.get("sandbox") is None and not (way.get("run") and way.get("junit")):
             out.append(f"repro.ways.{name}: a command way needs `run` and `junit`")
+        if way.get("runs-step") is not None and not isinstance(way["runs-step"], bool):
+            out.append(f"repro.ways.{name}.runs-step: true or false")
         if way.get("fixed") is not None:
             fixed = str(way["fixed"])
             if not fixed or fixed.startswith("/") or ".." in fixed.split("/"):
@@ -372,7 +381,7 @@ def resolve(root, central, layer, number):
                                     f"(`repro: {{ways: {{{name}: false}}}}`) and declare another"),
         # The command way whole, as JSON, for scripts/repro-run.sh.
         "spec": json.dumps({k: (fill(v, number, central, kind, test) if isinstance(v, str) else [fill(x, number, central, kind, test) for x in v] if isinstance(v, list) else v)
-                            for k, v in way.items() if k in ("setup", "theme", "run", "junit", "case", "assertion", "teardown", "minutes", "test")}, separators=(",", ":")),
+                            for k, v in way.items() if k in ("setup", "theme", "run", "junit", "case", "assertion", "teardown", "minutes", "test", "runs-step")}, separators=(",", ":")),
     })
     return out
 
@@ -445,6 +454,64 @@ def lint(path):
     text = open(path, encoding="utf-8", errors="replace").read()
     m = CSS_AS_TEXT.search(text)
     return f"it reads a stylesheet as text ({m.group(0)[:60]}): how a page looks is reproduced in a browser" if m else ""
+
+
+# The calls that run a process, as `subprocess.<name>` or imported by name,
+# and `os.system` (#841).
+PROCESS_CALLS = {"run", "call", "check_call", "check_output", "Popen"}
+NO_STEP = "the test runs no step"
+
+
+def runs_step(path):
+    """"" when the Python test at PATH calls something that runs a process
+    (subprocess's run, call, check_call, check_output or Popen, through the
+    module or imported by name, or os.system); "the test runs no step"
+    otherwise: it only reads files and asserts on their text, which
+    reproduces nothing (#841). A file that cannot be read or parsed is
+    pytest's to judge: ""."""
+    import ast
+    try:
+        with open(path, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+    except (OSError, SyntaxError, ValueError):
+        return ""
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "subprocess":
+            imported |= {a.asname or a.name for a in node.names if a.name in PROCESS_CALLS}
+        elif isinstance(node, ast.ImportFrom) and node.module == "os":
+            imported |= {a.asname or a.name for a in node.names if a.name == "system"}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and (
+                (f.value.id == "subprocess" and f.attr in PROCESS_CALLS) or (f.value.id == "os" and f.attr == "system")):
+            return ""
+        if isinstance(f, ast.Name) and f.id in imported:
+            return ""
+    return NO_STEP
+
+
+def gate(spec):
+    """Why the way's SPEC (resolve's JSON) makes its test no verdict
+    whatever its report says: its `runs-step` and a test that runs none
+    (#841); "" otherwise, and for a way without the key."""
+    try:
+        spec = json.loads(spec) if isinstance(spec, str) else spec
+    except ValueError:
+        return ""
+    if not isinstance(spec, dict) or spec.get("runs-step") is not True or not spec.get("test"):
+        return ""
+    return runs_step(spec["test"])
+
+
+def judged(junit, name, assertion=None, spec=""):
+    """The lane's verdict and why, when its way's gate decides it: broken,
+    "the test runs no step", for a `runs-step` way's test that runs none,
+    whatever the report says (#841); the report's verdict otherwise."""
+    why = gate(spec)
+    return ("broken", why) if why else (verdict(junit, name, assertion), "")
 
 
 # What a failure that is an assertion's says, in the frameworks the packs
@@ -633,12 +700,12 @@ def self_test():
                   (logic["way"], logic["test"], logic["ready"], logic["sandbox"], "pytest" in spec["run"], "tests/repro/test_issue_366.py" in spec["run"], spec["junit"]),
                   ("python", "tests/repro/test_issue_366.py", "yes", "", True, True, "build/dx-repro-junit.xml"))
             check("#376 pytest is installed in setup, before the test is in the tree", any("pytest" in s for s in spec["setup"]), True)
-            check("#376 C2 a workflow bug here is a test that reads the workflow",
+            check("#376 C2 a workflow bug here is a workflow test (#841: one that runs the step)",
                   (wf["way"], wf["test"], wf["ready"], wf["noun"]), ("workflow", "tests/repro/test_issue_366.py", "yes", "workflow test"))
             check("#376 a script's command is a Python test too", cli["way"], "python")
             b = brief(central, central, "workflow", 375)
             check("#376 C2 the workflow way's brief lists the workflows and shows its example",
-                  (".github/workflows/weekly-failure.yml" in b, "## Example: tests/examples/test_workflow.py" in b, "wf.get(True)" in b), (True, True, True))
+                  (".github/workflows/weekly-failure.yml" in b, "## Example: tests/examples/test_workflow.py" in b, "subprocess.run([\"bash\", \"-c\", script]" in b), (True, True, True))
             b = brief(central, central, "logic", 366)
             check("#376 C1 the logic way's brief shows how a script is loaded", ("## Example: tests/examples/test_logic.py" in b, "spec_from_file_location" in b), (True, True))
         finally:
@@ -738,6 +805,36 @@ def self_test():
         check("#376 a pytest exception is no verdict, whatever assert its traceback quotes",
               pytest_report(f'<failure message="TypeError: unsupported operand type(s)">{trace}</failure>'), "broken")
         check("#376 a dotted exception is no verdict either", pytest_report('<failure message="json.decoder.JSONDecodeError: Expecting value">assert x</failure>'), "broken")
+        # #841: a `runs-step` way's test that runs no process is broken,
+        # whatever its report says; one that runs the step is the report's.
+        failed_report = pytest_report('<failure message="AssertionError: assert \'--flag\' in run">assert</failure>')
+        grep_only = os.path.join(d, "grep_only.py")
+        open(grep_only, "w").write("import yaml\n\ndef test_x():\n    assert '--flag' in open('w.yml').read()\n")
+        stubbed = os.path.join(d, "stubbed.py")
+        open(stubbed, "w").write("import subprocess\n\ndef test_x(tmp_path):\n    subprocess.run(['bash', '-c', 'gh x'])\n    assert False\n")
+        named = os.path.join(d, "named.py")
+        open(named, "w").write("from subprocess import Popen as P\n\ndef test_x():\n    P(['true']).wait()\n")
+        system = os.path.join(d, "system.py")
+        open(system, "w").write("import os\n\ndef test_x():\n    assert os.system('true') == 1\n")
+        mention = os.path.join(d, "mention.py")
+        open(mention, "w").write("import subprocess\n\ndef test_x():\n    assert 'subprocess.run' in open('w.yml').read()\n")
+        broken = os.path.join(d, "broken.py")
+        open(broken, "w").write("def test_x(:\n")
+        check("#841 runs_step: a call that runs a process runs a step; reading and mentioning one does not; a file that does not parse is pytest's",
+              [runs_step(x) for x in (grep_only, stubbed, named, system, mention, broken, os.path.join(d, "none.py"))],
+              [NO_STEP, "", "", "", NO_STEP, "", ""])
+        p_xml = os.path.join(d, "p.xml")
+        check("#841 C1 a grep-only workflow test is broken, the test runs no step, though its report failed an assertion",
+              (failed_report, judged(p_xml, "test_issue_7.py", None, json.dumps({"runs-step": True, "test": grep_only}))),
+              ("reproduced", ("broken", NO_STEP)))
+        check("#841 C2 a stubbed-step workflow test that fails an assertion reproduces",
+              judged(p_xml, "test_issue_7.py", None, json.dumps({"runs-step": True, "test": stubbed})), ("reproduced", ""))
+        check("#841 a way without the key, or no SPEC, is the report's verdict",
+              [judged(p_xml, "test_issue_7.py", None, s) for s in (json.dumps({"test": grep_only}), "", "not json")],
+              [("reproduced", "")] * 3)
+        check("#841 problems: runs-step is true or false",
+              problems({"ways": {"w": {"layer": "workflow", "test": "t/{n}", "run": "x", "junit": "j", "runs-step": "yes"}}}),
+              ["repro.ways.w.runs-step: true or false"])
         check("#376 an AssertionError with a message reproduces", pytest_report('<failure message="AssertionError: the bot has a cap">assert</failure>'), "reproduced")
         check("#376 a pytest.raises that saw nothing raised reproduces",
               pytest_report('<failure message="Failed: DID NOT RAISE &lt;class \'ValueError\'&gt;">E   Failed: DID NOT RAISE</failure>'), "reproduced")
@@ -923,7 +1020,10 @@ def main():
             return 1
         return 0
     if len(args) in (3, 4) and args[0] == "verdict":
-        print(verdict(args[1], args[2], args[3] if len(args) == 4 and args[3] else None))
+        got, why = judged(args[1], args[2], args[3] if len(args) == 4 and args[3] else None, os.environ.get("SPEC") or "")
+        if why:
+            print(why, file=sys.stderr)
+        print(got)
         return 0
     if args == ["propose"]:
         found = propose(root)
