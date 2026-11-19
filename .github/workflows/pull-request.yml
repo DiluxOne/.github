@@ -16,6 +16,12 @@ name: Pull request
 # An autopilot pull request of this repository's own branch that changes
 # the browser layer gets its before and after screenshots when it is
 # marked ready (screenshots, pr-screenshots.yml, #564).
+# The two required checks (#842): "Scripts (self-tests)" and "test-first /
+# Test first" run on every pull request, with no paths filter and no job
+# condition but the event, and the ruleset "own checks" (repos.yml
+# `required-checks`, written by `sync-repos.py own-checks`) requires both:
+# a pull request whose tests are red cannot merge, and one with nothing for
+# them to check sees both report success.
 
 on:
   # An edit of the title or description is handled by pull-request-edited.yml.
@@ -278,13 +284,16 @@ jobs:
   # Its scripts and policy are read from main, like the review's (#524): a
   # pull request's own copy decides whether others merge only once merged.
   auto-merge:
-    needs: review
+    # order: after the "Test first" check too (#842), whose verdict at the
+    # head G7 reads for a criterion's test.
+    needs: [review, test-first]
     if: always() && needs.review.result != 'skipped'
     # Its `repro` job reads the lane issue a reproduced bug's fix closes (#397).
     permissions:
       contents: read
       issues: read
       pull-requests: read
+      checks: read # the head's check runs, for G7 (#842)
     uses: ./.github/workflows/auto-merge.yml
     with:
       central-ref: main

@@ -51,6 +51,10 @@ exclude:
 #                  `dependabot` below).
 #   callers        the values of its callers' inputs (see `callers` below),
 #                  over `callers: defaults`.
+#   required-checks  the check names its default branch requires (#842):
+#                  `sync-repos.py own-checks` writes them, exactly, as its
+#                  ruleset "own checks", in place of what its kind's pack
+#                  `own-checks` would pick.
 # scripts/repos-config.py check holds this to its schema: known kinds, known
 # roles, paths of one repository that never overlap, known attributes.
 repos:
@@ -58,6 +62,8 @@ repos:
     kinds: []
     project: 9
     merge-queue: "off"
+    # #842: its pull requests merge only with their tests green.
+    required-checks: ["Scripts (self-tests)", "test-first / Test first"]
     dependabot:
         docker:
           # The runner image's base (runner/Dockerfile), pinned by digest. Only
