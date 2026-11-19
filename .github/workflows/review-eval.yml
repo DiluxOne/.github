@@ -4,15 +4,17 @@ name: Review evaluation
 # phase 13): the review's prompts, profiles, brief, model or verification.
 # Every case of evals/review/cases.json, real pull requests of the public
 # repositories (a bug the review found and was fixed, which it must find
-# again on its line; a clean one it must not block), is reviewed again with
+# again in the hunk its fix changed; a clean one it must not block), is reviewed again with
 # the rules of this pull request (scripts/local-review.sh, the same brief
 # the review reads) and scored against evals/review/baseline.json
 # (scripts/review-eval.py). Worse by more than one case on either side
 # fails this check, and the table says which cases.
 #
-# The set is checked first, before any paid review: every flag case's line
-# was changed by the commit that fixed it, or the case is refused by its
-# name; and it holds at least 10 cases of each kind (#844). Each case is
+# The set is checked first, before any paid review: every flag case's
+# review thread's hunk was changed by the commit that fixed it, and that
+# commit is no docs, ci, chore, style or test commit nor docs alone, or the
+# case is refused by its name; and it holds at least 10 cases of each kind
+# (#844, #847). Each case is
 # played 3 times, one job per play, and a last job scores each case's
 # median (2 of 3 plays).
 #

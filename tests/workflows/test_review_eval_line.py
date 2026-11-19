@@ -104,3 +104,104 @@ def test_a_review_that_flags_another_line_of_the_same_file_missed_the_case():
     assert mod.verdict(c, {"findings": [{"severity": "major", "file": "a.php", "line": 4}]}) is False
     assert mod.verdict(c, {"findings": [{"severity": "blocker", "file": "a.php"}]}) is False
     assert mod.verdict(c, {"findings": [{"severity": "major", "file": "a.php", "line": "3"}]}) is True
+
+
+# The maintainer's answer on #847: the case's line is the review thread's,
+# the fix must change that thread's hunk, a docs/ci/chore/style/test fix is
+# no bug, and a finding counts inside the hunk the fix changed.
+
+def a_typed_repo(tmp_path, subject, path="a.php"):
+    """o/r: path of ten lines at `head`; `fix` (subject) changes its line 3."""
+    repo = tmp_path / "git" / "o" / "r"
+    repo.mkdir(parents=True)
+    git(repo, "init", "-q", "-b", "main")
+    (repo / path).write_text("".join(f"l{n}\n" for n in range(1, 11)))
+    git(repo, "add", path)
+    git(repo, "commit", "-q", "-m", "head")
+    head = git(repo, "rev-parse", "HEAD")
+    (repo / path).write_text("".join(("L3\n" if n == 3 else f"l{n}\n") for n in range(1, 11)))
+    git(repo, "commit", "-q", "-am", subject)
+    return head, git(repo, "rev-parse", "HEAD")
+
+
+def test_the_thread_hunk_is_read_from_its_header_on_the_head_side():
+    mod = load()
+    assert mod.thread_hunk("@@ -1,4 +2,6 @@ def f():\n a\n+b\n") == (2, 7)
+    assert mod.thread_hunk("@@ -5 +5 @@\n-a\n+b\n") == (5, 5)
+    assert mod.thread_hunk("") is None
+
+
+def test_the_fix_must_change_a_line_of_the_thread_hunk():
+    mod = load()
+    diff = "@@ -3,2 +3,1 @@\n@@ -20,0 +20,2 @@\n"
+    assert mod.fix_hunks(diff, (1, 8)) == [[3, 4]]
+    assert mod.fix_hunks(diff, (18, 25)) == [[20, 20]]
+    assert mod.fix_hunks(diff, (6, 15)) == []
+    diffs = {"c2": "@@ -30 +30 @@\n", "c3": "@@ -4 +4 @@\n"}
+    assert mod.first_fix_in(["c2", "c3"], (1, 8), lambda c: diffs[c]) == ("c3", [[4, 4]])
+    assert mod.first_fix_in(["c2"], (1, 8), lambda c: diffs[c]) is None
+
+
+def test_collect_takes_the_thread_line_and_its_hunk():
+    mod = load()
+    bot = {"login": mod.org.APP}
+    pr = {"number": 1, "title": "fix: a", "baseRefOid": "b", "headRefOid": "h", "isCrossRepository": False,
+          "commits": {"nodes": [{"commit": {"oid": x}} for x in ("c1", "c2")]},
+          "reviewThreads": {"nodes": [{"isOutdated": True, "path": "s.py", "originalLine": 12, "diffSide": "RIGHT", "resolvedBy": None,
+                                       "comments": {"nodes": [{"author": bot, "body": "x AI review", "diffHunk": "@@ -8,3 +10,5 @@\n", "originalCommit": {"oid": "c1"}}]}}]}}
+    seen = []
+    flag, _ = mod.cases_from("o/r", [pr], 5, lambda pr, head, path, hunk, after: seen.append((path, hunk)) or ("c2", [[11, 12]]))
+    assert seen == [("s.py", (10, 14))]
+    assert [(c["path"], c["line"], c["hunk"], c["fix"], c["fixed"]) for c in flag] == [("s.py", 12, [10, 14], "c2", [[11, 12]])]
+    left = json.loads(json.dumps(pr))
+    left["reviewThreads"]["nodes"][0]["diffSide"] = "LEFT"
+    assert mod.cases_from("o/r", [left], 5, lambda *a: ("c2", [[11, 12]]))[0] == []
+    outside = json.loads(json.dumps(pr))
+    outside["reviewThreads"]["nodes"][0]["originalLine"] = 30
+    assert mod.cases_from("o/r", [outside], 5, lambda *a: ("c2", [[11, 12]]))[0] == []
+
+
+def test_a_case_whose_fix_did_not_change_its_thread_hunk_is_refused_by_name(tmp_path):
+    head, fix = a_typed_repo(tmp_path, "fix: the third line")
+    ok = {**case("o/r#1:flag", head, fix, 2), "hunk": [1, 4], "fixed": [[3, 3]]}
+    out_of = {**case("o/r#2:flag", head, fix, 6), "hunk": [5, 8], "fixed": [[3, 3]]}
+    out = run_check(tmp_path, [ok, out_of])
+    assert out.returncode == 1
+    assert f"o/r#2:flag: the hunk 5-8 of a.php was not changed by {fix}" in out.stderr
+    assert "o/r#1:flag" not in out.stderr
+
+
+def test_a_case_whose_fix_hunk_is_not_the_one_recorded_is_refused_by_name(tmp_path):
+    head, fix = a_typed_repo(tmp_path, "fix: the third line")
+    out = run_check(tmp_path, [{**case("o/r#3:flag", head, fix, 2), "hunk": [1, 4], "fixed": [[2, 4]]}])
+    assert out.returncode == 1
+    assert "o/r#3:flag: its fixed lines" in out.stderr
+
+
+def test_the_fix_type_and_a_docs_only_fix_drop_a_case():
+    mod = load()
+    for s in ("docs(readme): say where", "ci: pre-pr runs strict", "chore: x", "style: y", "test: z", "docs!: w"):
+        assert mod.not_a_fix(s, ["a.php"]), s
+    assert mod.not_a_fix("fix: a", ["README.md", "docs/x.php", "readme.txt"])
+    assert not mod.not_a_fix("fix: a", ["README.md", "a.php"])
+    assert not mod.not_a_fix("feat(x)!: b", ["a.php"])
+    assert not mod.not_a_fix("a commit that says nothing", ["a.php"])
+
+
+def test_check_refuses_a_case_whose_fix_is_docs_by_name(tmp_path):
+    head, fix = a_typed_repo(tmp_path, "docs(readme): say where the translations come from", "readme.txt")
+    out = run_check(tmp_path, [{**case("o/r#26:flag", head, fix, 3, "readme.txt"), "hunk": [1, 5], "fixed": [[3, 3]]}])
+    assert out.returncode == 1
+    assert f"o/r#26:flag: {fix} is not a bug's fix" in out.stderr
+
+
+def test_a_finding_counts_inside_the_hunk_the_fix_changed_and_not_beside_it():
+    mod = load()
+    c = {"expect": "flag", "path": "s.py", "line": 12, "hunk": [10, 26], "fixed": [[20, 24]]}
+    find = lambda **f: mod.verdict(c, {"findings": [{"severity": "major", **f}]})
+    assert find(file="s.py", line=20) is True
+    assert find(file="s.py", line=24) is True
+    assert find(file="s.py", line=19) is False
+    assert find(file="s.py", line=25) is False
+    assert find(file="s.py", line=12) is False
+    assert find(file="t.py", line=22) is False
