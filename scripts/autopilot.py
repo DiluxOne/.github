@@ -861,6 +861,84 @@ def freed_runs(state, n, free):
     return with_run(state, run_entry(n, True))
 
 
+# `/autopilot more` (#856): someone `who-decides` allows gives one pull
+# request, at its cap, more runs, from a comment on its issue whose first
+# line is the command; whatever follows is the next run's hint. Each one is
+# an entry in `extensions` on the pull request's board ({by, at, comment}),
+# and adds the policy's `autopilot-runs` to its cap, at most MAX_EXTENSIONS
+# times. Anyone else gets one reply, under MORE_REFUSED, and nothing else.
+MORE = "/autopilot more"
+MORE_MARK = "<!-- dx-autopilot-more -->"
+MORE_REFUSED = "<!-- dx-autopilot-more-refused -->"
+MAX_EXTENSIONS = 2
+
+
+def extensions(state):
+    """The extensions on a pull request's board (#856). Pure."""
+    return [e for e in ((state or {}).get("extensions") or []) if isinstance(e, dict)]
+
+
+def runs_cap(policy_cap, state):
+    """The runs cap of one pull request (#856): the policy's
+    `autopilot-runs`, once more for each extension on its board, never past
+    MAX_EXTENSIONS of them. A board edited by hand is read by run_numbers
+    as the cap reached, whatever this says. Pure."""
+    return int(policy_cap) * (1 + min(len(extensions(state)), MAX_EXTENSIONS))
+
+
+def more_hint(body):
+    """The hint of a `/autopilot more` comment (#856): what follows the
+    command, on its first line or below it, "" when nothing does; None when
+    the comment is not the command. Pure."""
+    text = str(body or "").lstrip()
+    first, _, rest = text.partition("\n")
+    head = first.strip()
+    if head != MORE and not (head.startswith(MORE) and head[len(MORE)].isspace()):
+        return None
+    return (head[len(MORE):].strip() + "\n" + rest).strip()
+
+
+def more_plan(allowed, state, intact, policy_cap, at_cap, said_before):
+    """What a `/autopilot more` does (#856): {go, reply, cap}. `go`, the
+    extension is given; `reply`, the kind of dilux-bot's answer on the issue
+    (more_reply), "" for none. Someone `who-decides` does not allow gets no
+    run and one reply ever (`said_before`); a board edited by hand, a pull
+    request below its cap, or one already extended MAX_EXTENSIONS times, a
+    refusal that says why. Pure."""
+    if not allowed:
+        return {"go": False, "reply": "" if said_before else "refused", "cap": None}
+    if not intact:
+        return {"go": False, "reply": "hand", "cap": None}
+    had = extensions(state)
+    if len(had) >= MAX_EXTENSIONS:
+        return {"go": False, "reply": "spent", "cap": runs_cap(policy_cap, state)}
+    if not at_cap:
+        return {"go": False, "reply": "below", "cap": runs_cap(policy_cap, state)}
+    return {"go": True, "reply": "extended", "cap": runs_cap(policy_cap, {"extensions": had + [{}]})}
+
+
+def more_reply(kind, issue_url, pr="", cap=0, runs=0, policy_cap=5, n=0, unread=""):
+    """dilux-bot's answer to a `/autopilot more` on the issue (#856). Pure."""
+    claim = (f"Anyone may `/claim` this issue and finish it with their own code (CONTRIBUTING.md), "
+             f"or a maintainer closes the pull request.")
+    texts = {
+        "refused": (f"{MORE_REFUSED}\nThanks. A maintainer decides whether the autopilot gets more runs on this issue "
+                    f"(`who-decides`), and will read this: {issue_url}"),
+        "unread": (f"{MORE_MARK}\nThe autopilot gets no more runs for now: who decides could not be read ({unread}). "
+                   f"Comment `{MORE}` again in a while."),
+        "none": f"{MORE_MARK}\nThe autopilot gets no more runs: no open autopilot pull request closes {issue_url}.",
+        "hand": (f"{MORE_MARK}\nThe autopilot gets no more runs on #{pr}: its board's state was edited by hand, so its runs "
+                 f"cannot be counted. A maintainer restores it first."),
+        "spent": (f"{MORE_MARK}\nThe autopilot gets no more runs on #{pr}: it already had its {MAX_EXTENSIONS} extensions "
+                  f"(its cap is {cap}). {claim}"),
+        "below": (f"{MORE_MARK}\nThe autopilot gets no more runs on #{pr}: it is not at its cap (it ran {runs} of {cap} times), "
+                  f"so `{MORE}` waits until it is. A stop is answered on the pull request."),
+        "extended": (f"{MORE_MARK}\nThe autopilot gets {policy_cap} more runs on #{pr}: its cap is now {cap}, extension "
+                     f"{n} of {MAX_EXTENSIONS}. It continues now, with the rest of the comment as its hint."),
+    }
+    return f"{texts[kind]}\n\n{AI_LINE}"
+
+
 def runner_lost(work_result, agent_outcome):
     """Whether the work job failed without its agent's step saying how
     (#479): its runner lost or killed, or a step before the agent failing;
@@ -1421,7 +1499,9 @@ def next_step(state):
     pr_labels = pr.get("labels") or []
     if "needs-human" in pr_labels:
         return wait("answer", "a maintainer", "the autopilot stopped and a person has it (`needs-human`): a maintainer answers on the pull request, or takes it over")
-    runs, cap = int(state.get("runs") or 0), int(state.get("cap") or 5)
+    # #856: the cap with the pull request's extensions (`pr_board`, its
+    # board's state, when the caller read it).
+    runs, cap = int(state.get("runs") or 0), runs_cap(int(state.get("cap") or 5), state.get("pr_board"))
     rnd, rounds = int(state.get("round") or 0), int(state.get("rounds") or 3)
     merge = (pr.get("merge") or "unknown").lower()
     body = pr.get("body") or ""
@@ -1466,7 +1546,7 @@ def next_step(state):
     return none("ready for review: the review runs at its head")
 
 
-def sweep_step(pr, issue_labels=(), runs=0, cap=5):
+def sweep_step(pr, issue_labels=(), runs=0, cap=5, pr_board=None):
     """What a merge into main does for one open autopilot pull request
     (#561 C2, autopilot-sweep.yml): `update` (the bot merges main into one
     that is only behind, ready or a draft (#563), GitHub's update-branch), `continue` (one
@@ -1489,7 +1569,7 @@ def sweep_step(pr, issue_labels=(), runs=0, cap=5):
         return "", "a draft: its own run merges main first"
     if "autopilot:continue" in issue_labels:
         return "", "a continue is already asked for"
-    step = next_step({"issue": {"state": "OPEN", "labels": list(issue_labels)}, "lane": "swept", "runs": runs, "cap": cap,
+    step = next_step({"issue": {"state": "OPEN", "labels": list(issue_labels)}, "lane": "swept", "runs": runs, "cap": cap, "pr_board": pr_board,
                       "pr": {"number": pr.get("number"), "author_is_bot": True, "draft": False, "labels": labels,
                              "merge": str(pr.get("mergeStateStatus") or "unknown").lower(), "head": pr.get("headRefOid") or ""}})
     if step["action"] == "merge-main":
@@ -1600,10 +1680,16 @@ def answers(comments, deciders):
     (review-reply.yml, #561), reaches the prompt too. Anyone else, the
     issue's author included, is not an answer: with none, the run has
     nothing new and the question still waits."""
-    last = max((c.get("createdAt", "") for c in comments if c.get("body", "").startswith((ASK, STOP, SILENT, UNFINISHED))
+    # #856: a cap end too, after which a `/autopilot more` gives more runs,
+    # its hint the rest of the comment (none when nothing follows).
+    last = max((c.get("createdAt", "") for c in comments if c.get("body", "").startswith((ASK, STOP, SILENT, UNFINISHED, CAP))
                 and (c.get("author") or {}).get("login") in BOT_LOGINS), default="")
-    picked = [c for c in comments if c.get("createdAt", "") > last and (c.get("author") or {}).get("login") in deciders]
-    said = "\n\n".join(f"{(c.get('author') or {}).get('login')}: {c.get('body', '').strip()}" for c in sorted(picked, key=lambda c: c.get("createdAt", "")))
+
+    def text(c):
+        hint = more_hint(c.get("body", ""))
+        return c.get("body", "").strip() if hint is None else hint
+    picked = [c for c in comments if c.get("createdAt", "") > last and (c.get("author") or {}).get("login") in deciders and text(c)]
+    said = "\n\n".join(f"{(c.get('author') or {}).get('login')}: {text(c)}" for c in sorted(picked, key=lambda c: c.get("createdAt", "")))
     # An opinion the maintainer took (#287): its summary, as data, never the
     # other person's own words.
     took = adopted(comments, said)
@@ -3201,6 +3287,21 @@ A class on html.
           (freed_runs({"runs": [{"n": 1, "free": False}, {"n": 2, "free": False}]}, 2, True), freed_runs({"runs": [{"n": 2, "free": True}]}, 2, True),
            freed_runs({"runs": [{"n": 2, "free": False}]}, 2, False), freed_runs({"runs": [{"n": 1, "free": False}]}, 2, True)),
           ([{"n": 1, "free": False}, {"n": 2, "free": True}], None, None, None))
+    ext856 = {"by": "boss", "at": "2026-11-19T10:00:00Z", "comment": "https://github.com/o/r/issues/7#issuecomment-1"}
+    check("#856 C2: the cap of one pull request adds the policy's runs for each extension, never past two",
+          (runs_cap(5, {}), runs_cap(5, {"extensions": [ext856]}), runs_cap(5, {"extensions": [ext856] * 2}), runs_cap(3, {"extensions": [ext856]}),
+           runs_cap(5, {"extensions": [ext856] * 3}), runs_cap(5, None)), (5, 10, 15, 6, 15, 5))
+    check("#856 C2: a decider's /autopilot more at the cap is given, its cap 10",
+          more_plan(True, {"runs": [{"n": n, "free": False} for n in range(1, 6)]}, True, 5, True, False), {"go": True, "reply": "extended", "cap": 10})
+    check("#856 C2: the hint is what follows the command; another comment is none",
+          (more_hint("/autopilot more\nTry X."), more_hint("  /autopilot more do Y"), more_hint("/autopilot more"), more_hint("/autopilot moreover"),
+           more_hint("please /autopilot more"), more_hint("/claim")), ("Try X.", "do Y", "", None, None, None))
+    cap856 = {"body": cap_comment("the cap is 5"), "createdAt": "2026-11-19T09:00:00Z", "author": {"login": BOT_LOGINS[0]}}
+    check("#856 C2: answers() restarts at a cap end and gives the rest of a /autopilot more as the hint",
+          (answers([{"body": "old", "createdAt": "2026-11-19T08:00:00Z", "author": {"login": "boss"}}, cap856,
+                    {"body": "/autopilot more\nTry X.", "createdAt": "2026-11-19T10:00:00Z", "author": {"login": "boss"}}], {"boss"}),
+           answers([cap856, {"body": "/autopilot more", "createdAt": "2026-11-19T10:00:00Z", "author": {"login": "boss"}}], {"boss"})),
+          ("boss: Try X.", ""))
     check("#482 C1: finish ready needs make pre-pr passed at HEAD in this run, where the Makefile has it",
           (pre_pr_refusal(False, None, "abc"), bool(pre_pr_refusal(True, None, "abc")), bool(pre_pr_refusal(True, {"head": "old", "rc": 0}, "abc")),
            bool(pre_pr_refusal(True, {"head": "abc", "rc": 2}, "abc")), pre_pr_refusal(True, {"head": "abc", "rc": 0}, "abc"), bool(pre_pr_refusal(True, "x", "abc"))),
@@ -5988,7 +6089,7 @@ def main(argv):
         except ValueError as err:
             print(f"sweep needs a JSON object on stdin ({err})", file=sys.stderr)
             return 64
-        what, why = sweep_step(got.get("pr") or {}, got.get("issue_labels") or [])
+        what, why = sweep_step(got.get("pr") or {}, got.get("issue_labels") or [], pr_board=got.get("pr_board"))
         print(f"{what}\t{why}")
         return 0
     if argv[:1] == ["conflict-note"]:
@@ -6022,6 +6123,59 @@ def main(argv):
     pol = autonomy.policy_in_force()
     cap = int(pol.get("autopilot-runs", 5))
     runs = int(os.environ.get("RUNS", "0") or 0)
+    if argv[:1] == ["more"]:
+        # #856: a `/autopilot more` on issue NUMBER (issue-claim.yml's
+        # `more` job). LOGIN, who commented; COMMENT, a file with its body;
+        # COMMENT_URL, its link; ALLOWED, `deciders.py may continue LOGIN`'s
+        # exit (0 may, 1 may not, 2 could not tell).
+        allowed_rc = (os.environ.get("ALLOWED") or "2").strip()
+        login = os.environ.get("LOGIN", "")
+        view = json.loads(gh("issue", "view", str(number), "--repo", repo, "--json", "url,comments,closedByPullRequestsReferences") or "{}")
+        issue_url = view.get("url") or f"https://github.com/{repo}/issues/{number}"
+
+        def reply(kind, **k):
+            gh("issue", "comment", str(number), "--repo", repo, "--body", more_reply(kind, issue_url, policy_cap=cap, **k))
+            print(kind)
+            return 0
+        if allowed_rc == "2":
+            return reply("unread", unread="deciders.py could not tell")
+        said_before = any(_login(c) in BOT_LOGINS and str(c.get("body") or "").startswith(MORE_REFUSED) for c in view.get("comments") or [])
+        if allowed_rc != "0":
+            plan = more_plan(False, {}, True, cap, False, said_before)
+            if plan["reply"]:
+                return reply(plan["reply"])
+            print(f"{login} may not give more runs, and was answered before: nothing to do.")
+            return 0
+        target = ""
+        for ref in view.get("closedByPullRequestsReferences") or []:
+            n = ref.get("number")
+            if not isinstance(n, int):
+                continue
+            info = json.loads(gh("pr", "view", str(n), "--repo", repo, "--json", "state,labels,author") or "{}")
+            if info.get("state") == "OPEN" and "autopilot" in [l.get("name") for l in info.get("labels") or []] \
+                    and (info.get("author") or {}).get("login") in BOT_LOGINS:
+                target = str(n)
+                break
+        if not target:
+            return reply("none")
+        st, intact = board_state(repo, target, "pr")
+        counted = run_numbers(st, intact)[1]
+        at_cap = counted is not None and counted >= runs_cap(cap, st)
+        plan = more_plan(True, st, intact, cap, at_cap, said_before)
+        if not plan["go"]:
+            return reply(plan["reply"], pr=target, cap=plan["cap"] or cap, runs=counted or 0)
+        entry = {"by": login, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "comment": os.environ.get("COMMENT_URL", "")}
+        # The board first: a write that fails changes nothing else.
+        set_board(repo, target, "pr", extensions=extensions(st) + [entry])
+        try:
+            gh("pr", "edit", target, "--repo", repo, "--remove-label", "needs-human")
+        except RuntimeError as err:
+            print(f"::warning::needs-human could not come off #{target}: {err}")
+        subprocess.run(["gh", "label", "create", "autopilot:continue", "--repo", repo, "--color", "1D76DB", "--force",
+                        "--description", "On an issue: the autopilot continues its draft pull request"], capture_output=True)
+        # No `answered` on the issue's board: the run counts, against the new cap.
+        gh("issue", "edit", str(number), "--repo", repo, "--add-label", "autopilot:continue")
+        return reply("extended", pr=target, cap=plan["cap"], runs=counted, n=len(extensions(st)) + 1)
     if argv[:1] == ["may-continue"]:
         info = pr_json(repo, pr, "body,labels,isDraft,state")
         # A continue that runs a fix round (#504, AS=fix) is on a pull
@@ -6032,7 +6186,9 @@ def main(argv):
         names = [l["name"] for l in info["labels"]]
         # The runs that count (#479), from its board (#802): never the free
         # ones; a board edited by hand reads as the cap reached.
-        ok, why = may_continue(names, info["body"], run_numbers(*board_state(repo, pr, "pr"))[1], cap)
+        # #856: the cap with this pull request's extensions.
+        st, intact = board_state(repo, pr, "pr")
+        ok, why = may_continue(names, info["body"], run_numbers(st, intact)[1], runs_cap(cap, st) if intact else cap)
         print(why)
         return 0 if ok else 1
     if argv[:1] == ["end"]:
@@ -6097,6 +6253,8 @@ def main(argv):
                 # Edited by hand: the most restrictive count, no continue.
                 runs, frees = cap, cap + 1
             else:
+                # #856: the cap with this pull request's extensions.
+                cap = runs_cap(cap, st)
                 freed = freed_runs(st, runs, free)
                 if freed is not None:
                     st = dict(st, runs=freed)
