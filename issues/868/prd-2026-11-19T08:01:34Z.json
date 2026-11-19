@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 868,
+  "prd_sha256": "e0539adbbb35179dd23036424986ebaec02d652628063cd4375b3372439923ab",
+  "prd": "### Problem\n\nThe release candidate v7.19.0 fails the release scenario `high-risk-waits` in what the engine did: its `until` or `expect` did not hold, or could no longer hold, so the lane releases nothing and `v7` stays where it is.\nReproduced by: https://github.com/DiluxOne/.github/actions/runs/44481325047 scenario `high-risk-waits`.\n\n### Scope\n\n- The cause of the failure above, in the engine, fixed with a test that would have caught it.\n\n### Out of scope\n\n- Changing the gates or what they check.\n\n### Acceptance criteria\n\n- C1: Given v7.19.0's candidate with the fix, when the release lane plays `high-risk-waits` in the test repository, then it passes and the lane releases it.\n\n### Criticality\n\nCritical",
+  "accepted_by": "policy (lane bugfix-reproduced)",
+  "at": "2026-11-19T08:01:34Z",
+  "policy": "DiluxOne/.github@ee9caec31c4f"
+}
