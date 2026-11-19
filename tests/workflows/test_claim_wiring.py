@@ -207,4 +207,8 @@ def test_at_its_cap_the_autopilot_says_anyone_may_claim_the_issue():
     may = next(s for s in steps(workflow("autopilot.yml"), "prep") if s.get("id") == "may")
     assert "anyone may `/claim` this issue" in may["env"]["OPEN_TO_CLAIM"]
     # Both caps: the runs (a continue) and the review rounds (a fix).
-    assert may["run"].count('--body "${OPEN_TO_CLAIM:-}"') == 2
+    # The runs cap's from autopilot.py cap-comment --issue (#856), with
+    # OPEN_TO_CLAIM when the script is older than it.
+    assert may["run"].count('--body "${OPEN_TO_CLAIM:-}"') == 1
+    assert 'cap-comment --issue "$why"' in may["run"] and '|| claim="${OPEN_TO_CLAIM:-}"' in may["run"]
+    assert '--body "$claim"' in may["run"]
