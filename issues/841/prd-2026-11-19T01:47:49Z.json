@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 841,
+  "prd_sha256": "60ac12e484a4322e3567a8c472651aff37dbc6e2293271b9f249435880324572",
+  "prd": "### Problem\n\nA reproduction can confirm a bug that does not exist, and the fix is then graded on a guess of its wording.\n\n### Scope\n\n- .github/review-policy.yml: the workflow way's guide.\n- scripts/repro-ways.py: the AST check and its verdict, with `--test` cases.\n- tests/repro/: the existing grep-only workflow tests listed, the open ones rewritten.\n\n### Out of scope\n\n- The logic, browser, cli and api ways.\n\n### Acceptance criteria\n\n- C1: Given a workflow-layer reproduction test that only reads a workflow file and asserts on its text, when the reproduction lane runs it, then the verdict is broken with the reason \"the test runs no step\", and the bug is not confirmed.\n- C2: Given a workflow-layer reproduction test that runs the step with stubs and fails on an assertion at the base, when the lane runs it, then the bug is confirmed as today.\n\n### Criticality\n\nCritical",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-19T01:47:49Z",
+  "policy": "DiluxOne/.github@595c7cf1fc2aed863b96d30ceafbc37fdcea3f13",
+  "how": "own-bug"
+}
