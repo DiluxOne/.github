@@ -25,7 +25,11 @@ request cannot exempt itself:
              declaration's `repro:` (scripts/repro-ways.py): its sandbox,
              or its `setup`, `run`, `junit`, `assertion`, `teardown` and
              `minutes`, through scripts/repro-sandbox.sh or
-             scripts/repro-run.sh, no network, no secret
+             scripts/repro-run.sh, no network, no secret; `check:` (#842,
+             optional) names the required check that runs them too, which
+             gate G7 reads (scripts/autopilot.py criteria_evidence): none,
+             and it is this check, "test-first / Test first", for a `fix`
+             or `feat` pull request only
   not-tests  [globs]: never a test, whatever `tests` says (release
              scenarios, fixtures, expected outputs)
 
@@ -135,9 +139,11 @@ def problems(decl, ways):
     if not decl["tests"]:
         out.append(f"{KEY}.tests: at least one `{{paths: [globs], way: <name>}}`")
     for i, entry in enumerate(decl["tests"]):
-        if not isinstance(entry, dict) or set(entry) - {"paths", "way"}:
-            out.append(f"{KEY}.tests[{i}]: `paths` and `way`, nothing else")
+        if not isinstance(entry, dict) or set(entry) - {"paths", "way", "check"}:
+            out.append(f"{KEY}.tests[{i}]: `paths`, `way` and `check`, nothing else")
             continue
+        if "check" in entry and not (isinstance(entry["check"], str) and entry["check"].strip()):
+            out.append(f"{KEY}.tests[{i}].check: the name of the required check that runs these tests")
         paths = entry.get("paths")
         if not isinstance(paths, list) or not paths or not all(isinstance(p, str) and p and not p.startswith("/") for p in paths):
             out.append(f"{KEY}.tests[{i}].paths: a list of relative globs")
@@ -393,6 +399,9 @@ def self_test():
     check("no layer is no declaration", merged(None, None, {}.get(KEY)), None)
     check("a valid declaration has no problem", problems(decl, {"unit": {}}), [])
     check("a way of no repro: is a problem", problems(decl, {}) != [], True)
+    named = merged({"tests": [{"paths": ["t/*.py"], "way": "unit", "check": "tests / Unit"}, {"paths": ["u/*.py"], "way": "unit", "check": 3}]})
+    check("#842 an entry may name the required check that runs it, a name", problems(named, {"unit": {}}),
+          ["test-first.tests[1].check: the name of the required check that runs these tests"])
     check("C4: a scenario, a fixture or an expected output is never a test",
           tests_of(decl, ["tests/fixtures/test_x.py", "tests/release/test_s.py", "tests/a/test_b.py", "src/x.py"]),
           [("tests/a/test_b.py", "unit")])

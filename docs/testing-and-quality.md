@@ -17,6 +17,8 @@ How a change proves what it does, in every DiluxOne repository. The rule is [tes
 | A test that could not run (its setup failed, or it took longer than its way's `minutes`) | Fails as "could not run": no verdict never passes. |
 | Otherwise | Passes: "Test first: `<test>` fails at the base and passes at the head". |
 
+The check a ruleset requires is the `verdict` job, "Test first" (#842): it reports on every pull request, green when the tests passed or there was nothing to run, red when the plan ("Test first (plan)") or the tests failed, were cancelled, or did not run while the plan said they would.
+
 Each test it finds runs twice, at the base's tree with the head's test file in its own place, and at the head, through the reproduction's sandboxes ([`scripts/repro-sandbox.sh`](../scripts/repro-sandbox.sh) and [`scripts/repro-run.sh`](../scripts/repro-run.sh) `run-ref`, with `TEST_REF`): on GitHub's fresh runner, with no secret, no network for the test and a read-only token, so a fork's tests run as safely as a report's reproduction. The verdict, and each test's outcome at the base and at the head, go to the job summary. A pull request with more than 20 tests is asked to split.
 
 ## How a repository declares its tests
@@ -29,13 +31,14 @@ test-first:
   tests:
     - paths: ["tests/Unit/**/*Test.php"]   # a file under these is a test
       way: unit                            # run by this way of its `repro:`
+      check: "tests / Unit"                # optional (#842): the required check that runs them, which gate G7 waits on
   not-tests: ["tests/**/fixtures/**"]      # never a test, whatever `tests` says
 ```
 
-Each `way` is a reproduction way of the same declaration's `repro:` ([`scripts/repro-ways.py`](../scripts/repro-ways.py)), so a kind says how it runs a test in one place, and the check reuses its sandbox, command, report and time limit. Every pack declares one; so does this repository.
+Each `way` is a reproduction way of the same declaration's `repro:` ([`scripts/repro-ways.py`](../scripts/repro-ways.py)), so a kind says how it runs a test in one place, and the check reuses its sandbox, command, report and time limit. Every pack declares one; so does this repository. `check:` (#842) names the required check that runs an entry's tests: gate G7 counts an autopilot pull request's criterion met only once that check concluded success at the head; an entry with none is "test-first / Test first"'s, for a `fix` or `feat` pull request only.
 
 ## In this repository
 
-A fix or a feature here comes with a pytest test under `tests/repro/` or `tests/workflows/`, run by the `python` way of `.github/review-policy.yml`. A script's own `--test` case cannot run at the base apart from the script's code, so a self-test case alone fails the check; keep adding them, beside the pytest. The release scenarios (`tests/release/`), fixtures, the reproduction's examples (`tests/examples/`) and the review's evaluation set (`evals/`) are never a test.
+A fix or a feature here comes with a pytest test under `tests/repro/` or `tests/workflows/`, run by the `python` way of `.github/review-policy.yml`, and by "Scripts (self-tests)" (its `check:`). The ruleset "own checks" requires that check and "test-first / Test first" on main (repos.yml `required-checks`, written by `sync-repos.py own-checks`, #842): a pull request whose tests are red cannot merge. A script's own `--test` case cannot run at the base apart from the script's code, so a self-test case alone fails the check; keep adding them, beside the pytest. The release scenarios (`tests/release/`), fixtures, the reproduction's examples (`tests/examples/`) and the review's evaluation set (`evals/`) are never a test.
 
 The scripts job of `pull-request.yml` runs every script's `--test` and the whole of `tests/` with pytest; `make pre-pr` runs what the pull request and the merge queue run.

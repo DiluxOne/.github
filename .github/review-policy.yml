@@ -122,4 +122,7 @@ test-first:
   tests:
     - paths: ["tests/repro/**/test_*.py", "tests/workflows/test_*.py"]
       way: python
+      # #842: the required check that runs them on every pull request, which
+      # gate G7 waits on for a criterion's test (scripts/autopilot.py).
+      check: "Scripts (self-tests)"
   not-tests: ["tests/release/**", "tests/**/fixtures/**", "scripts/fixtures/**", "tests/examples/**", "evals/**"]

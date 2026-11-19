@@ -114,7 +114,8 @@ def test_c4_the_decision_measures_what_a_reproduced_fix_widens():
 def test_every_caller_grants_what_the_repro_job_asks():
     for name in ("org-pull-request.yml", "pull-request.yml", "pull-request-edited.yml"):
         job = load(name)["jobs"]["auto-merge"]
-        assert job["permissions"] == {"contents": "read", "issues": "read", "pull-requests": "read"}, name
+        # checks: the head's check runs, which G7 reads (#842).
+        assert job["permissions"] == {"contents": "read", "issues": "read", "pull-requests": "read", "checks": "read"}, name
 
 
 def test_ci_runs_the_no_widening_self_test():
