@@ -25,7 +25,9 @@ in the test repository; a breaking change waits on a person.
         the issue schema's sections so G1 passes it, #694, with its
         class, `classify`: an `engine` failure a bug, a `harness` or an
         `infrastructure` one a Task, each with the scenario's mark) or
-        `issue` (a `!`: the release issue for a person, nothing tagged); JSON
+        `issue` (a `!`: the release issue for a person, nothing tagged); JSON.
+        `act` names too, as a warning that fails nothing (#843), the pairs
+        no scenario's runs triggered, which merge recorded
   release-lane.py act --plan F --results F --repo R [--run URL]
         does what `decide` says, and names in a Flaky line (on stderr and
         in GITHUB_STEP_SUMMARY, #843) each scenario that failed, then
@@ -536,7 +538,7 @@ def close_reports(repo, version, run=sh, lane_run=""):
     return closed, warnings
 
 
-def flaky(results):
+def flaky_line(results):
     """The scenarios that failed, then passed on their retry (#843): one
     line naming each and its first failure, or "" when none. Pure."""
     rows = [r for r in results if r.get("ok") and r.get("flaky")]
@@ -549,11 +551,22 @@ def flaky(results):
     return "Flaky: " + "; ".join(named)
 
 
+def untriggered(text):
+    """The pairs no scenario's runs triggered (#843), as scripts/release-
+    scenarios.py merge records them in its results file, or []. Pure."""
+    m = re.search(r"<!-- dx-untriggered (.*) -->", text or "")
+    try:
+        got = json.loads(m.group(1)) if m else []
+    except ValueError:
+        return []
+    return [str(p) for p in got] if isinstance(got, list) else []
+
+
 def act(p, results, repo, run=sh, sleep=time.sleep, root=".", lane_run=""):
     d = decide(p, results, lane_run)
-    if flaky(results):
+    if flaky_line(results):
         # #843: a flaky scenario fails nothing, and the summary names it.
-        d["flaky"] = flaky(results)
+        d["flaky"] = flaky_line(results)
     if d["do"] == "bug":
         # #843: one report per scenario, or a comment on its open one.
         d["filed"], warnings = file_reports(p, d["filings"], repo, run, lane_run)
@@ -1093,6 +1106,11 @@ def self_test():
         check("C6: a read that fails once is tried again at the next poll", (bad or {}).get("id"), 2)
         fake = Fake({"properties/values": props, "repos/O/a/actions/runs?": json.dumps(runs[:1])})
         check("C6: a quiet half hour moves nothing", (watch(moved_p, "O/.github", central, "O", "dx-adopted", since, run=fake, sleep=lambda s: None, every=600, root=root), fake.has("git")), (None, False))
+    check("#843: the pairs no scenario triggered, read from the results file", (untriggered("x\n<!-- dx-untriggered [\"a.yml:issues\"] -->\n"), untriggered("none"), untriggered("<!-- dx-untriggered nope -->")),
+          (["a.yml:issues"], [], []))
+    check("#843: a flaky scenario is named with its first failure, and fails nothing",
+          (flaky_line([{"id": "a", "ok": True, "flaky": True, "first_why": ["no <!-- x -->"]}, {"id": "b", "ok": False, "flaky": True}]), decide(p, [{"id": "a", "ok": True, "flaky": True}])["do"]),
+          ("Flaky: `a` (it failed first: no &lt;!-- x --&gt;, then passed on its retry)", "release"))
     check_workflow(check)
     import copy
     import yaml
@@ -1172,7 +1190,13 @@ def main(argv):
         return 0
     if a.mode == "act":
         d = act(load(a.plan), results_of(a.results), a.repo, lane_run=a.run)
+        missing = untriggered(open(a.results, encoding="utf-8").read() if a.results and os.path.exists(a.results) else "")
+        if missing:
+            # #843: a pair no scenario's runs triggered is named, and fails nothing.
+            d["untriggered"] = missing
         print(json.dumps(d))
+        if missing:
+            print(f"::warning::Pairs no scenario triggered: {', '.join(missing)}", file=sys.stderr)
         if d.get("flaky"):
             # stdout stays the JSON the workflow reads: the Flaky line goes
             # to the log as a warning and to the lane's summary (#843).

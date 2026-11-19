@@ -128,7 +128,9 @@ after GitHub's back-off within the scenario's limit, then named.
         step's, less RETRY_MARGIN, and passing then is `flaky`, its row
         `pass (flaky: <first why>)`, which fails nothing; with less than
         a minute left it is not, and says so; their table to FILE; exits
-        1 when one fails. A failing row says its `class` (#843, CLASSES:
+        1 when one fails. Each row keeps in `triggered` (#843) the pairs
+        its runs triggered (`run_triggered`, read once at its end). A
+        failing row says its `class` (#843, CLASSES:
         engine, harness or infrastructure), which release-lane.py files
         each its own way
   release-scenarios.py merge --dir DIR --groups JSON --job NAME=RESULT ...
@@ -140,7 +142,10 @@ after GitHub's back-off within the scenario's limit, then named.
         file is missing (its job failed, timed out or was cancelled), a
         scenario with no row, and a job whose RESULT is not success (a play
         job's naming its timeout of N minutes, and its play step's of M,
-        #690); exits 1 when a row fails
+        #690), then the pairs no row's runs triggered (#843,
+        `run_coverage`: "Pairs no scenario triggered: …", a warning that
+        fails nothing, never counting `covers:`, which `coverage` reads as
+        each scenario's plan); exits 1 when a row fails
   release-scenarios.py run --repo OWNER/NAME [--ref v7-next] [--only ID ...]
                            [--out FILE] [--minutes N]
         moves the test repository's callers to the ref through a pull
@@ -1120,7 +1125,85 @@ def blocked(seen):
     return bool(seen.get("held")) or "startup_failure" in (seen.get("checks") or {}).values()
 
 
-def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, types=None, run_id=None):
+def caller_pairs(root=ROOT, pack=None):
+    """{caller's file name: its pairs} for the test repository's callers
+    (#843), each file's `pairs` alone, so a run maps through the caller at
+    its `path`. Pure but for reading the files."""
+    out = {}
+    for pattern in test_callers(test_pack(root) if pack is None else pack):
+        for path in sorted(glob.glob(os.path.join(root, pattern))):
+            out[os.path.basename(path)] = {p for p in pairs(root, (os.path.relpath(path, root),)) if p.rsplit(":", 1)[1] not in UNPLAYABLE}
+    return out
+
+
+def run_triggered(runs, sid, titles, branches, wired, start, end):
+    """The pairs the runs of the test repository (as the runs API lists
+    them: path, event, display_title, head_branch, created_at) triggered
+    for the scenario `sid` (#843): those created between `start` and `end`
+    (ISO times) that belong to it (a title that ends with `[<sid>]` or is
+    one of `titles`, the pull requests it observed, or a head branch among
+    `branches`, its own and theirs), each through the caller at its `path`
+    (`wired`, `caller_pairs`) and its event. Sorted. Pure."""
+    out = set()
+    for r in runs:
+        if not isinstance(r, dict):
+            continue
+        at = str(r.get("created_at") or "")
+        if at and not (start <= at <= end):
+            continue
+        title, branch = str(r.get("display_title") or ""), str(r.get("head_branch") or "")
+        if not (title.endswith(f"[{sid}]") or title in titles or branch in branches):
+            continue
+        name, event = os.path.basename(str(r.get("path") or "").split("@", 1)[0]), str(r.get("event") or "")
+        out |= {p for p in wired.get(name, ()) if p.rsplit(":", 1)[1] == event}
+    return sorted(out)
+
+
+def run_coverage(rows, wanted):
+    """The workflow pairs of `wanted` no row triggered (#843): counted from
+    each row's `triggered`, what its runs did, never its `covers:`, which
+    stays its plan (`coverage`). A transition or a step of the flow is no
+    workflow pair, and is never named here. Sorted. Pure."""
+    done = {p for r in rows if isinstance(r, dict) for p in r.get("triggered") or []}
+    return sorted(w for w in wanted if not str(w).startswith(STATIC) and w not in done)
+
+
+def runs_json(text):
+    """The items of `gh api --paginate --jq` output, one JSON array per
+    page: every page's, joined. Pure."""
+    out, at, decoder = [], 0, json.JSONDecoder()
+    text = text or ""
+    while True:
+        while at < len(text) and text[at].isspace():
+            at += 1
+        if at >= len(text):
+            return out
+        value, at = decoder.raw_decode(text, at)
+        out.extend(value if isinstance(value, list) else [value])
+
+
+def now_iso():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, types=None, run_id=None, wired=None):
+    """`_play`, and then, once (#843), the runs of `repo` created since it
+    started that belong to it, in its row's `triggered` (`run_triggered`,
+    through `wired`, `caller_pairs` when None); a read that fails leaves
+    no `triggered`, never a failure."""
+    start, seen = now_iso(), {"titles": set(), "branches": {branch_of(s)}}
+    row = _play(s, repo, ref, bodies, run, sleep, minutes, fork, types, run_id, seen)
+    end = now_iso()
+    try:
+        runs = runs_json(run("api", "--paginate", f"repos/{repo}/actions/runs?created=>={start}&per_page=100",
+                             "--jq", "[.workflow_runs[] | {path, event, display_title, head_branch, created_at}]"))
+        row["triggered"] = run_triggered(runs, s["id"], seen["titles"], seen["branches"], caller_pairs() if wired is None else wired, start, end)
+    except (RuntimeError, ValueError, OSError):
+        pass
+    return row
+
+
+def _play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, types=None, run_id=None, observed=None):
     """One scenario in `repo`: clears what an earlier run of it left
     (`clear`), opens what it opens (its `before` first), takes its steps,
     polls until its `expect` holds or `minutes` pass, then cleans up and
@@ -1157,6 +1240,11 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
         while True:
             try:
                 seen = observe(repo, on[0], on[1], run, heads(want))
+                pull = seen.get("pull") or {}
+                if observed is not None:
+                    # #843: the pull requests it observed, whose runs are its.
+                    observed["titles"] |= {str(pull["title"])} if pull.get("title") else set()
+                    observed["branches"] |= {str(pull["branch"])} if pull.get("branch") else set()
                 if closes:
                     seen["closes"] = closes
                 if rest != (want or {}) and not holds(rest, seen):
@@ -1946,6 +2034,9 @@ def retried(s, attempt, minutes, deadline=None, clock=time.monotonic):
         return dict(first, attempts=1, why=list(first.get("why") or []) + [NOT_RETRIED])
     second = attempt(budget)
     out = dict(second, attempts=2, first_why=list(first.get("why") or []))
+    if "triggered" in first or "triggered" in second:
+        # #843: what either attempt's runs triggered.
+        out["triggered"] = sorted(set(first.get("triggered") or []) | set(second.get("triggered") or []))
     if second.get("ok"):
         out["flaky"] = True
     return out
@@ -2006,10 +2097,18 @@ def run_all(conf, repo, ref, only=(), run=gh, sleep=time.sleep, minutes=20, cent
     return results
 
 
-def write_results(results, out):
+def untriggered_line(missing):
+    """The table's line naming the pairs no scenario's runs triggered
+    (#843), a warning that fails nothing; "" when none. Pure."""
+    return f"\nPairs no scenario triggered: {', '.join(f'`{p}`' for p in missing)}\n" if missing else ""
+
+
+def write_results(results, out, untriggered=None):
     """The table of `results` to stdout, and to `out` with the record the
-    lane's next job reads."""
-    text = table(results)
+    lane's next job reads; with `untriggered` (#843, `run_coverage`), its
+    line after the table and its own record, which release-lane.py act
+    names as a warning."""
+    text = table(results) + untriggered_line(untriggered)
     sys.stdout.write(text)
     if out:
         # The job's --out may name a directory no step made (#693).
@@ -2017,6 +2116,8 @@ def write_results(results, out):
         with open(out, "w", encoding="utf-8") as fh:
             fh.write(text)
             fh.write(f"\n<!-- dx-scenarios {json.dumps(results)} -->\n")
+            if untriggered:
+                fh.write(f"<!-- dx-untriggered {json.dumps(untriggered)} -->\n")
 
 
 def read_results(path):
@@ -2064,6 +2165,8 @@ def merge(gs, files, jobs, run="", minutes=0, play_minutes=0):
             out["flaky"] = True
         if isinstance(r.get("first_why"), list):
             out["first_why"] = [str(w) for w in r["first_why"]]
+        if isinstance(r.get("triggered"), list):
+            out["triggered"] = [str(p) for p in r["triggered"]]
         return out
     if files.get("move") is None:
         fail("move", "the move job left no results", "harness")
@@ -2925,7 +3028,21 @@ def self_test():
           (calls694.index(("issue", "close", "3", "--repo", "o/t")) < calls694.index(next(c for c in calls694 if c[:2] == ("issue", "create"))),
            ("issue", "close", "4", "--repo", "o/t") in calls694), (True, False))
     check("C1: after it plays, its branch is deleted again and its leftovers looked for again",
-          (calls694[-1][:2], sum(1 for c in calls694 if c == delete) >= 2), (("pr", "list"), True))
+          ([c for c in calls694 if "actions/runs?created=" not in " ".join(c)][-1][:2], sum(1 for c in calls694 if c == delete) >= 2), (("pr", "list"), True))
+    check("#843: the runs it triggered are read once, last", ("actions/runs?created=" in " ".join(calls694[-1]), sum(1 for c in calls694 if "actions/runs?created=" in " ".join(c))), (True, 1))
+    wired843 = {"issues.yml": {"issue-triage.yml:issues", "issue-triage.yml:issue_comment"}, "test-pull-request.yml": {"conventions.yml:pull_request"}}
+    runs843 = [{"path": ".github/workflows/issues.yml", "event": "issues", "display_title": "feat: x [s]", "head_branch": "main", "created_at": "2026-01-01T00:05:00Z"},
+               {"path": ".github/workflows/issues.yml", "event": "issue_comment", "display_title": "feat: x [s]", "head_branch": "main", "created_at": "2026-01-01T00:20:00Z"},
+               {"path": ".github/workflows/test-pull-request.yml@refs/heads/main", "event": "pull_request", "display_title": "feat: its pull", "head_branch": "feat/1-x", "created_at": "2026-01-01T00:06:00Z"},
+               {"path": ".github/workflows/test-pull-request.yml", "event": "pull_request", "display_title": "fix: y [other]", "head_branch": "fix/scenario-other", "created_at": "2026-01-01T00:06:00Z"}]
+    check("#843 run_triggered: its runs, by title or branch, within its time, through the caller at their path and their event",
+          run_triggered(runs843, "s", {"feat: its pull"}, {"test/scenario-s"}, wired843, "2026-01-01T00:00:00Z", "2026-01-01T00:10:00Z"),
+          ["conventions.yml:pull_request", "issue-triage.yml:issues"])
+    check("#843 run_coverage: what no row triggered, never what `covers:` says, and no transition",
+          run_coverage([{"covers": ["a:issues"], "triggered": ["b:issues"]}, {"id": "x"}], {"a:issues", "b:issues", "next_step:start"}), ["a:issues"])
+    check("#843 retry: what either attempt triggered is kept",
+          retried({"id": "t"}, lambda m: {"id": "t", "ok": m == 10, "why": [], "run": "", "triggered": ["a:issues"] if m == 20 else ["b:issues"]}, 20)["triggered"], ["a:issues", "b:issues"])
+    check("#843 the table names the pairs no scenario triggered, a warning line", untriggered_line(["a:issues"]), "\nPairs no scenario triggered: `a:issues`\n")
     lcalls = []
 
     def lanefake(*a, input=None):
@@ -3902,7 +4019,9 @@ def main(argv):
         a = p.parse_args(argv[1:])
         jobs = dict(j.split("=", 1) if "=" in j else (j, "") for j in a.job)
         results = merge_dir(a.dir, read_groups(a.groups), jobs, a.run, a.minutes, a.play_minutes)
-        write_results(results, a.out)
+        # #843: what the runs triggered, never what `covers:` says; a
+        # warning that fails nothing.
+        write_results(results, a.out, run_coverage(results, played(ROOT, test_pack())))
         return 0 if all(r["ok"] for r in results) else 1
     if argv[:1] == ["back"]:
         import argparse
