@@ -70,3 +70,9 @@ def test_a_workflow_test_that_only_reads_the_file_is_broken_not_a_reproduction(t
     verdict, why = lane_verdict(tmp_path, GREP_ONLY)
     assert verdict == "broken", f"a test that runs no step confirmed the bug ({verdict})"
     assert "the test runs no step" in why
+
+
+def test_a_workflow_test_that_runs_the_step_with_stubs_still_reproduces(tmp_path):
+    assert the_workflow_way().get("runs-step") is True, "the workflow way does not ask its test to run the step"
+    verdict, why = lane_verdict(tmp_path, STUBBED)
+    assert (verdict, why) == ("reproduced", ""), f"a test that runs the step and fails an assertion did not confirm the bug ({verdict}: {why})"
