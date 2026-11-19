@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 882,
+  "prd_sha256": "432723344c20870bb9129a8279ab00e898467a498f59c882630e5ecd60c59cec",
+  "prd": "### Problem\n\nThe release candidate v7.19.0 fails the release scenario `settled-rerun` in what the engine did: its `until` or `expect` did not hold, or could no longer hold, so the lane releases nothing and `v7` stays where it is.\nReproduced by: https://github.com/DiluxOne/.github/actions/runs/44602679962 scenario `settled-rerun`.\n\nThe review never blocked, so there was nothing to re-run: on the three pull requests the scenario opened on 2026-11-19 (DiluxOne/diluxone-test#2891, #2931 and #2959), its record says `\"blocking\":false`, and it listed the token `DX_API_TOKEN=dxfake_\u2026` as a minor because the value reads as visibly fake. review-reply.yml re-runs the review only when it blocked at the head, which is right, so the scenario's premise does not hold, and it fails as \"no run on its head ran again\". The cause is the scenario's fixture, not the re-run step: the token must be one the review blocks on (a credential's real shape, which no service issues), and the scenario must wait for the blocking review before it settles, so a review that does not block fails at that step and says so.\n\n### Scope\n\n- The cause of the failure above, in the engine, fixed with a test that would have caught it.\n\n### Out of scope\n\n- Changing the gates or what they check.\n\n### Acceptance criteria\n\n- C1: Given v7.19.0's candidate with the fix, when the release lane plays `settled-rerun` in the test repository, then it passes and the lane releases it.\n\n### Criticality\n\nCritical",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-19T23:34:11Z",
+  "policy": "DiluxOne/.github@4ab8649b3cd0"
+}
