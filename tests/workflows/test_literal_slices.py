@@ -3,6 +3,7 @@ scripts job, naming the test (#845, scripts/literal-slices.py).
 
 Each case runs the script as the scripts job does, on a test file written
 in `tmp_path`, and reads its exit code and output."""
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -71,3 +72,30 @@ def test_c2_the_scripts_job_runs_it_over_the_tests_and_its_self_test():
 def test_c2_the_repository_passes_it_as_it_is():
     got = run("tests/workflows", "tests/repro")
     assert got.returncode == 0, got.stdout + got.stderr
+
+
+def slices_by_file(*args):
+    """{file: number of literal slices} under ARGS, listed in KNOWN or not."""
+    got = run("--all", *args)
+    assert got.returncode in (0, 1), got.stdout + got.stderr
+    counts = {}
+    for path in re.findall(r"^::error::([^:]+):\d+ \(", got.stdout, re.M):
+        counts[path] = counts.get(path, 0) + 1
+    return counts
+
+
+def test_c3_the_worst_wording_tests_of_tests_workflows_slice_no_more():
+    counts = slices_by_file("tests/workflows")
+    assert counts, "--all reports no slice: it does not read tests/workflows"
+    worst = {f: n for f, n in counts.items() if n > 1}
+    assert worst == {}, f"these still cut the workflow's text more than once: {worst}"
+    for name in ("maintainer_bug_wiring", "policy_on_receipts", "autopilot_main_merge", "settled_finding_rerun",
+                 "conventions_fix_round", "confirmed_bug_no_acceptance"):
+        assert f"tests/workflows/test_{name}.py" not in counts
+
+
+def test_c3_the_files_left_are_on_the_list_that_only_shrinks():
+    left = set(slices_by_file("tests/workflows"))
+    got = run("tests/workflows")
+    assert got.returncode == 0, got.stdout
+    assert f"{len(left) + len(slices_by_file('tests/repro'))} files still listed" in got.stdout

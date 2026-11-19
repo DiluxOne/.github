@@ -375,9 +375,8 @@ def test_c7_each_document_says_the_check_enforces_test_first_and_the_review_chec
 
 
 def test_c7_the_rule_is_held_by_the_review_and_the_check():
-    import yaml
-    head = (ROOT / "rules" / "test-first.md").read_text(encoding="utf-8").split("---\n")[1]
-    assert yaml.safe_load(head)["enforced_by"] == ["review", {"check": "test-first"}]
+    head, _ = load("rules").header((ROOT / "rules" / "test-first.md").read_text(encoding="utf-8"))
+    assert head["enforced_by"] == ["review", {"check": "test-first"}]
     got = subprocess.run(["python3", str(ROOT / "scripts" / "rules.py"), "check"], capture_output=True, text=True)
     assert got.returncode == 0, got.stdout + got.stderr
 

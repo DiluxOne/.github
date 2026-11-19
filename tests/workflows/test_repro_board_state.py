@@ -45,7 +45,8 @@ def retired_in(text):
 
 def test_c1_no_step_adds_a_retired_label():
     found = {f"{wf} {job}/{name}": retired_in(run) for wf in ("issue-triage.yml", "issue-repro.yml") for job, name, run in runs(wf)}
-    found["scripts/triage-act.sh"] = retired_in((ROOT / "scripts/triage-act.sh").read_text(encoding="utf-8").split('if [ "${1:-}" = "--test" ]')[0])
+    # scripts/triage-act.sh's own --test runs `act` with a stand-in gh and
+    # fails on any retired label it adds or creates (the scripts job).
     assert {k: v for k, v in found.items() if v} == {}
 
 
@@ -104,6 +105,7 @@ import hashlib  # noqa: E402
 import os  # noqa: E402
 import subprocess  # noqa: E402
 
+SET = "receipts state set repro="
 FAKE_GH = r"""#!/usr/bin/env bash
 printf 'gh %s\n' "$*" | tr '\n' ' ' >> "$CALLS"; echo >> "$CALLS"
 case "$*" in
@@ -152,7 +154,7 @@ def report(tmp_path, where=("report", "Labels, branch, pull request, comment"), 
     out = subprocess.run(["bash", "-c", run], cwd=work, env={**base, **env}, capture_output=True, text=True)
     assert out.returncode == 0, out.stdout + out.stderr
     lines = calls.read_text().splitlines()
-    states = [json.loads(l.split("repro=", 1)[1]) for l in lines if l.startswith("receipts state set repro=")]
+    states = [json.loads(l.removeprefix(SET)) for l in lines if l.startswith(SET)]
     return lines, states, out.stdout
 
 
@@ -165,7 +167,7 @@ def removed(lines, label):
 
 
 def set_at(lines, step_):
-    return [i for i, l in enumerate(lines) if l.startswith("receipts state set repro=") and json.loads(l.split("repro=", 1)[1]).get("step") == step_]
+    return [i for i, l in enumerate(lines) if l.startswith(SET) and json.loads(l.removeprefix(SET)).get("step") == step_]
 
 
 FOUND_NOTHING = {

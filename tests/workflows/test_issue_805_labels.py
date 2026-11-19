@@ -11,6 +11,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import re
 import urllib.parse
 from pathlib import Path
 
@@ -47,7 +48,7 @@ def fake_gh(have, carried, calls):
             return Out("")
         if args[0] == "api":
             path = next(a for a in args[1:] if a.startswith("repos/"))
-            name = urllib.parse.unquote(path.split("labels=", 1)[1].split("&", 1)[0])
+            name = urllib.parse.parse_qs(urllib.parse.urlsplit(path).query)["labels"][0]
             return Out(json.dumps([[{"number": n} for n in carried.get(name, [])]]))
         raise AssertionError(f"unexpected gh {args}")
     return run
@@ -151,7 +152,7 @@ def test_c2_every_way_to_set_a_label_is_seen_and_removing_or_listing_is_not(tmp_
         "scripts/fixtures/f.sh": "gh issue edit 1 --add-label in-a-fixture\n",
     })
     found = sr.label_misuse(str(root))
-    names = sorted(f.split("sets label ", 1)[1].split(",", 1)[0] for f in found)
+    names = sorted(re.search(r": sets label (.+?), ", f).group(1) for f in found)
     assert names == ["made:up", "x:five", "x:four", "x:one", "x:three", "x:two"], found
 
 
@@ -163,13 +164,8 @@ def test_c2_a_label_built_from_a_variable_the_check_does_not_know_fails(tmp_path
 
 
 def test_c2_this_repository_sets_only_labels_it_lists():
+    # The same check sync-repos.py --test runs on this repository, run here.
     assert sync_repos().label_misuse(str(ROOT)) == []
-
-
-def test_c2_the_check_runs_in_the_scripts_test():
-    text = (ROOT / "scripts" / "sync-repos.py").read_text(encoding="utf-8")
-    test = text[text.index("def self_test("):]
-    assert "label_misuse(CENTRAL)" in test
 
 
 def test_c3_a_retired_label_on_an_open_issue_is_kept_and_the_issue_named():

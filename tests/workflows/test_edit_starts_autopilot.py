@@ -11,6 +11,7 @@ import importlib.util
 from pathlib import Path
 
 import yaml
+from steps import run, step
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -65,10 +66,43 @@ def test_the_start_takes_the_edit_as_an_acceptance():
     assert job["with"]["mode"] == "${{ github.event.label.name == 'autopilot:continue' && 'continue' || 'start' }}"
 
 
-def test_the_refusal_says_an_edit_starts_it():
-    text = (ROOT / ".github/workflows/autopilot.yml").read_text(encoding="utf-8")
-    step = text[text.index("autopilot.py may-start) || rc=$?"):]
-    step = step[:step.index("# A reproduced bug: the test that failed")]
-    assert "autopilot.py shape-refusal" in step and "state set" in step and "shape_refused=" in step
+# The central scripts' stand-in: each records its call; `lane` names one,
+# `may-start` refuses with REFUSAL, `shape-refusal` writes the real words.
+CENTRAL = """import os, sys
+open(os.path.join(os.environ["RUNNER_TEMP"], "central.log"), "a").write(os.path.basename(sys.argv[0]) + " " + " ".join(sys.argv[1:]) + "\\n")
+if sys.argv[1] == "lane":
+    print("human-issue")
+elif sys.argv[1] == "may-start":
+    print(os.environ["REFUSAL"])
+    sys.exit(1)
+elif sys.argv[1] == "shape-refusal":
+    print("refused: an edit that makes it pass starts it")
+"""
+
+
+def refused(tmp_path, as_, refusal):
+    env = {"AS": as_, "MODE": as_, "ISSUE": "9", "PR": "", "GH_TOKEN": "t", "REFUSAL": refusal}
+    files = {".dx-central/scripts/autopilot.py": CENTRAL, ".dx-central/scripts/receipts.py": CENTRAL}
+    ran = run(step("autopilot.yml", "may", job="prep"), tmp_path, env=env, central=False,
+              stubs={"sleep": ":", "gh": ":"}, files=files)
+    return ran, (ran.temp / "central.log").read_text().splitlines()
+
+
+def test_the_refusal_says_an_edit_starts_it(tmp_path):
+    ran, called = refused(tmp_path, "start", "the issue is not ready (G1): x")
+    assert ran.code == 0, ran.stderr
+    assert ran.output["go"] == "false"
+    assert "autopilot.py shape-refusal" in called
+    noted = [c for c in called if c.startswith("receipts.py state set shape_refused=")]
+    assert len(noted) == 1 and noted[0] != "receipts.py state set shape_refused="
+    comments = [c for c in ran.of("gh") if c[:3] == ["issue", "comment", "9"] and "--body-file" in c]
+    assert len(comments) == 1
     assert "an edit that makes it pass starts it" in autopilot.shape_refusal("the issue is not ready (G1): x")
     assert autopilot.shape_refusal("x").startswith(autopilot.SHAPE_MARK)
+
+
+def test_a_refusal_for_anything_but_its_shape_notes_nothing(tmp_path):
+    ran, called = refused(tmp_path, "start", "the lane is closed")
+    assert ran.code == 0, ran.stderr
+    assert not [c for c in called if "shape" in c]
+    assert not [c for c in ran.of("gh") if "--body-file" in c]

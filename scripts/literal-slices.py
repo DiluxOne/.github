@@ -23,6 +23,7 @@ listed file that no longer slices fails the check too, so it is removed
 from the list in the change that fixes it.
 
     literal-slices.py [dir-or-file ...]   default: tests/workflows tests/repro
+    literal-slices.py --all [dir-or-file ...]   every slice, listed or not
     literal-slices.py --test
 """
 import ast
@@ -33,7 +34,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FINDS = {"index", "find", "rindex", "rfind"}
 SPLITS = {"split", "partition", "rpartition", "rsplit"}
 
-# Files that sliced text before the check existed. Only shrinks.
+# Files that slice text still: the tests/repro reproductions from before the
+# check, and the tests/workflows files left for the follow-up (#845, worst
+# first: none of them slices more than once). Only shrinks.
 KNOWN = {
     "tests/repro/test_issue_549.py",
     "tests/repro/test_issue_556.py",
@@ -43,38 +46,19 @@ KNOWN = {
     "tests/repro/test_issue_774.py",
     "tests/workflows/test_autopilot_cancelled_review.py",
     "tests/workflows/test_autopilot_commit_cadence.py",
-    "tests/workflows/test_autopilot_main_merge.py",
     "tests/workflows/test_autopilot_pre_pr.py",
     "tests/workflows/test_autopilot_rounds.py",
     "tests/workflows/test_autopilot_sweep_draft.py",
-    "tests/workflows/test_autopilot_sweep_on_merge.py",
-    "tests/workflows/test_battery_doc.py",
-    "tests/workflows/test_claim_wiring.py",
     "tests/workflows/test_claimed_bug_wiring.py",
     "tests/workflows/test_configuration_doc.py",
-    "tests/workflows/test_confirmed_bug_no_acceptance.py",
-    "tests/workflows/test_conventions_fix_round.py",
-    "tests/workflows/test_core_queue_one_at_a_time.py",
     "tests/workflows/test_credits_wiring.py",
-    "tests/workflows/test_decision_sub_issue_start.py",
-    "tests/workflows/test_edit_starts_autopilot.py",
     "tests/workflows/test_flow_label_words.py",
     "tests/workflows/test_hint_without_needs_human.py",
-    "tests/workflows/test_issue_803_labels.py",
-    "tests/workflows/test_issue_805_labels.py",
-    "tests/workflows/test_maintainer_bug_wiring.py",
-    "tests/workflows/test_marker_one_check.py",
-    "tests/workflows/test_plugin_release_ai.py",
-    "tests/workflows/test_policy_floor_files_wiring.py",
-    "tests/workflows/test_policy_on_receipts.py",
     "tests/workflows/test_pr_screenshots_wiring.py",
     "tests/workflows/test_queue_drop_fix.py",
     "tests/workflows/test_release_bug_reproduced.py",
     "tests/workflows/test_release_lane_wiring.py",
-    "tests/workflows/test_repro_board_state.py",
     "tests/workflows/test_required_checks.py",
-    "tests/workflows/test_settled_finding_rerun.py",
-    "tests/workflows/test_test_first.py",
     "tests/workflows/test_triage_non_write_users.py",
     "tests/workflows/test_who_decides_wiring.py",
 }
@@ -230,7 +214,10 @@ def self_test():
 def main(argv):
     if argv[:1] == ["--test"]:
         return self_test()
-    code, lines = check(argv or ["tests/workflows", "tests/repro"])
+    listed = KNOWN
+    if argv[:1] == ["--all"]:
+        argv, listed = argv[1:], set()
+    code, lines = check(argv or ["tests/workflows", "tests/repro"], listed)
     for line in lines:
         print(f"::error::{line}")
     if not code:

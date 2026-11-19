@@ -12,6 +12,7 @@ import subprocess
 from pathlib import Path
 
 import yaml
+from steps import run, step
 
 ROOT = Path(__file__).resolve().parents[2]
 CONVENTIONS = ROOT / "scripts" / "conventions.sh"
@@ -58,7 +59,7 @@ def test_conventions_writes_its_errors_by_what_they_are_about(tmp_path):
                ERRORS_FILE=str(errors), REVIEW_BOT="dilux-bot[bot]")
     out = subprocess.run(["bash", str(CONVENTIONS)], cwd=repo, env=env, capture_output=True, text=True)
     assert out.returncode == 1, out.stdout + out.stderr
-    kinds = [line.split("\t", 1)[0] for line in errors.read_text(encoding="utf-8").splitlines()]
+    kinds = [kind for kind, _ in (line.split("\t", 1) for line in errors.read_text(encoding="utf-8").splitlines())]
     assert kinds == ["title", "commit"], kinds
 
 
@@ -87,18 +88,89 @@ def test_the_fix_round_reads_them_and_says_how_to_fix_each():
     # The helper checks the title as conventions.sh does, then leaves it in
     # the outbox; the apply checks it again before it edits the pull request.
     assert autopilot.title_ok("fix(autopilot): a thing") and not autopilot.title_ok("Fix a thing.")
-    src = (ROOT / "scripts/autopilot.py").read_text(encoding="utf-8")
-    apply = src[src.index("def _apply_intents("):]
-    apply = apply[:apply.index("\ndef ")]
-    assert 'kind == "title"' in apply and "--title" in apply and '"pr", "edit"' in apply
 
 
-def test_a_reworded_branch_goes_with_a_lease_and_the_same_tree():
-    text = (ROOT / ".github/workflows/autopilot.yml").read_text(encoding="utf-8")
-    step = text[text.index("- name: The agent's commits and intents"):]
-    step = step[:step.index("autopilot.py apply .dx-out/outbox.jsonl")]
-    assert "REWORD" in step and 'git diff --quiet "origin/$BRANCH" "$new"' in step
-    assert "api-commit.py push \"$BRANCH\" --force" in step and "lease" in step
+def test_the_apply_sets_a_title_that_passes_and_refuses_one_that_does_not(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(autopilot, "gh", lambda *args, **kw: calls.append(list(args)) or "")
+    output = tmp_path / "output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    failed = autopilot._apply_intents([{"kind": "title", "text": "Fix a thing."}], "o/r", 7, 8)
+    assert failed == 1 and calls == [] and not output.exists()
+    autopilot._apply_intents([{"kind": "title", "text": "fix(autopilot): a thing"}], "o/r", 7, 8)
+    assert calls == [["pr", "edit", "8", "--repo", "o/r", "--title", "fix(autopilot): a thing"]]
+    assert "retitled=true" in output.read_text()
+
+
+# The engine's scripts the apply step calls, as stand-ins: each records its
+# argv and answers from FAKE_<SCRIPT>_<SUBCOMMAND> (stdout) and
+# FAKE_<SCRIPT>_<SUBCOMMAND>_RC (exit code).
+FAKE = """import json, os, sys
+name, args = os.path.basename(sys.argv[0]), sys.argv[1:]
+with open(os.environ["DX_CALLS"], "a") as f:
+    f.write(json.dumps([name] + args) + "\\n")
+key = "FAKE_" + "".join(c if c.isalnum() else "_" for c in name[:-3] + "_" + (args[0] if args else "")).upper()
+sys.stdout.write(os.environ.get(key, ""))
+sys.exit(int(os.environ.get(key + "_RC", "0")))
+"""
+
+
+def reworded(tmp_path, same_tree=True, reword_ok="true", lease_holds=True):
+    """The apply step's run with a branch the agent reworded: (ran, the
+    base the branch forks from main at)."""
+    origin, work = tmp_path / "origin.git", tmp_path / "work"
+    ident = ["-c", "user.name=a", "-c", "user.email=a@b"]
+    git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    git(tmp_path, "clone", "-q", str(origin), str(work))
+    git(work, *ident, "commit", "-q", "--allow-empty", "-m", "chore: base")
+    base = git(work, "rev-parse", "HEAD")
+    git(work, "push", "-q", "origin", "main")
+    git(work, "checkout", "-q", "-b", "fix/1-a")
+    (work / "a.txt").write_text("a\n")
+    git(work, "add", "a.txt")
+    git(work, *ident, "commit", "-q", "-m", "Fixed a")
+    git(work, "push", "-q", "origin", "fix/1-a")
+    git(work, "fetch", "-q", "origin")
+    there = git(work, "rev-parse", "HEAD")
+    git(work, *ident, "commit", "-q", "--amend", "-m", "fix: a")
+    if not same_tree:
+        (work / "a.txt").write_text("b\n")
+        git(work, "add", "a.txt")
+        git(work, *ident, "commit", "-q", "--amend", "-m", "fix: a")
+    (work / ".dx-out").mkdir()
+    git(work, "bundle", "create", "-q", ".dx-out/work.bundle", "HEAD")
+    git(work, "checkout", "-q", "--detach", there)
+    files = {f".dx-central/scripts/{n}": FAKE for n in ("autopilot.py", "api-commit.py")}
+    sha = there if lease_holds else "f" * 40
+    env = {"BRANCH": "fix/1-a", "DEFAULT": "main", "ENGINE": "false", "PR": "8", "NUMBER": "1", "REWORD_OK": reword_ok,
+           "DX_BOT_LOGIN": "dilux-bot[bot]", "DX_BOT_ID": "1", "FAKE_AUTOPILOT_READY_GOES_RC": "0"}
+    ran = run(step("autopilot.yml", "applied", job="apply"), tmp_path, env=env, files=files, central=False,
+              stubs={"gh": f"echo {sha}"})
+    return ran, base
+
+
+def test_a_reworded_branch_with_the_same_tree_goes_with_a_lease(tmp_path):
+    ran, base = reworded(tmp_path)
+    assert ran.code == 0, ran.stdout + ran.stderr
+    assert ["api-commit.py", "push", "fix/1-a", "--force", "--onto", base] in ran.calls
+    assert ["gh", "api", "repos/o/r/branches/fix/1-a", "--jq", ".commit.sha"] in ran.calls
+
+
+def test_a_reworded_branch_with_another_tree_is_not_pushed(tmp_path):
+    ran, _ = reworded(tmp_path, same_tree=False)
+    assert ran.code == 1 and "do not build on fix/1-a" in ran.stdout
+    assert not ran.of("api-commit.py")
+
+
+def test_a_rewrite_outside_a_conventions_fix_round_is_not_pushed(tmp_path):
+    ran, _ = reworded(tmp_path, reword_ok="false")
+    assert ran.code == 1 and not ran.of("api-commit.py")
+
+
+def test_a_branch_that_moved_on_github_is_not_written_over(tmp_path):
+    ran, _ = reworded(tmp_path, lease_holds=False)
+    assert ran.code == 1 and "the lease does not hold" in ran.stdout
+    assert not ran.of("api-commit.py")
 
 
 def test_a_round_that_only_retitles_ends_ready_and_the_test_repository_answers_it():
