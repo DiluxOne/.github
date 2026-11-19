@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 844,
+  "prd_sha256": "34fb577ca50bd39d4c7b89b4e060959e85799f87a4452aaf3806a28121881815",
+  "prd": "### Problem\n\nThe review's score can reward an invented finding and an easy clean set, so it does not show whether the review finds bugs.\n\n### Scope\n\n- evals/review/cases.json and baseline.json, scripts/review-eval.py (or evals.py's review step), scripts/review-outcomes.py, with `--test` cases.\n\n### Out of scope\n\n- The review's prompt.\n\n### Acceptance criteria\n\n- C1: Given the review set, when it is validated, then every flag case's line was changed by the commit that fixed it, and a case that was not is refused by its name.\n- C2: Given a review that flags a different line of the same file, when it is scored, then the case counts as missed.\n- C3: Given the set's run, when it is scored, then it holds at least 10 flag and 10 clean cases, plays each 3 times and scores the median.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-19T01:48:18Z",
+  "policy": "DiluxOne/.github@595c7cf1fc2aed863b96d30ceafbc37fdcea3f13",
+  "how": "own-bug"
+}
