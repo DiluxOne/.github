@@ -199,9 +199,11 @@ run() {
     cp -- "$junit" "$dir/junit.xml" 2>/dev/null || true
     # Why the way's gate decided it (#841, "the test runs no step"): in
     # reason.txt, and first in the tail, which the retry comment quotes.
-    if [ -s "$dir/verdict.err" ]; then
-      cp -- "$dir/verdict.err" "$dir/reason.txt"
-      { cat "$dir/verdict.err"; cat "$dir/output-tail.txt"; } > "$dir/output-tail.new" && mv -- "$dir/output-tail.new" "$dir/output-tail.txt"
+    # Only the verdict's own reason line, never another line on its stderr.
+    reason=$(sed -n 's/^dx-reason: //p' "$dir/verdict.err" | head -n 1)
+    if [ -n "$reason" ]; then
+      printf '%s\n' "$reason" > "$dir/reason.txt"
+      { printf '%s\n' "$reason"; cat "$dir/output-tail.txt"; } > "$dir/output-tail.new" && mv -- "$dir/output-tail.new" "$dir/output-tail.txt"
     fi
     rm -f -- "$dir/verdict.err"
     if [ "$v" = environment ]; then
@@ -274,6 +276,18 @@ self_test() {
   # report says, and the reason leads what the retry comment quotes.
   t "#841 a runs-step way's test that runs no step is broken" broken "$(jq -nc --arg x "$fails" '{run: ("printf %s " + ($x|@sh) + " > build/j.xml; exit 1"), junit: "build/j.xml", minutes: 1, "runs-step": true, test: "tests/e2e/repro/issue-1.spec.ts"}')"
   if head -c 2500 "$d/out/output-tail.txt" | grep -q "the test runs no step" && grep -q "the test runs no step" "$d/out/reason.txt"; then echo "ok   #841 its reason opens the output's tail and is in reason.txt"; else echo "FAIL #841 its reason opens the output's tail and is in reason.txt"; fail=1; fi
+  # #841: only the verdict's own reason line is the reason, never another
+  # line Python writes on its stderr (a warning, a site's hook).
+  mkdir -p "$d/noise" && printf 'import sys\nprint("noise on stderr", file=sys.stderr)\n' > "$d/noise/sitecustomize.py"
+  PYTHONPATH="$d/noise" t "#841 a verdict with stderr noise still runs" broken "$(jq -nc --arg x "$fails" '{run: ("printf %s " + ($x|@sh) + " > build/j.xml; exit 1"), junit: "build/j.xml", minutes: 1, "runs-step": true, test: "tests/e2e/repro/issue-1.spec.ts"}')"
+  if [ "$(cat "$d/out/reason.txt")" = "the test runs no step" ] && ! grep -q "noise" "$d/out/output-tail.txt"; then echo "ok   #841 only the verdict's reason line is the reason, not its stderr"; else echo "FAIL #841 only the verdict's reason line is the reason ($(cat "$d/out/reason.txt"))"; fail=1; fi
+  rm -f "$d/out/reason.txt"
+  PYTHONPATH="$d/noise" t "#841 stderr noise with no reason" reproduced "$(jq -nc --arg x "$fails" '{run: ("printf %s " + ($x|@sh) + " > build/j.xml; exit 1"), junit: "build/j.xml", minutes: 1}')"
+  if [ ! -e "$d/out/reason.txt" ] && ! grep -q "noise" "$d/out/output-tail.txt"; then echo "ok   #841 stderr with no reason line writes no reason"; else echo "FAIL #841 stderr with no reason line wrote a reason"; fail=1; fi
+  # #841: a lane issue already in flight was sealed with the way as it was
+  # then (the PRD's REPRO_SPEC, with no `runs-step`): its test that only
+  # greps keeps the report's verdict, as before.
+  t "#841 a test sealed before runs-step (its way without the key) keeps the report's verdict" reproduced "$(jq -nc --arg x "$fails" '{run: ("printf %s " + ($x|@sh) + " > build/j.xml; exit 1"), junit: "build/j.xml", minutes: 1, test: "tests/e2e/repro/issue-1.spec.ts"}')"
   t "a run that writes no report is broken" broken '{"run":"true","junit":"build/j.xml","minutes":1}'
   t "the test is in place when the command runs" passed "$(jq -nc --arg x "$pass" '{run: ("test -f tests/e2e/repro/issue-1.spec.ts && printf %s " + ($x|@sh) + " > build/j.xml"), junit: "build/j.xml", minutes: 1}')"
   t "but not while setup runs" limit '{"setup":["test ! -f tests/e2e/repro/issue-1.spec.ts && exit 9"],"run":"true","junit":"build/j.xml","minutes":1}'
