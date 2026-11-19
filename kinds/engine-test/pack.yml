@@ -56,10 +56,12 @@ identity:
 # The autopilot in a fixed change that calls no model: for each criterion,
 # one file (`file`, `{n}` the issue's number, `{id}` the criterion's,
 # `{scenario}` the scenario of the issue's `dx-scenario` mark) and one
-# ticked box, so the scenarios try the flow, never the model.
+# ticked box, so the scenarios try the flow, never the model. The file is
+# named `*.test.*` so that G6 (scripts/autopilot.py TESTISH) counts it as
+# its criterion's test, and a person's Normal Bug merges by policy (#835).
 autopilot: fixed-change
 fixed-change:
-  file: "scenarios/{scenario}/{n}.md"
+  file: "scenarios/{scenario}/{n}.test.md"
   # A PRD that carries this phrase makes the fixed Spec stop, as a model
   # asking would, until someone who decides answers in a comment (#696,
   # scripts/autopilot.py fixed_asks); every other PRD goes on as before.
@@ -88,7 +90,7 @@ repro:
 
 # The "Test first" check (#734, scripts/test-first.py, kinds/README.md): a
 # test is a Python file under tests/repro/, run by the fixed way. A
-# scenario's file (`fixed-change`'s scenarios/<scenario>/<n>.md) is never
+# scenario's file (`fixed-change`'s scenarios/<scenario>/<n>.test.md) is never
 # one, so a scenario's `feat` pull request has its "Test first" red; no
 # scenario's `expect` reads it, and the `pipeline` check decides on the
 # organisation's gates alone (org.yml `pipeline-gates`).
