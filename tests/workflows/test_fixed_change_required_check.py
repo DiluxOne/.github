@@ -54,7 +54,7 @@ def fixed_body():
     bodies = yaml.safe_load((ROOT / "tests/release/scenarios.yml").read_text(encoding="utf-8"))["bodies"]
     pattern = ap.fixed_file(ap.org.load(), f"{ap.org.ORG}/{ap.org.test_repo(ap.org.load())}")
     assert pattern, "the test repository has a fixed change"
-    return bodies["bug-not-reproduced"] + "\n" + ap.fixed_spec(pattern, NUMBER, ["C1"], SCENARIO), ap.fixed_path(pattern, NUMBER, "C1", SCENARIO)
+    return bodies["bug-by-person-merges"] + "\n" + ap.fixed_spec(pattern, NUMBER, ["C1"], SCENARIO), ap.fixed_path(pattern, NUMBER, "C1", SCENARIO)
 
 
 def decide(ev, body, files):

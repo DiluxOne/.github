@@ -486,11 +486,19 @@ def preconditions(scenarios, bodies, pack, can_dispatch=(), passes=None, types=N
     report), and (#760) a pull request whose description, `pull_text` of
     its body, would not name every file of its diff (`pull_files`), its
     body with no `{files}` among them, or the one it lands on main
-    through, of the `pull` body. Pure."""
+    through, of the `pull` body, and (#881) an issue or a pull request
+    whose body names another scenario's file (`scenarios/<other>/`): the
+    triage reads it as that scenario's report, a `duplicate`. Pure."""
     import fnmatch
     out = []
     for s in scenarios:
         sid, expect, opens = s.get("id") or "?", s.get("expect") or {}, s.get("opens") or {}
+        for kind in ("issue", "pull"):
+            if kind in opens:
+                body = body_of((opens[kind] or {}).get("body"), bodies)
+                for other in sorted(set(re.findall(r"scenarios/([A-Za-z0-9_-]+)/", body)) - {sid}):
+                    out.append(f"scenario {sid}: its {kind}'s body names scenarios/{other}/, another scenario's file, "
+                               f"so the triage reads it as that scenario's report (a duplicate)")
         # #696: `count` is {marker: how many comments carry it}.
         count = expect.get("count")
         if count is not None and (not isinstance(count, dict) or not count
@@ -2800,6 +2808,13 @@ def self_test():
     check("#707: a confirmed bug's issue expected to have a pull request that closes it is refused: the lane's fix closes its own issue",
           preconditions([{"id": "b", "opens": {"issue": {"body": "bug"}}, "expect": {"labels": ["bug:confirmed"], "pull": {"closes": True}}}], {}, rpack, repro=True),
           ["scenario b: expects bug:confirmed and a pull request that closes its issue, but the reproduction's fix closes the issue the bugfix-reproduced lane opens, never the report"])
+    borrowed = {"id": "copycat", "opens": {"issue": {"body": "borrowed"}}, "expect": {"labels": ["needs-info"]}}
+    check("#881: a scenario whose body names another scenario's file is refused (the triage reads it as a duplicate), its own is not, and no real one does",
+          ([p.split(":")[0] for p in preconditions([borrowed], {"borrowed": "Read `scenarios/someone-else/greeting.md`."}, rpack, repro=True)],
+           preconditions([dict(borrowed, id="someone-else")], {"borrowed": "Read `scenarios/someone-else/greeting.md`."}, rpack, repro=True),
+           [p for p in preconditions(real["scenarios"], real["bodies"], rpack, types=real.get("types") or {}, repro=True) if "another scenario's file" in p],
+           [b for s in real["scenarios"] if s["id"] == "bug-by-person-merges" for b in [s["opens"]["issue"]["body"]]]),
+          (["scenario copycat"], [], [], ["bug-by-person-merges"]))
     check("#707: the bug that reproduces lands the greeting its fixed test reads, under its own directory, and its body names it",
           ([b for b in bugs[0].get("before") or [] if "lands" in b], "scenarios/bug-reproduced/greeting.md" in real["bodies"][bugs[0]["opens"]["issue"]["body"]]),
           ([{"lands": "greeting", "says": "helo"}], True))
