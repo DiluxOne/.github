@@ -5,9 +5,10 @@ The cases are real pull requests of the organisation's public repositories
 (a private one's code would show in this public repository's logs):
 
   flag   the commit where the review raised a blocker or major that was
-         then fixed (the review resolved its thread, or its line changed):
-         a real bug. The review must raise a blocker or major on that file
-         again.
+         then fixed: its `line` of `path`, which `fix`, a later commit of
+         the pull request, changed (a thread that is only outdated or
+         resolved, its line never changed, is no case; #844). The review
+         must raise a blocker or major on that line again.
   clean  the last commit of a merged pull request on which the review left
          no thread at all. The review must not block it.
 
@@ -21,7 +22,10 @@ either side (a model does not answer the same twice).
   review-eval.py collect [N]   write evals/review/cases.json: N cases of each
                                kind (default 6), from the review's threads
                                (GH_TOKEN, read)
-  review-eval.py run           review every case; results on stdout (JSON)
+  review-eval.py check [FILE]  validate the set (default cases.json): exit 1
+                               naming each flag case whose line its fix did
+                               not change (git, the public repositories)
+  review-eval.py run           check the set, then review every case; results on stdout (JSON)
                                (the Claude Code CLI, git, the checkout)
   review-eval.py score FILE    the results in FILE against the baseline:
                                a table on stdout, exit 1 when worse
@@ -30,6 +34,7 @@ either side (a model does not answer the same twice).
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -48,8 +53,9 @@ query($q: String!) {
   search(query: $q, type: ISSUE, first: 50) {
     nodes { ... on PullRequest {
       number title baseRefOid headRefOid isCrossRepository
+      commits(first: 100) { nodes { commit { oid } } }
       reviewThreads(first: 50) { nodes {
-        isResolved isOutdated path resolvedBy { login }
+        isResolved isOutdated path originalLine resolvedBy { login }
         comments(first: 1) { nodes { author { login } body originalCommit { oid } } }
       } }
     } }
@@ -63,8 +69,83 @@ def is_review(t):
     return (c.get("author") or {}).get("login") == org.APP and "AI review" in (c.get("body") or "")
 
 
-def cases_from(repo, prs, n):
-    """Up to n `flag` and n `clean` cases from one repository's pull requests."""
+def line_changed(diff, line):
+    """Whether `git diff -U0` text changes the old file's line: it falls in
+    a `-a,b` hunk with b >= 1 (a hunk of additions alone changes none)."""
+    for m in re.finditer(r"^@@ -(\d+)(?:,(\d+))? \+", diff or "", re.M):
+        start, count = int(m.group(1)), int(m.group(2) if m.group(2) is not None else 1)
+        if count >= 1 and start <= line < start + count:
+            return True
+    return False
+
+
+def first_fix(commits, line, diff_of):
+    """The first of commits (those after the case's head, in order) whose
+    diff from head, diff_of(commit), changes line; None when none does."""
+    for c in commits:
+        if line_changed(diff_of(c), line):
+            return c
+    return None
+
+
+def git_url(repo):
+    # DX_EVAL_GIT stands in for GitHub in the tests: a directory of o/r.
+    return f"{os.environ.get('DX_EVAL_GIT', 'https://github.com')}/{repo}"
+
+
+class Clones:
+    """One clone per repository, to read the cases' commits."""
+
+    def __init__(self, work):
+        self.work, self.dirs = work, {}
+
+    def git(self, repo, *args):
+        d = self.dirs.get(repo)
+        if d is None:
+            d = os.path.join(self.work, repo.replace("/", "_"))
+            if subprocess.run(["git", "clone", "-q", "--no-checkout", git_url(repo), d], capture_output=True).returncode != 0:
+                d = ""
+            self.dirs[repo] = d
+        if not d:
+            return None
+        return subprocess.run(["git", "-C", d, *args], capture_output=True, text=True)
+
+    def has(self, repo, pr, *oids):
+        """Whether every oid is a commit of the clone, fetched when not."""
+        def ok():
+            return all((self.git(repo, "cat-file", "-e", o + "^{commit}") or subprocess.CompletedProcess([], 1)).returncode == 0 for o in oids)
+        if ok():
+            return True
+        self.git(repo, "fetch", "-q", "origin", f"refs/pull/{pr}/head", *oids)
+        return ok()
+
+    def diff(self, repo, a, b, path):
+        out = self.git(repo, "diff", "-U0", a, b, "--", path)
+        return out.stdout if out is not None and out.returncode == 0 else ""
+
+
+def refused(cases, clones):
+    """Why each flag case is refused, by its name: no line or fix, or the
+    fix did not change its line (C1, #844)."""
+    why = []
+    for c in cases:
+        if c.get("expect") != "flag":
+            continue
+        line, fix = c.get("line"), c.get("fix")
+        if not isinstance(line, int) or isinstance(line, bool) or not fix or not c.get("path"):
+            why.append(f"{c.get('id')}: no line, path or fix")
+        elif not clones.has(c["repo"], c.get("pr"), c["head"], fix):
+            why.append(f"{c['id']}: {c['head']} or {fix} cannot be read from {c['repo']}")
+        elif not line_changed(clones.diff(c["repo"], c["head"], fix, c["path"]), line):
+            why.append(f"{c['id']}: line {line} of {c['path']} was not changed by {fix}")
+    return why
+
+
+def cases_from(repo, prs, n, fix_of=None):
+    """Up to n `flag` and n `clean` cases from one repository's pull requests.
+    fix_of(pr, head, path, line, commits) is the commit after head that
+    changed the line, or None: a thread whose line no commit changed is
+    not a flag case (#844)."""
     flag, clean = [], []
     for pr in prs:
         # Only a branch of the repository itself: a fork's code never runs
@@ -74,11 +155,18 @@ def cases_from(repo, prs, n):
         threads = [t for t in ((pr.get("reviewThreads") or {}).get("nodes") or [])]
         fixed = [t for t in threads if is_review(t) and (((t.get("resolvedBy") or {}).get("login") == org.APP) or t.get("isOutdated"))]
         if fixed:
-            t = fixed[0]
-            head = (((t.get("comments") or {}).get("nodes") or [{}])[0].get("originalCommit") or {}).get("oid")
-            if head and len(flag) < n:
-                flag.append({"id": f"{repo}#{pr['number']}:flag", "repo": repo, "pr": pr["number"], "title": pr.get("title") or "",
-                             "base": pr.get("baseRefOid"), "head": head, "expect": "flag", "path": t.get("path")})
+            commits = [((x or {}).get("commit") or {}).get("oid") for x in ((pr.get("commits") or {}).get("nodes") or [])]
+            for t in fixed:
+                head = (((t.get("comments") or {}).get("nodes") or [{}])[0].get("originalCommit") or {}).get("oid")
+                line = t.get("originalLine")
+                if not head or not isinstance(line, int) or head not in commits or len(flag) >= n:
+                    continue
+                after = [c for c in commits[commits.index(head) + 1:] if c]
+                fix = fix_of(pr, head, t.get("path"), line, after) if fix_of else None
+                if fix:
+                    flag.append({"id": f"{repo}#{pr['number']}:flag", "repo": repo, "pr": pr["number"], "title": pr.get("title") or "",
+                                 "base": pr.get("baseRefOid"), "head": head, "expect": "flag", "path": t.get("path"), "line": line, "fix": fix})
+                    break
         elif not any(is_review(t) for t in threads) and len(clean) < n:
             clean.append({"id": f"{repo}#{pr['number']}:clean", "repo": repo, "pr": pr["number"], "title": pr.get("title") or "",
                           "base": pr.get("baseRefOid"), "head": pr.get("headRefOid"), "expect": "clean"})
@@ -111,12 +199,26 @@ def public_repos():
 
 def collect(n):
     per_repo = {}
+    clones = Clones(tempfile.mkdtemp(prefix="dx-collect-"))
     for name in public_repos():
         full = f"{org.ORG}/{name}"
         out = gh("api", "graphql", "-f", f"query={QUERY}", "-f", f"q=repo:{full} is:pr is:merged commenter:app/{org.APP}")
         prs = json.loads(out)["data"]["search"]["nodes"]
-        per_repo[full] = cases_from(full, prs, n)
+
+        def fix_of(pr, head, path, line, after, full=full):
+            if not clones.has(full, pr["number"], head, *after):
+                return None
+            return first_fix(after, line, lambda c: clones.diff(full, head, c, path))
+        per_repo[full] = cases_from(full, prs, n, fix_of)
     return pick(per_repo, n)
+
+
+def check(cases):
+    """The set's validation: 0, or 1 with each refused case on stderr."""
+    why = refused(cases, Clones(tempfile.mkdtemp(prefix="dx-check-")))
+    for w in why:
+        print(f"review-eval.py: {w}", file=sys.stderr)
+    return 1 if why else 0
 
 
 def verdict(case, review):
@@ -136,7 +238,7 @@ def run_case(case, central, work):
     repo_dir = os.path.join(work, case["repo"].replace("/", "_"))
     git = lambda *a: subprocess.run(["git", "-C", repo_dir, *a], capture_output=True, text=True)
     if not os.path.isdir(repo_dir):
-        if subprocess.run(["git", "clone", "-q", f"https://github.com/{case['repo']}", repo_dir]).returncode != 0:
+        if subprocess.run(["git", "clone", "-q", git_url(case["repo"]), repo_dir]).returncode != 0:
             return None
     git("fetch", "-q", "origin", f"refs/pull/{case['pr']}/head", case["base"])
     if git("cat-file", "-e", case["head"] + "^{commit}").returncode != 0:
@@ -199,11 +301,19 @@ def self_test():
 
     bot = {"login": org.APP}
     first = lambda oid: {"nodes": [{"author": bot, "body": "x\n<sub>🤖 AI review · m (Anthropic)</sub>", "originalCommit": {"oid": oid}}]}
-    prs = [{"number": 1, "title": "fix: a", "baseRefOid": "b1", "headRefOid": "h1", "isCrossRepository": False, "reviewThreads": {"nodes": [{"isOutdated": True, "path": "a.php", "resolvedBy": None, "comments": first("c1")}]}},
+    commits = lambda *o: {"nodes": [{"commit": {"oid": x}} for x in o]}
+    prs = [{"number": 1, "title": "fix: a", "baseRefOid": "b1", "headRefOid": "h1", "isCrossRepository": False, "commits": commits("c0", "c1", "c2", "h1"),
+            "reviewThreads": {"nodes": [{"isOutdated": True, "path": "a.php", "originalLine": 7, "resolvedBy": None, "comments": first("c1")}]}},
            {"number": 2, "title": "feat: b", "baseRefOid": "b2", "headRefOid": "h2", "isCrossRepository": False, "reviewThreads": {"nodes": []}},
            {"number": 3, "title": "fix: c", "baseRefOid": "b3", "headRefOid": "h3", "isCrossRepository": False, "reviewThreads": {"nodes": [{"isOutdated": False, "path": "c.php", "resolvedBy": {"login": "me"}, "comments": first("c3")}]}}]
-    flag, clean = cases_from("o/r", prs, 5)
-    check("cases: a fixed finding is a flag case at the commit it was raised on", [(c["pr"], c["head"], c["path"]) for c in flag], [(1, "c1", "a.php")])
+    seen = []
+    fix_of = lambda pr, head, path, line, after: seen.append((head, path, line, after)) or "c2"
+    flag, clean = cases_from("o/r", prs, 5, fix_of)
+    check("cases: a fixed finding is a flag case at the commit it was raised on, with its line and fix", [(c["pr"], c["head"], c["path"], c["line"], c["fix"]) for c in flag], [(1, "c1", "a.php", 7, "c2")])
+    check("cases: the fix is looked for among the commits after head", seen, [("c1", "a.php", 7, ["c2", "h1"])])
+    check("cases: a thread whose line no commit changed is not a flag case", cases_from("o/r", prs[:1], 5, lambda *a: None), ([], []))
+    check("line_changed: inside a -a,b hunk; never an addition alone", [line_changed("@@ -3,2 +3,1 @@\n@@ -9,0 +9,1 @@\n", n) for n in (2, 3, 4, 5, 9)], [False, True, True, False, False])
+    check("first_fix: the first commit that changed the line", first_fix(["x", "y"], 3, {"x": "@@ -5 +5 @@", "y": "@@ -3 +3 @@"}.get), "y")
     check("cases: a pull request with no thread is clean at its last commit; a dismissed one is neither", [(c["pr"], c["head"]) for c in clean], [(2, "h2")])
     fork = [{"number": 9, "title": "x", "baseRefOid": "b", "headRefOid": "h", "isCrossRepository": True, "reviewThreads": {"nodes": []}},
             {"number": 8, "title": "y", "baseRefOid": "b", "headRefOid": "h", "reviewThreads": {"nodes": []}}]
@@ -238,9 +348,15 @@ def main(argv):
             fh.write("\n")
         print(f"{len(cases)} cases in {CASES}")
         return 0
+    if argv[:1] == ["check"] and len(argv) <= 2:
+        with open(argv[1] if len(argv) == 2 else CASES, encoding="utf-8") as fh:
+            return check(json.load(fh))
     if argv == ["run"]:
         with open(CASES, encoding="utf-8") as fh:
             cases = json.load(fh)
+        # A set that does not hold is refused before any paid review (#844).
+        if check(cases):
+            return 1
         work = tempfile.mkdtemp(prefix="dx-eval-")
         results = []
         for c in cases:
