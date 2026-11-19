@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 852,
+  "prd_sha256": "22421a937604be9db8bf5a31334b5d066a027b57e91a955fab8e19f84e191bc4",
+  "prd": "### Problem\n\nThe required tests check is cancelled by its own timeout as the suite grows, which blocks pull requests that are correct.\n\n### Scope\n\n- .github/workflows/pull-request.yml: the Scripts (self-tests) job's timeout.\n- A test under tests/workflows/ that the timeout leaves room.\n\n### Out of scope\n\n- Splitting or speeding up the suite.\n\n### Acceptance criteria\n\n- C1: Given .github/workflows/pull-request.yml, when its Scripts (self-tests) job is read, then its timeout-minutes is at least 15, and a test fails if it is set below that.\n\n### Criticality\n\nCritical",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-19T04:22:59Z",
+  "policy": "DiluxOne/.github@5ffc03bff8e30c94f079aa4f63a5627fda24eeb7",
+  "how": "own-bug"
+}
