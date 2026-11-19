@@ -6,7 +6,8 @@ name: Claude review reply
 # review threads (the person fixed it, or showed it is not a problem), the
 # thread is resolved. An answer in the conversation can settle any finding of
 # the review, one it raised inline included (#871): Claude sees the bot's open
-# threads, the settlement is recorded and re-runs the review, and the thread
+# threads, the settlement is recorded and re-runs the review once the
+# review's run has finished (#882), and the thread
 # whose first line is `**<severity>**: <title>` of that finding is resolved.
 # Claude has no write access: this workflow posts the reply.
 # Always the `high` reviewer of the policy files (the repository's, else the
@@ -761,16 +762,36 @@ jobs:
           if [ "$(jq -r --arg h "$HEAD" 'if .sha == $h and .blocking == true then "yes" else "no" end' <<<"${record:-null}" 2>/dev/null || echo no)" != yes ]; then
             echo "The review did not block at ${HEAD:0:7}: nothing to run again."; exit 0
           fi
-          # The newest run whose review checked the head, by its check run.
+          # The newest run whose review checked the head, by its check run,
+          # whatever its status (#882): the review posts its summary before
+          # its job ends, and the run's other jobs go on after it.
           # shellcheck disable=SC2016 # jq, not shell.
           run=$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD/check-runs" --paginate \
-            --jq '.check_runs[] | select(.name == "Claude review" or (.name | endswith(" / Claude review"))) | select(.status == "completed") | ((.details_url // "") | capture("/runs/(?<id>[0-9]+)") | .id)' \
+            --jq '.check_runs[] | select(.name == "Claude review" or (.name | endswith(" / Claude review"))) | ((.details_url // "") | capture("/runs/(?<id>[0-9]+)") | .id)' \
             | sort -n | tail -1)
-          [ -n "$run" ] || { echo "No finished review of ${HEAD:0:7} to run again."; exit 0; }
+          [ -n "$run" ] || { echo "::error::No review of ${HEAD:0:7} to run again: the settled finding is not re-checked."; exit 1; }
+          # GitHub re-runs no job of a run that is still going: wait for the
+          # whole run to complete, bounded (15 s polls, 8 minutes at most,
+          # inside this job's limit), then re-run its failed jobs, retrying a
+          # refusal within the same bound.
           # The API, not `gh run rerun`: an organisation's required workflow
           # has no file here for gh to find.
-          if gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$run/rerun-failed-jobs" >/dev/null; then
-            echo "The review of ${HEAD:0:7} runs again (run $run): $LOGIN settled a finding."
-          else
-            echo "::warning::The review's run $run could not be run again."
-          fi
+          polls=0 refused=0
+          while :; do
+            polls=$((polls + 1))
+            status=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run" --jq .status || echo unknown)
+            if [ "$status" = completed ]; then
+              if gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$run/rerun-failed-jobs" >/dev/null; then
+                echo "The review of ${HEAD:0:7} runs again (run $run): $LOGIN settled a finding."
+                exit 0
+              fi
+              refused=$((refused + 1))
+              if [ "$refused" -ge 4 ]; then
+                echo "::error::GitHub refused to run the review's run $run again ($refused times): the settled finding is not re-checked."; exit 1
+              fi
+            fi
+            if [ "$polls" -ge 32 ]; then
+              echo "::error::The review's run $run could not be run again within 8 minutes (last status: $status): the settled finding is not re-checked."; exit 1
+            fi
+            sleep 15
+          done
