@@ -97,6 +97,9 @@ on:
       auto-merge:
         description: Whether the policy lets qualifying pull requests merge on their own.
         value: ${{ jobs.review.outputs.auto-merge }}
+      current:
+        description: false when the run's commit is no longer the pull request's head (#888); its review was skipped, and the callers act on no verdict of it.
+        value: ${{ jobs.head.outputs.current }}
     secrets:
       # The maintainer's Claude subscription (`claude setup-token`); the API
       # key is used only when it is missing.
@@ -113,8 +116,71 @@ permissions:
   issues: write
 
 jobs:
+  # Whether this run's commit is still the pull request's head (#888), read
+  # before the review joins its concurrency group. A pull request pushed to
+  # right after it opens gets two runs, one per commit, and the group cancels
+  # by the order their jobs reach it, not by the commit: the older commit's
+  # run, reaching it last, cancelled the head's review and reviewed a commit
+  # nobody merges. Outside the group, this job cancels nothing; a stale run's
+  # review is skipped, so it never joins the group, and the head's is never
+  # cancelled by an older commit. An edit is always current (it keeps its own
+  # group and the #832 wait); a failed read answers current, so a hiccup
+  # never skips the head's review.
+  head:
+    name: Current head
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      !github.event.pull_request.draft
+    outputs:
+      current: ${{ steps.current.outputs.current }}
+    steps:
+      - name: App token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: read
+          permission-pull-requests: read
+
+      - name: Is the commit the pull request's head
+        id: current
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          ACTION: ${{ github.event.action }}
+        run: |
+          if [ "$ACTION" = edited ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          head=""
+          for attempt in 1 2 3; do
+            if head=$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha); then break; fi
+            head=""
+            [ "$attempt" = 3 ] || sleep 5
+          done
+          if [ -z "$head" ]; then
+            echo "::warning::could not read the head of #$PR: reviewing $SHA"
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          elif [ "$head" != "$SHA" ]; then
+            echo "::notice::$SHA is no longer the head of #$PR ($head is): its run reviews nothing and cancels nothing; the head's run reviews it"
+            echo "current=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          fi
+
   review:
     name: Claude review
+    # order: after the head's read (#888), so a stale run never joins the
+    # group below.
+    needs: head
     runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     # An edit may wait for its push's review, which itself can take the 30
     # minutes a review job has: an edit's job gets longer to outlast it, and
@@ -123,7 +189,8 @@ jobs:
     if: >-
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
-      !github.event.pull_request.draft
+      !github.event.pull_request.draft &&
+      needs.head.outputs.current == 'true'
     # An edit of the title or description and a push can land on the same
     # commit a second apart, and a cancelled run leaves a cancelled check on
     # the commit that blocks the merge even when the other run passed. So an
@@ -133,7 +200,11 @@ jobs:
     # of it is running, then reuses that, and with none running, the push's
     # review skipped or cancelled, it reviews the commit itself, #832). A push
     # still cancels the review of the push before it, whose check sits on an
-    # older commit and blocks nothing.
+    # older commit and blocks nothing; a run of an older commit that starts
+    # after the head's never gets here (the `head` job above, #888), so it
+    # cannot cancel the head's review. Left: an older run that read the head
+    # in the instant before the push landed, which then starts first, and is
+    # cancelled by the newer run as before.
     concurrency:
       group: claude-review-${{ github.repository }}-${{ github.event.pull_request.number }}-${{ github.event.action == 'edited' && github.run_id || 'code' }}
       cancel-in-progress: ${{ github.event.action != 'edited' }}
