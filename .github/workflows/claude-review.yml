@@ -731,7 +731,7 @@ jobs:
           fi
           type=$(bash .dx-central/scripts/review-type.sh "$type" "$BOT" "$RUNNER_TEMP/timeline.json" "$current" "${bound[@]}")
           if [ "$type" != "$(jq -r '.type // "chore"' <<<"$OUT")" ]; then
-            echo "The type applied is $type (a person's type:* label, or the review's docs on files that are not documentation); the review's reading ($(jq -r .type <<<"$OUT")) is recorded."
+            echo "The type applied is $type (a person's type:* label, the review's docs on files that are not documentation, or the title's type for a fixed change, #895); the review's reading ($(jq -r .type <<<"$OUT")) is recorded."
           fi
           { echo "risk=$risk"; echo "complexity=$complexity"; echo "blocking=$blocking"; echo "type=$type"; echo "description_ok=$dmatch"; } >> "$GITHUB_OUTPUT"
 
