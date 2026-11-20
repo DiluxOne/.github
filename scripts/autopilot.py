@@ -2336,7 +2336,9 @@ def decide(policy, body, risk, complexity, blocking, description_ok, files, head
     is met by being there and changed, with no check asked of it; "" for
     every other repository. When every changed file (FILES, not empty) is
     a file of that pattern (#887), the review's description_ok is not
-    asked: the fixed change matches its description by construction."""
+    asked: the fixed change matches its description by construction; nor
+    is the review's criteria_verdict (#894): its criteria are met by
+    construction, one marker per criterion being what it writes."""
     if author != BOT:
         return False, f"the autopilot's pull requests are opened by {BOT}, not {author or 'unknown'}"
     if (autopilot_var or "").strip().lower() == "off":
@@ -2409,7 +2411,14 @@ def decide(policy, body, risk, complexity, blocking, description_ok, files, head
         return False, "the Spec is missing or incomplete (G3)"
     # G6 (#193): an agent that did not write the code, the review, said
     # each criterion is met, at this head.
-    if criteria_verdict is not False:
+    # #894: but the review's verdict does not hold the fixed change alone
+    # (as #887 for its description): its markers, one per criterion, are what it writes, so its
+    # criteria are met by construction (the tests at the head still count).
+    verdict_bypassed = False
+    if criteria_verdict is not False and by_construction:
+        ids = schema.check(body)["criteria"]
+        verdict_bypassed = bool(ids) and any(not (criteria_verdict or {}).get(i) for i in ids)
+    elif criteria_verdict is not False:
         ids = schema.check(body)["criteria"]
         if ids and criteria_verdict is None:
             return False, "the review has not judged the acceptance criteria at this head (G6)"
@@ -2429,6 +2438,8 @@ def decide(policy, body, risk, complexity, blocking, description_ok, files, head
             passed = ", its required check green at the head or its test the fixed change's own file, which no check runs"
     if by_construction and description_ok != "true":
         passed += ", its description matching by construction (the fixed change, written with no model)"
+    if verdict_bypassed:
+        passed += ", its criteria met by construction (the fixed change, written with no model)"
     return True, f"merges by policy: lane {lane_name}, risk {risk}, complexity {complexity}, every criterion with its test{passed}"
 
 
@@ -3023,6 +3034,15 @@ A class on html.
     check("#887 the fixed change alone matches its description by construction; another file, repository or no file does not",
           (d887(["scenarios/s/12.test.md"], fpat) != nomatch, d887(["scenarios/s/12.test.md", "header.php"], fpat),
            d887(["scenarios/s/12.test.md"], ""), d887([], fpat)), (True, nomatch, nomatch, nomatch))
+    d894 = lambda files, pat, verdict: decide(pol, fspec, "medium", "medium", "false", "true", files, files, "", criteria_verdict=verdict, fixed=pat)[1]
+    unmet894 = "the review does not find C1 met (G6)"
+    check("#894 the fixed change alone has its criteria met by construction; another file, repository or no file needs the review's verdict",
+          ("criteria met by construction" in d894(["scenarios/s/12.test.md"], fpat, {"C1": False}),
+           "criteria met by construction" in d894(["scenarios/s/12.test.md"], fpat, None),
+           "by construction" in d894(["scenarios/s/12.test.md"], fpat, {"C1": True}),
+           d894(["scenarios/s/12.test.md", "header.php"], fpat, {"C1": False}),
+           d894(["scenarios/s/12.test.md"], "", {"C1": False}), d894([], fpat, {"C1": False})),
+          (True, True, False, unmet894, unmet894, unmet894))
     check("#842 C2 the head's checks: the latest run of each name, pending until it completes",
           head_checks([{"name": "a", "status": "completed", "conclusion": "failure", "id": 1}, {"name": "a", "status": "completed", "conclusion": "success", "id": 2},
                        {"name": "b", "status": "queued", "conclusion": None, "id": 3}]), {"a": "success", "b": "pending"})
