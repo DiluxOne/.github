@@ -2334,7 +2334,9 @@ def decide(policy, body, risk, complexity, blocking, description_ok, files, head
     head_checks None (the old callers) asks only that the test be there.
     fixed (#860): the test repository's fixed-change pattern, whose file
     is met by being there and changed, with no check asked of it; "" for
-    every other repository."""
+    every other repository. When every changed file (FILES, not empty) is
+    a file of that pattern (#887), the review's description_ok is not
+    asked: the fixed change matches its description by construction."""
     if author != BOT:
         return False, f"the autopilot's pull requests are opened by {BOT}, not {author or 'unknown'}"
     if (autopilot_var or "").strip().lower() == "off":
@@ -2392,7 +2394,11 @@ def decide(policy, body, risk, complexity, blocking, description_ok, files, head
         return False, f"it adds public surface ({'; '.join(surface)[:200]}), which only a Feature issue carries: a person merges it"
     if blocking != "false":
         return False, "the review is blocking"
-    if description_ok != "true":
+    # #887: a pull request of the test repository's fixed change alone (its
+    # marker files, written with no model) matches its description by
+    # construction; the review's reading of it is not what G7 waits on.
+    by_construction = bool(fixed) and bool(files) and all(is_fixed(fixed, f) for f in files)
+    if description_ok != "true" and not by_construction:
         return False, "the description does not match the code"
     if not within(risk, caps.get("max-risk", "none")):
         return False, f"risk {risk} is above the lane's {caps.get('max-risk', 'none')}"
@@ -2421,6 +2427,8 @@ def decide(policy, body, risk, complexity, blocking, description_ok, files, head
         tests = next((t for h, t in schema.parse(body)[0] if h == "Spec: tests"), "")
         if any(is_fixed(fixed, p) for p in re.findall(r"[\w./-]+\.[A-Za-z0-9]+", tests)):
             passed = ", its required check green at the head or its test the fixed change's own file, which no check runs"
+    if by_construction and description_ok != "true":
+        passed += ", its description matching by construction (the fixed change, written with no model)"
     return True, f"merges by policy: lane {lane_name}, risk {risk}, complexity {complexity}, every criterion with its test{passed}"
 
 
@@ -3010,6 +3018,11 @@ A class on html.
     g7 = decide(pol, spec, "medium", "medium", "false", "true", head, head, "", head_checks={"tests / E2E": "pending"},
                 required_checks=["tests / E2E"], decl=tdecl, pr_type="fix", head_sha="abc")
     check("#842 C2 decide: the reason names the criterion and the check", g7, (False, "C1: `tests / E2E` is pending at abc (G6)"))
+    nomatch = "the description does not match the code"
+    d887 = lambda files, pat: decide(pol, fspec, "medium", "medium", "false", "false", files, files, "", fixed=pat)[1]
+    check("#887 the fixed change alone matches its description by construction; another file, repository or no file does not",
+          (d887(["scenarios/s/12.test.md"], fpat) != nomatch, d887(["scenarios/s/12.test.md", "header.php"], fpat),
+           d887(["scenarios/s/12.test.md"], ""), d887([], fpat)), (True, nomatch, nomatch, nomatch))
     check("#842 C2 the head's checks: the latest run of each name, pending until it completes",
           head_checks([{"name": "a", "status": "completed", "conclusion": "failure", "id": 1}, {"name": "a", "status": "completed", "conclusion": "success", "id": 2},
                        {"name": "b", "status": "queued", "conclusion": None, "id": 3}]), {"a": "success", "b": "pending"})
