@@ -56,12 +56,15 @@ def test_c1_a_failed_head_job_never_skips_the_review():
     # (its App token, a runner), skipping the review would let the head merge
     # unreviewed. With no answer, the review runs as it did before #888.
     assert review_if("") is True
+    # Asserted, never looked up: at the base, which has no head job, the
+    # test fails on an assertion, not on a KeyError ("Test first", #845).
+    assert "head" in jobs(), "claude-review.yml has no `head` job"
     head = jobs()["head"]
-    token = next(s for s in head["steps"] if s.get("id") == "bot")
+    token = step("claude-review.yml", "bot", job="head")
     assert token.get("continue-on-error") is True
-    read = next(s for s in head["steps"] if s.get("id") == "current")
-    assert read["env"]["GH_TOKEN"] == "${{ steps.bot.outputs.token || github.token }}"
-    assert head["permissions"] == {"contents": "read", "pull-requests": "read"}
+    read = step("claude-review.yml", "current", job="head")
+    assert (read.get("env") or {}).get("GH_TOKEN") == "${{ steps.bot.outputs.token || github.token }}"
+    assert head.get("permissions") == {"contents": "read", "pull-requests": "read"}
 
 
 def run_head(tmp_path, answer, action="synchronize", sha=OLD):
