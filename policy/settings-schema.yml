@@ -573,9 +573,9 @@ files:
     - key: fixed-change
       org: any
       repo: never
-      limit: "engine-test only: the file the autopilot writes per criterion instead of calling a model, and (`ask`, #696) the phrase on which its Spec stops until someone who decides answers"
-      read-by: [scripts/org.py, scripts/autopilot.py]
-      issue: "#563"
+      limit: "engine-test only: the file the autopilot writes per criterion instead of calling a model, and (`ask`, #696) the phrase on which its Spec stops until someone who decides answers; the review keeps the title's own type for a pull request made only of the files under its directory (#895)"
+      read-by: [scripts/org.py, scripts/autopilot.py, scripts/review-type.sh]
+      issue: "#563, #895"
       says: The canned change the autopilot commits in the test repository.
     - key: core
       org: any
