@@ -4,7 +4,9 @@ It opened its issue from the body `bug-not-reproduced`, which names
 plays at the same time; the triage read the two issues as one report, marked
 this one `duplicate`, never reproduced it and never added `needs-info`. No
 scenario may open an issue or a pull request whose body names another
-scenario's `scenarios/<id>/` path, and `preconditions` refuses one that does."""
+scenario's `scenarios/<id>/` path, and `preconditions` refuses one that does.
+The triage also read "the same title": no two scenarios that open a Bug may
+have titles where one starts with the other."""
 import importlib.util
 import re
 from pathlib import Path
@@ -54,3 +56,38 @@ def test_preconditions_refuses_a_body_that_names_another_scenarios_file():
 def test_preconditions_has_no_such_refusal_for_the_real_scenarios():
     got = rs.preconditions(REAL["scenarios"], REAL["bodies"], {}, types=REAL.get("types") or {}, repro=True)
     assert [p for p in got if "another scenario's file" in p] == []
+
+
+def bug_titles(scenarios, types):
+    """Each scenario's Bug issue title: the issue it opens (or the one its
+    pull request closes), its own `type:` over the Type its body's form
+    gives it."""
+    for s in scenarios:
+        opens = s.get("opens") or {}
+        for issue in (opens.get("issue"), (opens.get("pull") or {}).get("issue")):
+            if issue and (issue.get("type") or types.get(issue.get("body"))) == "Bug":
+                yield s["id"], issue.get("title") or ""
+
+
+def prefixed(titles):
+    """The pairs of different scenarios whose Bug title starts with the other's."""
+    norm = lambda t: " ".join(t.lower().split())
+    return [f"{a}: {ta!r} starts with {b}'s {tb!r}" for a, ta in titles for b, tb in titles
+            if a != b and norm(ta).startswith(norm(tb))]
+
+
+def test_no_two_bug_scenarios_have_titles_where_one_starts_with_the_other():
+    """On DiluxOne/diluxone-test#2913 the triage read "the same title":
+    `fix: something failed once, accepted` is bug-not-reproduced's title
+    plus one word."""
+    got = prefixed(list(bug_titles(REAL["scenarios"], REAL.get("types") or {})))
+    assert got == [], got
+
+
+def test_the_title_check_catches_a_prefix_and_spares_a_feature():
+    types = {"b": "Bug", "f": "Feature"}
+    scenarios = [{"id": "one", "opens": {"issue": {"title": "fix: something failed once", "body": "b"}}},
+                 {"id": "two", "opens": {"issue": {"title": "fix: something failed once, accepted", "body": "b"}}},
+                 {"id": "three", "opens": {"issue": {"title": "fix: something failed once, again", "body": "f"}}}]
+    assert prefixed(list(bug_titles(scenarios, types))) == [
+        "two: 'fix: something failed once, accepted' starts with one's 'fix: something failed once'"]

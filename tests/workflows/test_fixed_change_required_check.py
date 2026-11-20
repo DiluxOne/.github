@@ -35,7 +35,7 @@ def lines(path, rows):
     return str(path)
 
 
-def evidence(tmp_path, title="fix: something failed once, accepted", repo=None):
+def evidence(tmp_path, title="fix: a reader saw a misspelt word one morning", repo=None):
     """The decide step's files, as auto-merge.yml writes them for the test
     repository: the head's required check green, the base's rules, the
     head's runs, and its review policy at the base (none)."""

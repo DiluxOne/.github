@@ -480,7 +480,7 @@ scenarios:
     covers: []
     minutes: 15
     before: [{lands: greeting, says: hello}]
-    opens: {issue: {title: "fix: something failed once, accepted", body: bug-by-person-merges}}
+    opens: {issue: {title: "fix: a reader saw a misspelt word one morning", body: bug-by-person-merges}}
     steps: [{until: {labels: [awaiting-acceptance, needs-info]}}, {label: accepted}, {until: {comments: ["<!-- dx-prd-seal -->"]}},
             {until: {pull: {closes: true, branch: "^fix/[0-9]+-"}}}]
     expect: {state: CLOSED, absent: [needs-human]}
