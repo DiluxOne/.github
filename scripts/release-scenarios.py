@@ -1177,9 +1177,29 @@ def scenario_text(sid, name, where, run_id):
     its pull request with no diff, and on the head another than on main, so
     `conflict` conflicts. Pure."""
     text = f"{name} on {where}, scenario {sid}, run {run_id}\n"
-    # #699 C5: `token` carries one, a fake no service issues, which the
-    # test repository's review profile blocks on.
-    return text + (f"DX_API_TOKEN=dxfake_{re.sub(r'[^A-Za-z0-9]', '', str(run_id))}\n" if name == "token" else "")
+    # #699 C5: `token` carries one no service issues, which the test
+    # repository's review profile blocks on. #882: it has a real
+    # credential's shape, a live-style key of 32 base62 characters of its
+    # own per run, with no "fake" in it: a value that reads as visibly fake
+    # the review lists as a minor and never blocks on, so `settled-rerun`
+    # had nothing to re-run. No prefix GitHub's secret scanning knows (no
+    # ghp_, AKIA or sk_live_), so writing it is never refused.
+    return text + (f"DX_API_TOKEN=dx_live_{live_key(sid, run_id)}\n" if name == "token" else "")
+
+
+BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+
+def live_key(sid, run_id, size=32):
+    """SIZE base62 characters from a sha256 of the scenario `sid` and the
+    run `run_id` (#882): high-entropy, its own per run. Pure."""
+    import hashlib
+    n = int.from_bytes(hashlib.sha256(f"{sid}\n{run_id}".encode()).digest(), "big")
+    out = []
+    for _ in range(size):
+        n, r = divmod(n, 62)
+        out.append(BASE62[r])
+    return "".join(out)
 
 
 # What failed a scenario (#843), a failing row's `class`, set where the row
@@ -4156,8 +4176,10 @@ def self_test():
     play({"id": "s", "opens": {"issue": {"title": "feat: x", "body": "f"}}, "expect": {"labels": ["never"], "hands": ["accepted"]}}, "o/t", "v7-next", {"f": "f"}, fake699(log699), lambda s: None, 1)
     check("#699 C7: the label events are read only once the rest of the expectation holds",
           [a for a in log699 if a[:1] == ("api",) and str(a[1]).endswith("/events")], [])
-    check("#699 C5: a `token` push writes a fake token with the run's id; any other the scenario's text alone",
-          (scenario_text("s", "token", "the pull request", "7-1").splitlines()[1], scenario_text("s", "note", "main", "7-1").count("\n")), ("DX_API_TOKEN=dxfake_71", 1))
+    tok = [scenario_text("s", "token", "the pull request", r).splitlines()[1] for r in ("7-1", "7-2")]
+    check("#699 C5, #882: a `token` push writes a live-shaped token of 32 base62 characters, with no fake in it, its own per run; any other the scenario's text alone",
+          ([bool(re.fullmatch(r"DX_API_TOKEN=dx_live_[A-Za-z0-9]{32}", t)) and "fake" not in t for t in tok], tok[0] != tok[1],
+           scenario_text("s", "note", "main", "7-1").count("\n")), ([True, True], True, 1))
     flows_real = flows(real)
     check("#699 C7: the real file: each step of the flow is played by a scenario that moves no label but the acceptance, or held by its test, C2 and C6",
           (sorted(flows_real), sorted(c for s in real["scenarios"] for c in s.get("covers") or [] if c.startswith("flow:")),
