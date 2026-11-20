@@ -77,7 +77,8 @@ fixed-change:
 # scenarios/<scenario>/greeting.md says "helo" (what `bug-reproduced` lands
 # on main first), so `bug-reproduced` gets `bug:confirmed` and
 # `bug-not-reproduced`, which lands its own saying "hello" (#764), gets
-# `needs-info` (#801). One way
+# `needs-info` (#801), as does `bug-by-person-merges`, whose body names only
+# its own greeting (#881). One way
 # for every layer: whatever layer the triage puts on the board, a bug here
 # never lacks one.
 repro:

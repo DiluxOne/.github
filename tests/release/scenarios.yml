@@ -205,6 +205,41 @@ bodies:
     ### Criticality
 
     Normal
+  # #881: its own body, naming only its own file, so the triage never reads
+  # it as `bug-not-reproduced`'s report (a `duplicate`, with no reproduction).
+  bug-by-person-merges: |
+    ### What happened?
+
+    A reader saw "helo" in `scenarios/bug-by-person-merges/greeting.md` one morning, and nobody kept a copy of it.
+
+    ### Steps to reproduce
+
+    1. Open `scenarios/bug-by-person-merges/greeting.md` on `main`.
+    2. Check whether its word is "helo" rather than "hello".
+
+    ### Version
+
+    The test repository's `main`.
+
+    ### Problem
+
+    A reader reported that the greeting of this scenario was misspelt as "helo".
+
+    ### Scope
+
+    - The word the greeting says.
+
+    ### Out of scope
+
+    - Any other file.
+
+    ### Acceptance criteria
+
+    - C1: Given the repository, when `scenarios/bug-by-person-merges/greeting.md` is read, then it says "hello".
+
+    ### Criticality
+
+    Normal
   # A decision's PRD (#713: the schema's, with its Repositories), naming
   # only the test repository, so it reaches no other.
   decision: |
@@ -311,6 +346,7 @@ types:
   edited-asking-feature: Feature
   bug: Bug
   bug-not-reproduced: Bug
+  bug-by-person-merges: Bug
   task: Task
   release: Task
 
@@ -444,7 +480,7 @@ scenarios:
     covers: []
     minutes: 15
     before: [{lands: greeting, says: hello}]
-    opens: {issue: {title: "fix: something failed once, accepted", body: bug-not-reproduced}}
+    opens: {issue: {title: "fix: a reader saw a misspelt word one morning", body: bug-by-person-merges}}
     steps: [{until: {labels: [awaiting-acceptance, needs-info]}}, {label: accepted}, {until: {comments: ["<!-- dx-prd-seal -->"]}},
             {until: {pull: {closes: true, branch: "^fix/[0-9]+-"}}}]
     expect: {state: CLOSED, absent: [needs-human]}

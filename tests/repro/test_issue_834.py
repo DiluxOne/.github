@@ -29,7 +29,7 @@ def test_the_fixed_changes_pull_request_for_a_persons_bug_merges_by_policy():
     pack = yaml.safe_load((ROOT / "kinds/engine-test/pack.yml").read_text(encoding="utf-8"))
     pattern = pack["fixed-change"]["file"]
     scenario, number = "bug-by-person-merges", 12
-    prd = bodies["bug-not-reproduced"]
+    prd = bodies["bug-by-person-merges"]
     path = ap.fixed_path(pattern, number, "C1", scenario)
     body = prd + "\n" + ap.fixed_spec(pattern, number, ["C1"], scenario)
     policy = ap.autonomy.merge(ap.autonomy.load(str(ROOT / "policy" / "autonomy.yml")), {})
