@@ -2,11 +2,59 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
+## [7.19.0](https://github.com/DiluxOne/.github/releases/tag/v7.19.0) · 2026-11-20
+
+### Features
+
+- test first needs an assertion and tests check behaviour ([#846](https://github.com/DiluxOne/.github/pull/846))
+- the autopilot's cap has no way on but a claim, and lost runs count ([#857](https://github.com/DiluxOne/.github/pull/857))
+- the release lane retries, classifies and files once ([#848](https://github.com/DiluxOne/.github/pull/848))
+
+### Fixes
+
+- release scenario settled-rerun fails ([#910](https://github.com/DiluxOne/.github/pull/910))
+- release scenario conventions-fix fails ([#905](https://github.com/DiluxOne/.github/pull/905))
+- release scenario conventions-fix fails ([#898](https://github.com/DiluxOne/.github/pull/898))
+- release scenario prd-edited-after-acceptance fails ([#899](https://github.com/DiluxOne/.github/pull/899))
+- release scenario bug-by-person-merges fails ([#897](https://github.com/DiluxOne/.github/pull/897))
+- release scenario bug-by-person-merges fails ([#890](https://github.com/DiluxOne/.github/pull/890))
+- release scenario bug-by-person-merges fails ([#885](https://github.com/DiluxOne/.github/pull/885))
+- release scenario settled-rerun fails ([#886](https://github.com/DiluxOne/.github/pull/886))
+- release scenario settled-rerun fails ([#880](https://github.com/DiluxOne/.github/pull/880))
+- release scenario bug-by-person-merges fails ([#879](https://github.com/DiluxOne/.github/pull/879))
+- a workflow reproduction runs the step, never greps its text ([#850](https://github.com/DiluxOne/.github/pull/850))
+- the bug reproduced from #834 ([#854](https://github.com/DiluxOne/.github/pull/854))
+- tests are required here and G7 reads their result ([#849](https://github.com/DiluxOne/.github/pull/849))
+- the flow needs a person's label to move six times a night ([#836](https://github.com/DiluxOne/.github/pull/836))
+- five gaps that make a person move the flow by hand ([#833](https://github.com/DiluxOne/.github/pull/833))
+- a stop, an edit and a new acceptance break the autopilot's path ([#831](https://github.com/DiluxOne/.github/pull/831))
+
+### Tests
+
+- the 23 tests left in KNOWN stop cutting text ([#876](https://github.com/DiluxOne/.github/pull/876))
+
+### CI
+
+- release scenario play fails on infrastructure ([#883](https://github.com/DiluxOne/.github/pull/883))
+- the required tests check is cancelled by its 5-minute timeout ([#853](https://github.com/DiluxOne/.github/pull/853))
+
+### Build and dependencies
+
+- **deps:** Bump ubuntu from `fe81560` to `73b9993` in /runner ([#874](https://github.com/DiluxOne/.github/pull/874))
+
+### Maintenance
+
+- say what a kind's battery is, in one place ([#829](https://github.com/DiluxOne/.github/pull/829))
+
 ## [7.18.0](https://github.com/DiluxOne/.github/releases/tag/v7.18.0) · 2026-11-17
 
 ### Features
 
 - labels.yml lists only the labels that stay ([#826](https://github.com/DiluxOne/.github/pull/826))
+
+### Maintenance
+
+- release v7.18.0 ([#827](https://github.com/DiluxOne/.github/pull/827))
 
 ## [7.17.1](https://github.com/DiluxOne/.github/releases/tag/v7.17.1) · 2026-11-17
 
