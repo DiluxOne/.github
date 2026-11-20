@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 893,
+  "prd_sha256": "8369c1c9bacbb8ccbef86a90987dca0b01ade0b8e0cfb86ed021f3eb897c8544",
+  "prd": "### Problem\n\nThe release candidate v7.19.0 fails the release scenario `prd-edited-after-acceptance` in what the engine did: its `until` or `expect` did not hold, or could no longer hold, so the lane releases nothing and `v7` stays where it is.\nReproduced by: https://github.com/DiluxOne/.github/actions/runs/44677178687 scenario `prd-edited-after-acceptance`.\n\nCause, verified in the test repository: the scenario's PRD edit was lost. At 2026-11-20T05:22:52Z the harness edited issue DiluxOne/diluxone-test#3109 (the `edited-feature` PRD, which adds \"nor a farewell\"), and in the same second dilux-bot wrote the Spec into the issue body from the body it had read before the edit, so the person's edit was overwritten: the issue today has the original PRD (\"The test repository has no greeting.\") plus the Spec. The edited run's job \"Edited after its acceptance\" then said \"The PRD is the one sealed (match): the acceptance stands\", so `accepted` stayed. The fix: whatever writes the Spec (or any section) into an issue body re-reads the body right before writing and writes only its own section, never a stale copy of the PRD; if the PRD changed since it read it, it does not write over it. Test: a body edited between the read and the write keeps the person's PRD.\n\n### Scope\n\n- The cause of the failure above, in the engine, fixed with a test that would have caught it.\n\n### Out of scope\n\n- Changing the gates or what they check.\n\n### Acceptance criteria\n\n- C1: Given v7.19.0's candidate with the fix, when the release lane plays `prd-edited-after-acceptance` in the test repository, then it passes and the lane releases it.\n\n### Criticality\n\nCritical",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-20T06:28:35Z",
+  "policy": "DiluxOne/.github@776c534b2b76"
+}
