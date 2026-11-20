@@ -18,4 +18,8 @@ the flow, never the code.
   pack's `fixed-change.file`, written with no model) is not judged as a real
   fix: the review judges the flow, not whether the marker "fixes" the PRD's
   bug, and sets `description_matches` true for it. G7 does not hold such a
-  pull request on the description either (#887).
+  pull request on the description either (#887). Nor are its criteria
+  judged as a real fix's: a marker with no assertion is what the fixed
+  change writes, not a stub, so the review sets each of its criteria
+  `met: true`, and G7 does not hold it on the criteria verdict either
+  (#894).
