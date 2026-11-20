@@ -1,0 +1,17 @@
+{
+  "kind": "lane-decision",
+  "issue": 888,
+  "lane": "bugfix-reproduced",
+  "decided_by": "policy",
+  "decided": "policy",
+  "rule": "policy/autonomy.yml#lanes.bugfix-reproduced",
+  "policy": "DiluxOne/.github@bbaeae260c84",
+  "at": "2026-11-20T00:24:10Z",
+  "run": "https://github.com/DiluxOne/.github/actions/runs/44645547273",
+  "evidence": {
+    "why": "accepted by policy: lane bugfix-reproduced, opened by run 44642022228",
+    "run": "https://github.com/DiluxOne/.github/actions/runs/44645547273",
+    "reproduced_by": "https://github.com/DiluxOne/.github/actions/runs/44642022228",
+    "scenario": "settled-rerun"
+  }
+}
