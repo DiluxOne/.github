@@ -22,6 +22,14 @@
 #               tells them. An empty KIND: the organisation's paths alone,
 #               and the review's type kept when they or the diff cannot be
 #               read (a named kind fails instead).
+#   review-type.sh TYPE BOT TIMELINE LABELS --diff KIND BASE HEAD --title TITLE
+#               the same, and when KIND's pack says `autopilot: fixed-change`
+#               and every file of BASE...HEAD is under the directory of its
+#               `fixed-change.file` (each `{...}` one path segment), the type
+#               is the title's own (breaking when it carries `!`), whatever
+#               the review read (#895): a scenario's marker files are not the
+#               change's type. A title that is not a Conventional Commit
+#               header keeps the review's type; a person's label still wins.
 #   review-type.sh --test                     self-test
 set -euo pipefail
 
@@ -51,6 +59,42 @@ bounded() {
     [ "$is_doc" = true ] || { echo chore; return 0; }
   done <<<"$files"
   echo docs
+}
+
+# The regular expression of the fixed change's files of KIND, empty when its
+# pack has no `autopilot: fixed-change` (or no pack, or no kind).
+fixed_re() {
+  local kind=$1
+  [ -n "$kind" ] || return 0
+  [[ "$kind" =~ ^[a-z0-9][a-z0-9-]*$ ]] || return 0
+  [ -f "$here/../kinds/$kind/pack.yml" ] || return 0
+  python3 -c '
+import re, sys, yaml
+pack = yaml.safe_load(open(sys.argv[1], encoding="utf-8")) or {}
+file = ((pack.get("fixed-change") or {}).get("file") or "") if pack.get("autopilot") == "fixed-change" else ""
+d = file.rsplit("/", 1)[0] if "/" in file else ""
+if d:
+    parts = re.split(r"\{[^}/]*\}", d)
+    print("^" + "[^/]+".join(re.escape(p) for p in parts) + "/.+$")
+' "$here/../kinds/$kind/pack.yml"
+}
+
+# The title's own type when every file of BASE...HEAD is the fixed change's;
+# TYPE otherwise.
+titled() {
+  local type=$1 kind=$2 base=$3 head=$4 title=$5 re files f
+  local title_re='^([a-z]+)(\([^)]*\))?(!?): (.+)$'
+  re=$(fixed_re "$kind") || re=""
+  if [ -z "$re" ] || ! [[ "$title" =~ $title_re ]] \
+    || ! files=$(git diff --no-renames --name-only "${base}...${head}") || [ -z "$files" ]; then
+    echo "$type"; return 0
+  fi
+  local token=${BASH_REMATCH[1]} bang=${BASH_REMATCH[3]}
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    [[ "$f" =~ $re ]] || { echo "$type"; return 0; }
+  done <<<"$files"
+  if [ -n "$bang" ]; then echo breaking; else echo "$token"; fi
 }
 
 decide() {
@@ -126,6 +170,24 @@ self_test() {
   if in_repo docs "$bot" "$dir/bot.json" "" --diff nosuch base withtest >/dev/null 2>&1; then echo "FAIL #720: an unreadable kind passed"; fails=$((fails + 1)); else echo "ok   #720: an unreadable kind fails"; fi
   check2 "#720: no kind and an unreadable diff keep the review's type" docs docs "$bot" "$dir/bot.json" "" --diff "" base nosuchref
   if in_repo docs "$bot" "$dir/bot.json" "" --diff wordpress-plugin base nosuchref >/dev/null 2>&1; then echo "FAIL #720: a named kind with an unreadable diff passed"; fails=$((fails + 1)); else echo "ok   #720: a named kind with an unreadable diff fails"; fi
+  # #895: a pull request made only of the fixed change's files keeps the
+  # title's type in a kind whose pack says `autopilot: fixed-change`.
+  git -C "$repo" checkout -q -b fixed base
+  mkdir -p "$repo/scenarios/conventions-fix"
+  echo t > "$repo/scenarios/conventions-fix/7.test.md"; echo m > "$repo/scenarios/conventions-fix/retitled.md"
+  git -C "$repo" add -A; git -C "$repo" -c user.name=t -c user.email=t@t commit -q -m fixed
+  git -C "$repo" checkout -q -b fixedplus
+  echo c > "$repo/app.py"
+  git -C "$repo" add -A; git -C "$repo" -c user.name=t -c user.email=t@t commit -q -m code
+  local t='feat: a greeting, retitled [conventions-fix]'
+  check2 "#895: the fixed change's files keep the title's feat" feat test "$bot" "$dir/bot.json" "" --diff engine-test base fixed --title "$t"
+  check2 "#895: a scoped breaking title gives breaking" breaking test "$bot" "$dir/bot.json" "" --diff engine-test base fixed --title "feat(x)!: a greeting"
+  check2 "#895: a file outside the fixed change keeps the review's type" test test "$bot" "$dir/bot.json" "" --diff engine-test base fixedplus --title "$t"
+  check2 "#895: a kind without a fixed change keeps the review's type" test test "$bot" "$dir/bot.json" "" --diff "" base fixed --title "$t"
+  check2 "#895: a kind with a pack but no fixed change keeps the review's type" test test "$bot" "$dir/bot.json" "" --diff wordpress-plugin base fixed --title "$t"
+  check2 "#895: a title that is not a header keeps the review's type" test test "$bot" "$dir/bot.json" "" --diff engine-test base fixed --title "a greeting"
+  check2 "#895: a person's type:ci label still wins" ci test "$bot" "$dir/person.json" type:ci --diff engine-test base fixed --title "$t"
+  if grep -q -- '--title' "${BASH_SOURCE[0]}"; then echo "ok   the workflow's probe finds --title"; else echo "FAIL the workflow's probe does not find --title"; fails=$((fails + 1)); fi
   # The workflow and the central script can come from different refs: the
   # workflow passes --diff only when the script names it.
   if grep -q -- '--diff' "${BASH_SOURCE[0]}"; then echo "ok   the workflow's probe finds --diff"; else echo "FAIL the workflow's probe does not find --diff"; fails=$((fails + 1)); fi
@@ -138,8 +200,12 @@ self_test() {
 }
 
 if [ "${1:-}" = --test ]; then self_test; exit; fi
-usage="usage: review-type.sh TYPE BOT TIMELINE LABELS [--diff KIND BASE HEAD] | --test"
-if [ $# -eq 8 ] && [ "$5" = --diff ]; then
+usage="usage: review-type.sh TYPE BOT TIMELINE LABELS [--diff KIND BASE HEAD [--title TITLE]] | --test"
+if [ $# -eq 10 ] && [ "$5" = --diff ] && [ "$9" = --title ]; then
+  type=$(bounded "$1" "$6" "$7" "$8")
+  type=$(titled "$type" "$6" "$7" "$8" "${10}")
+  decide "$type" "$2" "$3" "$4"
+elif [ $# -eq 8 ] && [ "$5" = --diff ]; then
   type=$(bounded "$1" "$6" "$7" "$8")
   decide "$type" "$2" "$3" "$4"
 else

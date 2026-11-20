@@ -715,7 +715,9 @@ jobs:
           # The type of the change is the review's, read from the diff, unless a
           # person set a type:* label by hand: then theirs stands
           # (scripts/review-type.sh). The review's docs is bounded by the docs
-          # paths the conventions check holds a docs title to (#720). The bot
+          # paths the conventions check holds a docs title to (#720). In a kind
+          # whose pack says `autopilot: fixed-change`, a pull request made only
+          # of the fixed change's files keeps the title's type (#895). The bot
           # only ever replaces a type:* label it set itself.
           gh api "repos/$GITHUB_REPOSITORY/issues/$PR/timeline" --paginate > "$RUNNER_TEMP/timeline.json"
           current=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(startswith("type:"))] | join(",")')
@@ -723,6 +725,10 @@ jobs:
           # refs: --diff only when the central review-type.sh knows it.
           bound=()
           if grep -q -- '--diff' .dx-central/scripts/review-type.sh; then bound=(--diff "$KIND" "$BASE" "$SHA"); fi
+          # --title only when it knows that too (#895).
+          if [ ${#bound[@]} -gt 0 ] && grep -q -- '--title' .dx-central/scripts/review-type.sh; then
+            bound+=(--title "$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json title --jq .title)")
+          fi
           type=$(bash .dx-central/scripts/review-type.sh "$type" "$BOT" "$RUNNER_TEMP/timeline.json" "$current" "${bound[@]}")
           if [ "$type" != "$(jq -r '.type // "chore"' <<<"$OUT")" ]; then
             echo "The type applied is $type (a person's type:* label, or the review's docs on files that are not documentation); the review's reading ($(jq -r .type <<<"$OUT")) is recorded."
@@ -860,7 +866,8 @@ jobs:
         # (scripts/conventions.sh, which lets it through for this step to fix).
         # The labels are read again here: a person's type:* label, added since
         # the verdict or over a reused one, wins (scripts/review-type.sh),
-        # and the review's docs is bounded by the docs paths (#720).
+        # and the review's docs is bounded by the docs paths (#720); a fixed
+        # change's files keep the title's type (#895).
         if: ${{ !cancelled() && steps.resolver.outcome == 'success' && steps.verdict.outputs.type != '' }}
         env:
           GH_TOKEN: ${{ steps.resolver.outputs.token }}
@@ -878,11 +885,13 @@ jobs:
           set -euo pipefail
           GH_TOKEN=$TIMELINE_TOKEN gh api "repos/$GITHUB_REPOSITORY/issues/$PR/timeline" --paginate > "$RUNNER_TEMP/timeline.json"
           labels=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(startswith("type:"))] | join(",")')
-          # --diff only when the central review-type.sh knows it (another ref).
+          current=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json title --jq .title)
+          # --diff only when the central review-type.sh knows it (another ref),
+          # and --title (the fixed change keeps the title's type, #895) too.
           bound=()
           if grep -q -- '--diff' .dx-central/scripts/review-type.sh; then bound=(--diff "$KIND" "$BASE" "$SHA"); fi
+          if [ ${#bound[@]} -gt 0 ] && grep -q -- '--title' .dx-central/scripts/review-type.sh; then bound+=(--title "$current"); fi
           TYPE=$(bash .dx-central/scripts/review-type.sh "$REVIEW_TYPE" "$BOT" "$RUNNER_TEMP/timeline.json" "$labels" "${bound[@]}")
-          current=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json title --jq .title)
           title=$current
           if [ "$AUTHOR_TYPE" = Bot ] && [[ "$BRANCH" == dependabot/* ]]; then
             title=$(bash .dx-central/scripts/conventions.sh --dependabot-title "$title")
