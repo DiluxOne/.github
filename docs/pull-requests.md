@@ -236,7 +236,10 @@ runs in a concurrency group of its own: it cancels nothing and nothing
 cancels it, since a cancelled run leaves a cancelled check that blocks the
 merge. It spends nothing: on a commit the review read it reuses the
 verdict, and on one its push's run is still reviewing it waits for that
-verdict and reuses it, or fails when none comes. Once a week everything
+verdict and reuses it, or fails when none comes. A run of a commit that
+is no longer the head (a push seconds after the pull request opened)
+reads the head first and reviews nothing, so it never cancels the head's
+review, and its merge decision and fix round skip (#888). Once a week everything
 runs against today's WordPress and tools, and a failure opens one
 `ci:weekly` issue; *Run workflow* runs everything by hand, and its failure
 is in the run alone.
