@@ -125,11 +125,15 @@ jobs:
   # review is skipped, so it never joins the group, and the head's is never
   # cancelled by an older commit. An edit is always current (it keeps its own
   # group and the #832 wait); a failed read answers current, so a hiccup
-  # never skips the head's review.
+  # never skips the head's review, and so does a failed job: a skipped
+  # review check passes the ruleset, so without an answer the review runs.
   head:
     name: Current head
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
     if: >-
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
@@ -146,11 +150,13 @@ jobs:
           repositories: ${{ github.event.repository.name }}
           permission-contents: read
           permission-pull-requests: read
+        # Without the App's token, the job's own reads the pull request.
+        continue-on-error: true
 
       - name: Is the commit the pull request's head
         id: current
         env:
-          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          GH_TOKEN: ${{ steps.bot.outputs.token || github.token }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           SHA: ${{ github.event.pull_request.head.sha }}
@@ -186,11 +192,14 @@ jobs:
     # minutes a review job has: an edit's job gets longer to outlast it, and
     # only that wait uses the extra 30 (#832).
     timeout-minutes: ${{ github.event.action == 'edited' && 60 || 30 }}
+    # Skipped only on a `false` answer: a head job that failed gives none,
+    # and the review runs (a skipped check would pass the ruleset).
     if: >-
+      !cancelled() &&
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       !github.event.pull_request.draft &&
-      needs.head.outputs.current == 'true'
+      needs.head.outputs.current != 'false'
     # An edit of the title or description and a push can land on the same
     # commit a second apart, and a cancelled run leaves a cancelled check on
     # the commit that blocks the merge even when the other run passed. So an

@@ -27,8 +27,8 @@ def test_c1_the_review_needs_a_head_job_outside_its_group():
     # Outside the group: a stale run's head job cancels nothing.
     assert "concurrency" not in head
     # The same fork and draft guard as the review.
-    gate = "needs.head.outputs.current == 'true'"
-    assert " ".join(review["if"].split()) == " ".join(head["if"].split()) + " && " + gate
+    gate = "needs.head.outputs.current != 'false'"
+    assert " ".join(review["if"].split()) == "!cancelled() && " + " ".join(head["if"].split()) + " && " + gate
     needs = review.get("needs") or []
     assert "head" in (needs if isinstance(needs, list) else [needs])
     assert head["outputs"]["current"] == "${{ steps.current.outputs.current }}"
@@ -39,7 +39,7 @@ def test_c1_the_review_needs_a_head_job_outside_its_group():
 
 
 def review_if(current, event_head_repo="o/r", draft=False):
-    ctx = {"github.event_name": "pull_request", "github.event.pull_request.head.repo.full_name": event_head_repo,
+    ctx = {"needs.head.result": "success" if current else "failure", "github.event_name": "pull_request", "github.event.pull_request.head.repo.full_name": event_head_repo,
            "github.repository": "o/r", "github.event.pull_request.draft": draft, "needs.head.outputs.current": current}
     return evaluate(" ".join(jobs()["review"]["if"].split()), ctx)
 
@@ -49,6 +49,19 @@ def test_c1_a_stale_run_skips_the_review_and_the_heads_runs():
     assert review_if("false") is False
     assert review_if("true", draft=True) is False
     assert review_if("true", event_head_repo="fork/r") is False
+
+
+def test_c1_a_failed_head_job_never_skips_the_review():
+    # A skipped required check passes the ruleset: were the head job to fail
+    # (its App token, a runner), skipping the review would let the head merge
+    # unreviewed. With no answer, the review runs as it did before #888.
+    assert review_if("") is True
+    head = jobs()["head"]
+    token = next(s for s in head["steps"] if s.get("id") == "bot")
+    assert token.get("continue-on-error") is True
+    read = next(s for s in head["steps"] if s.get("id") == "current")
+    assert read["env"]["GH_TOKEN"] == "${{ steps.bot.outputs.token || github.token }}"
+    assert head["permissions"] == {"contents": "read", "pull-requests": "read"}
 
 
 def run_head(tmp_path, answer, action="synchronize", sha=OLD):
