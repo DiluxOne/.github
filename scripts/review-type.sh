@@ -29,7 +29,8 @@
 #               is the title's own (breaking when it carries `!`), whatever
 #               the review read (#895): a scenario's marker files are not the
 #               change's type. A title that is not a Conventional Commit
-#               header keeps the review's type; a person's label still wins.
+#               header (or whose type is not one conventions.sh knows)
+#               keeps the review's type; a person's label still wins.
 #   review-type.sh --test                     self-test
 set -euo pipefail
 
@@ -83,7 +84,8 @@ if d:
 # TYPE otherwise.
 titled() {
   local type=$1 kind=$2 base=$3 head=$4 title=$5 re files f
-  local title_re='^([a-z]+)(\([^)]*\))?(!?): (.+)$'
+  # The types conventions.sh accepts: any other token is not a header.
+  local title_re='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^)]*\))?(!?): (.+)$'
   re=$(fixed_re "$kind") || re=""
   if [ -z "$re" ] || ! [[ "$title" =~ $title_re ]] \
     || ! files=$(git diff --no-renames --name-only "${base}...${head}") || [ -z "$files" ]; then
@@ -186,6 +188,7 @@ self_test() {
   check2 "#895: a kind without a fixed change keeps the review's type" test test "$bot" "$dir/bot.json" "" --diff "" base fixed --title "$t"
   check2 "#895: a kind with a pack but no fixed change keeps the review's type" test test "$bot" "$dir/bot.json" "" --diff wordpress-plugin base fixed --title "$t"
   check2 "#895: a title that is not a header keeps the review's type" test test "$bot" "$dir/bot.json" "" --diff engine-test base fixed --title "a greeting"
+  check2 "#895: a title whose type is not a known one keeps the review's type" test test "$bot" "$dir/bot.json" "" --diff engine-test base fixed --title "wip: a greeting"
   check2 "#895: a person's type:ci label still wins" ci test "$bot" "$dir/person.json" type:ci --diff engine-test base fixed --title "$t"
   if grep -q -- '--title' "${BASH_SOURCE[0]}"; then echo "ok   the workflow's probe finds --title"; else echo "FAIL the workflow's probe does not find --title"; fails=$((fails + 1)); fi
   # The workflow and the central script can come from different refs: the
