@@ -13,3 +13,9 @@ the flow, never the code.
 - **The fork scenario runs without secrets.** A change that gives a pull
   request from a fork a secret, or `pull_request_target` with its code, is
   a blocker.
+- **The fixed change matches its description by construction.** A pull
+  request of the fixed change (one marker file per criterion under the
+  pack's `fixed-change.file`, written with no model) is not judged as a real
+  fix: the review judges the flow, not whether the marker "fixes" the PRD's
+  bug, and sets `description_matches` true for it. G7 does not hold such a
+  pull request on the description either (#887).
