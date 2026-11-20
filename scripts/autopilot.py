@@ -4229,6 +4229,16 @@ Clamp the value in Sum::add.
           (spec_problem(good_spec), bool(spec_problem("Intro\n" + good_spec)), bool(spec_problem(good_spec + "## Acceptance criteria\n- [x] C1")),
            bool(spec_problem(good_spec + "<!-- dx-prd-seal -->")), bool(spec_problem(""))), ("", True, True, True, True))
     check("#287 spec_of: the Spec sections of a body", (spec_of("## PRD\nx\n\n" + good_spec), spec_of("## PRD\nx")), (good_spec, ""))
+    t0 = datetime.datetime(2026, 11, 20, 5, 22, 52, tzinfo=datetime.timezone.utc)
+    ed = lambda at, who, diff: {"editedAt": at, "editor": {"login": who} if who else None, "diff": diff}
+    w893 = "old\n\n" + good_spec
+    check("#893 overwritten_edit: a person's edit at or after the read, neither what was read nor written; never the bot's, an older one or an unreadable time",
+          (overwritten_edit([ed("2026-11-20T05:22:52Z", "bot", w893), ed("2026-11-20T05:22:52Z", "p", "new"), ed("2026-11-20T05:00:00Z", "p", "old")], "bot", t0, "old", w893),
+           overwritten_edit([ed("2026-11-20T05:22:52Z", "p", "new"), ed("2026-11-20T05:22:53Z", "p", "newer")], "bot", t0, "old", w893),
+           overwritten_edit([ed("2026-11-20T05:22:51Z", "p", "new")], "bot", t0, "old", w893),
+           overwritten_edit([ed("2026-11-20T05:22:53Z", "bot", "new"), ed("2026-11-20T05:22:53Z", "p", "old "), ed("x", "p", "new")], "bot", t0, "old", w893),
+           overwritten_edit([ed("2026-11-20T05:22:53Z", None, "new"), "junk"], "bot", t0, "old", w893), overwritten_edit(None, "bot", t0, "old", w893)),
+          ("new", "newer", "", "", "new", ""))
     check("#287 reply: only to the review's comments on this pull request",
           (reply_target({"pull_request_url": "https://api/repos/o/r/pulls/8", "user": {"login": BOT_LOGINS[1]}}, "8", BOT_LOGINS[1]),
            reply_target({"pull_request_url": "https://api/repos/o/r/pulls/9", "user": {"login": BOT_LOGINS[1]}}, "8", BOT_LOGINS[1]),
@@ -5473,20 +5483,93 @@ def apply_outbox(path, repo, number, pr, kinds=None):
                 print("::warning::The agent's commits could not be pushed.")
 
 
+def _edit_time(at):
+    """An edit's `editedAt` as an aware datetime; None when unreadable. Pure."""
+    try:
+        return datetime.datetime.fromisoformat(str(at).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def overwritten_edit(edits, bot, since, read, written):
+    """The text of a person's edit that the bot's write of WRITTEN overwrote
+    (#893), or "": GitHub has no compare-and-swap on an issue's body, so an
+    edit that lands between the bot's last read (READ, at SINCE) and its
+    write is lost to it. EDITS: the issue's `userContentEdits` nodes
+    (editedAt, editor.login, diff: the revision's text), in any order; the
+    caller has checked that the body is still WRITTEN, so an edit by anyone
+    but the bot made at SINCE or after, whose text is neither READ nor
+    WRITTEN, is one the write overwrote: the newest such one. Pure."""
+    norm = lambda s: (s or "").strip()
+    lost = []
+    for n in edits or ():
+        if not isinstance(n, dict) or (n.get("editor") or {}).get("login") == bot:
+            continue
+        at = _edit_time(n.get("editedAt"))
+        if at is not None and at >= since and norm(n.get("diff")) and norm(n.get("diff")) not in (norm(read), norm(written)):
+            lost.append((at, n.get("diff")))
+    return max(lost, key=lambda x: x[0])[1] if lost else ""
+
+
+EDITS_QUERY = ("query($o:String!,$n:String!,$i:Int!){repository(owner:$o,name:$n){issue(number:$i)"
+               "{userContentEdits(first:100){nodes{editedAt editor{login} diff}}}}}")
+
+
+def append_section(repo, number, text, tries=3):
+    """Appends the Spec TEXT to the issue's body as it is when it writes
+    (#893), never to an older copy: the body is read again right before the
+    write, and a change since the first read starts it over from the body
+    as it is (TRIES times at most, then it refuses). After the write, the
+    issue's edit history says whether a person's edit landed during it; if
+    so, that person's text is written back with only the Spec appended.
+    Only the bot's own section is ever added. True when appended."""
+    view = lambda: json.loads(gh("issue", "view", str(number), "--repo", repo, "--json", "body"))["body"] or ""
+    write = lambda body: gh("issue", "edit", str(number), "--repo", repo, "--body-file", "-", input_text=body)
+    section = text.strip() + "\n"
+    body = view()
+    for _ in range(tries):
+        why = spec_problem(text) or ("the issue already has a Spec" if spec_of(body) else "")
+        if why:
+            print(f"::warning::The Spec is not appended: {why}.")
+            return False
+        since = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+        now = view()
+        if now == body:
+            break
+        print("The issue's body changed since it was read: the Spec goes on the body as it is now.")
+        body = now
+    else:
+        print(f"::warning::The Spec is not appended: the issue's body kept changing ({tries} reads).")
+        return False
+    written = body.rstrip() + "\n\n" + section
+    write(written)
+    print("The Spec is appended to the issue.")
+    owner, _, name = repo.partition("/")
+    try:
+        data = json.loads(gh("api", "graphql", "-f", f"query={EDITS_QUERY}", "-F", f"o={owner}", "-F", f"n={name}", "-F", f"i={number}"))
+        nodes = data["data"]["repository"]["issue"]["userContentEdits"]["nodes"] or []
+        after = view()
+    except (RuntimeError, ValueError, KeyError, TypeError) as err:
+        print(f"::warning::The issue's edit history could not be read ({str(err)[:200]}): the body is left as written.")
+        return True
+    if after.strip() != written.strip():
+        # A person edited it after the write: their text stands.
+        return True
+    lost = overwritten_edit(nodes, org.BOT, since, body, written)
+    if lost:
+        restored = lost if spec_of(lost) else lost.rstrip() + "\n\n" + section
+        write(restored)
+        print("::warning::A person's edit of the issue landed during the Spec's write and was overwritten: it is put back, with the Spec appended.")
+    return True
+
+
 def _apply_intents(intents, repo, number, pr):
     failed = 0
     for it in intents:
         kind, text = it["kind"], scrub(it.get("text", ""))
         print(f"-- {kind}")
         if kind == "spec":
-            body = json.loads(gh("issue", "view", str(number), "--repo", repo, "--json", "body"))["body"] or ""
-            why = spec_problem(text) or ("the issue already has a Spec" if spec_of(body) else "")
-            if why:
-                print(f"::warning::The Spec is not appended: {why}.")
-                failed += 1
-                continue
-            gh("issue", "edit", str(number), "--repo", repo, "--body-file", "-", input_text=body.rstrip() + "\n\n" + text.strip() + "\n")
-            print("The Spec is appended to the issue.")
+            failed += 0 if append_section(repo, number, text) else 1
             continue
         if kind == "reply":
             comment = json.loads(gh("api", f"repos/{repo}/pulls/comments/{it['comment']}"))
