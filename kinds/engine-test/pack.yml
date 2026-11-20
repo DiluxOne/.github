@@ -65,7 +65,8 @@ identity:
 autopilot: fixed-change
 fixed-change:
   # A pull request made only of files under this file's directory keeps its
-  # title's type in the review (#895, scripts/review-type.sh --title).
+  # title's type in the review (#895, scripts/review-type.sh --title
+  # --fixed, the pattern autopilot.py fixed finds by the repository).
   file: "scenarios/{scenario}/{n}.test.md"
   # A PRD that carries this phrase makes the fixed Spec stop, as a model
   # asking would, until someone who decides answers in a comment (#696,

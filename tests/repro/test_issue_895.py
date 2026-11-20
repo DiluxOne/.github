@@ -66,3 +66,55 @@ def test_a_kind_without_a_fixed_change_keeps_the_reviews_type(tmp_path):
     out = review_type(repo, timeline, "")
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == "test"
+
+
+# Still failing after #898: the review step's KIND is the policy's kind, empty
+# for DiluxOne/diluxone-test (it declares none), so the exception keyed on the
+# kind never applied. The step finds the fixed change the way G7 does
+# (`autopilot.py fixed`, by the repository being org.yml's test repository)
+# and passes its pattern with --fixed.
+AUTOPILOT = ROOT / "scripts" / "autopilot.py"
+WORKFLOW = ROOT / ".github" / "workflows" / "claude-review.yml"
+
+
+def fixed_pattern(repository):
+    env = {"PATH": "/usr/bin:/bin", "GITHUB_REPOSITORY": repository}
+    out = subprocess.run(["python3", str(AUTOPILOT), "fixed"], env=env, capture_output=True, text=True, check=True)
+    return out.stdout.strip()
+
+
+def step_type(repo, timeline, repository, title=TITLE):
+    """The step's real inputs: an empty KIND, the title, and the pattern
+    `autopilot.py fixed` prints for REPOSITORY."""
+    return subprocess.run(
+        ["bash", str(SCRIPT), "test", BOT, str(timeline), "", "--diff", "", "base", "head", "--title", title,
+         "--fixed", fixed_pattern(repository)],
+        cwd=repo, capture_output=True, text=True)
+
+
+def test_the_test_repository_with_an_empty_kind_keeps_feat(tmp_path):
+    repo, timeline = repo_with(tmp_path, FIXED)
+    assert fixed_pattern("DiluxOne/diluxone-test") == "scenarios/{scenario}/{n}.test.md"
+    out = step_type(repo, timeline, "DiluxOne/diluxone-test")
+    assert out.stdout.strip() == "feat", out.stderr
+
+
+def test_the_test_repository_with_another_file_keeps_the_reviews_type(tmp_path):
+    repo, timeline = repo_with(tmp_path, FIXED + ["src/app.py"])
+    out = step_type(repo, timeline, "DiluxOne/diluxone-test")
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "test"
+
+
+def test_another_repository_keeps_the_reviews_type(tmp_path):
+    repo, timeline = repo_with(tmp_path, FIXED)
+    assert fixed_pattern("DiluxOne/plugin") == ""
+    out = step_type(repo, timeline, "DiluxOne/plugin")
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "test"
+
+
+def test_both_review_steps_pass_the_fixed_pattern():
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert text.count("bound+=(--fixed") == 2
+    assert text.count("autopilot.py fixed") >= 2
