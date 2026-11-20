@@ -716,8 +716,9 @@ jobs:
           # person set a type:* label by hand: then theirs stands
           # (scripts/review-type.sh). The review's docs is bounded by the docs
           # paths the conventions check holds a docs title to (#720). In a kind
-          # whose pack says `autopilot: fixed-change`, a pull request made only
-          # of the fixed change's files keeps the title's type (#895). The bot
+          # whose pack says `autopilot: fixed-change` (in the test repository,
+          # found by autopilot.py fixed), a pull request made only of the
+          # fixed change's files keeps the title's type (#895). The bot
           # only ever replaces a type:* label it set itself.
           gh api "repos/$GITHUB_REPOSITORY/issues/$PR/timeline" --paginate > "$RUNNER_TEMP/timeline.json"
           current=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(startswith("type:"))] | join(",")')
@@ -728,6 +729,12 @@ jobs:
           # --title only when it knows that too (#895).
           if [ ${#bound[@]} -gt 0 ] && grep -q -- '--title' .dx-central/scripts/review-type.sh; then
             bound+=(--title "$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json title --jq .title)")
+            # The fixed change found as G7 finds it, by this repository being
+            # org.yml's test repository: the test repository declares no
+            # kind, so KIND is empty there (#895). --fixed only when known.
+            if grep -q -- '--fixed' .dx-central/scripts/review-type.sh; then
+              bound+=(--fixed "$(python3 .dx-central/scripts/autopilot.py fixed 2>/dev/null || true)")
+            fi
           fi
           type=$(bash .dx-central/scripts/review-type.sh "$type" "$BOT" "$RUNNER_TEMP/timeline.json" "$current" "${bound[@]}")
           if [ "$type" != "$(jq -r '.type // "chore"' <<<"$OUT")" ]; then
@@ -890,7 +897,14 @@ jobs:
           # and --title (the fixed change keeps the title's type, #895) too.
           bound=()
           if grep -q -- '--diff' .dx-central/scripts/review-type.sh; then bound=(--diff "$KIND" "$BASE" "$SHA"); fi
-          if [ ${#bound[@]} -gt 0 ] && grep -q -- '--title' .dx-central/scripts/review-type.sh; then bound+=(--title "$current"); fi
+          if [ ${#bound[@]} -gt 0 ] && grep -q -- '--title' .dx-central/scripts/review-type.sh; then
+            bound+=(--title "$current")
+            # The fixed change as G7 finds it (autopilot.py fixed): KIND is
+            # empty in the test repository, which declares none (#895).
+            if grep -q -- '--fixed' .dx-central/scripts/review-type.sh; then
+              bound+=(--fixed "$(python3 .dx-central/scripts/autopilot.py fixed 2>/dev/null || true)")
+            fi
+          fi
           TYPE=$(bash .dx-central/scripts/review-type.sh "$REVIEW_TYPE" "$BOT" "$RUNNER_TEMP/timeline.json" "$labels" "${bound[@]}")
           title=$current
           if [ "$AUTHOR_TYPE" = Bot ] && [[ "$BRANCH" == dependabot/* ]]; then
