@@ -211,3 +211,38 @@ def test_a_title_that_only_begins_another_finding_resolves_nothing(tmp_path):
     assert ran.code == 0, ran.stderr
     assert ran.output.get("settled") == "true"
     assert "resolve" not in ran.output
+
+
+# #882: on the release lane the review listed `dxfake_…` as a minor and
+# never blocked, so there was nothing to re-run. The token has a real
+# credential's shape, and the scenario waits for the blocking review before
+# it settles, so a review that does not block fails at that step.
+scenarios = load("release_scenarios_882", "release-scenarios.py")
+
+
+def real_settled_rerun():
+    data = yaml.safe_load((ROOT / "tests/release/scenarios.yml").read_text(encoding="utf-8"))
+    return next(s for s in data["scenarios"] if s["id"] == "settled-rerun")
+
+
+def test_the_token_fixture_has_a_real_credentials_shape_of_its_own_per_run():
+    import re
+    lines = [scenarios.scenario_text("settled-rerun", "token", "the pull request", r).splitlines()[1] for r in ("44602679962-1", "44602679962-2")]
+    for line in lines:
+        assert re.fullmatch(r"DX_API_TOKEN=dx_live_[A-Za-z0-9]{32}", line), line
+        assert "fake" not in line.lower() and "example" not in line.lower()
+    assert lines[0] != lines[1]
+    assert scenarios.scenario_text("settled-rerun", "token", "the pull request", "7-1") == scenarios.scenario_text("settled-rerun", "token", "the pull request", "7-1")
+
+
+def test_settled_rerun_waits_for_the_blocking_review_before_it_settles():
+    steps_ = real_settled_rerun()["steps"]
+    settle = next(i for i, s in enumerate(steps_) if "comment" in s and "settled" in s["comment"])
+    waits = [s["until"] for s in steps_[:settle] if "until" in s]
+    assert waits and waits[-1] == {"comments": ['"blocking":true']}, waits
+    record = "<!-- dx-review -->\nOne minor.\n<!-- dx-review-record " + json.dumps(
+        {"sha": "h" * 40, "risk": "low", "blocking": False}, separators=(",", ":")) + " -->"
+    got = scenarios.holds(waits[-1], {"comments": [record]})
+    assert got and got[0] == 'no comment with "blocking":true', got
+    blocked = record.replace('"blocking":false', '"blocking":true')
+    assert scenarios.holds(waits[-1], {"comments": [blocked]}) == []

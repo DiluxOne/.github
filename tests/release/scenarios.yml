@@ -637,11 +637,14 @@ scenarios:
     expect: {bot_labeled: [autopilot:continue], hands: [accepted]}
   # C5: a pull request whose file carries a token, which the review
   # profile blocks on; the test identity, who decides there, settles it in
-  # a comment, and the review runs again on the same head.
+  # a comment, and the review runs again on the same head. #882: it waits
+  # for the review's record with "blocking":true (claude-review.yml writes
+  # it with jq -c) before it settles, so a review that does not block fails
+  # at that step, saying what it saw, never later as no re-run.
   - id: settled-rerun
     covers: [flow:settled-rerun]
     minutes: 15
     opens: {pull: {title: "docs: a greeting with a token", body: pull, issue: {title: "docs: a greeting with a token", body: task, labels: [accepted]}}}
-    steps: [{push: token}, {until: {comments: ["<!-- dx-review -->"]}},
+    steps: [{push: token}, {until: {comments: ["\"blocking\":true"]}},
             {comment: "@dilux-bot the token in scenarios/settled-rerun/token.md is this scenario's fake, which no service issues: settled, it stays."}]
     expect: {rerun: true, hands: [accepted]}
