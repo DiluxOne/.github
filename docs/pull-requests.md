@@ -206,7 +206,10 @@ Mention `@dilux-bot` in a review thread or in the conversation and Claude
 answers there; it resolves its own thread when the point is settled. An
 answer in the conversation can settle any of the review's findings, one
 raised inline included: the reply records it, resolves that finding's thread
-and, when the review blocked, runs it again on the same head (#871).
+and, when the review blocked, runs it again on the same head (#871). The
+decision of someone `who-decides` allows to keep a finding as it is, or to
+settle it outside the code, settles it whether or not the bot agrees; the bot
+may say in its reply why it disagrees (#912).
 
 The description's Credits block names who proposed what the change uses
 (CONTRIBUTING.md, "Who signs what"); the merge writes them as the commit's
