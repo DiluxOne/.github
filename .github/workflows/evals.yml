@@ -13,7 +13,7 @@ name: AI evaluation
 # and graded deterministically where a grade exists; then one job per step
 # merges its cases' results (`evals.py merge`) and scores them against
 # evals/<step>/baseline.json (`evals.py score`): worse by more than one case
-# fails the check "AI evaluation (<step>)", and the table says which cases.
+# (by rate, passed / cases, so a set of another size compares fairly) fails the check "AI evaluation (<step>)", and the table says which cases.
 # A case left not replayed (its job ran out of time or failed) fails the
 # check by its name, as the runner's failure, never the step's score. It
 # replaces review-eval.yml: the review is one of the steps, its set,

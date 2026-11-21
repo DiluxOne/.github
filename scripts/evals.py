@@ -29,7 +29,8 @@ and clean pull requests blocked). evals.yml replays each case in a job of
 its own (`matrix`, `run STEP CASE`), so every case gets its job's whole
 time, and merges a step's results (`merge`). It fails a change whose score
 is worse than the step's baseline by more than one case (a model does not
-answer the same twice). A case left not replayed is the runner's failure,
+answer the same twice), by rate (passed / cases), so a set that grows or
+shrinks is compared fairly. A case left not replayed is the runner's failure,
 never the step's score: it fails the check with the case's name (the
 review keeps its slack of one, as review-eval.yml had it). The slack is
 none when the baseline itself is not above it (1 of 6 still fails at 0),
@@ -275,7 +276,11 @@ def worse(step, now, base):
         if now["unreviewed"] > SLACK:
             why.append(f"{now['unreviewed']} cases could not be reviewed")
         return "; ".join(why)
-    if base.get("cases") and now["passed"] < base["passed"] - slack(base["passed"]):
+    # By rate (passed / cases), so a change that adds or removes cases is
+    # compared fairly: below (baseline passed - slack) / baseline cases, the
+    # slack still one case of the baseline's set (none below one case).
+    floor = base["passed"] - slack(base["passed"]) if base.get("cases") else 0
+    if floor > 0 and (now["passed"] * base["cases"] < floor * now["cases"] or not now["cases"]):
         why.append(f"{now['passed']} of {now['cases']} cases passed, the baseline {base['passed']} of {base['cases']}")
     return "; ".join(why)
 
@@ -857,6 +862,8 @@ def self_test():
     res = [{"id": "1", "expect": "passed", "ok": True}, {"id": "2", "expect": "passed", "ok": False}, {"id": "3", "expect": "passed", "ok": None}]
     now = score("autopilot", res)
     check("score: passed, cases replayed, not replayed", now, {"passed": 1, "cases": 2, "unrun": 1})
+    check("worse: by rate, so a set of another size is compared fairly",
+          (worse("spec", {"passed": 10, "cases": 12, "unrun": 0}, {"passed": 5, "cases": 6}), bool(worse("spec", {"passed": 6, "cases": 12, "unrun": 0}, {"passed": 5, "cases": 6}))), ("", True))
     check("worse: one case of slack", (worse("spec", now, {"passed": 2, "cases": 2}), worse("spec", now, {"passed": 3, "cases": 3}).startswith("1 of 2 cases passed")), ("", True))
     check("worse: a baseline not above the slack has none (1 of 6, then 0 of 6, fails)",
           (worse("autopilot", {"passed": 0, "cases": 6, "unrun": 0}, {"passed": 1, "cases": 6, "unrun": 0}).startswith("0 of 6"),

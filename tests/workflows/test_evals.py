@@ -432,3 +432,18 @@ def test_c3_the_review_verdict_on_its_baseline_is_the_same_through_both_scripts(
             assert (new.returncode, new.stdout) == (old.returncode, old.stdout)
             now = evals().score("review", json.loads(res.read_text(encoding="utf-8")))
             assert new.returncode == (1 if old_review_worse(now, base) else 0), (now, new.stdout)
+
+
+# C2: a step's score is compared by rate (passed / cases), so a change that
+# adds or removes cases is compared fairly.
+
+@pytest.mark.parametrize("now,base,is_worse", [
+    ({"passed": 10, "cases": 12, "unrun": 0}, {"passed": 5, "cases": 6, "unrun": 0}, False),  # the same rate, twice the cases
+    ({"passed": 8, "cases": 12, "unrun": 0}, {"passed": 5, "cases": 6, "unrun": 0}, False),   # one case of slack, at the baseline's size
+    ({"passed": 6, "cases": 12, "unrun": 0}, {"passed": 5, "cases": 6, "unrun": 0}, True),    # 6 more passed, a lower rate
+    ({"passed": 4, "cases": 4, "unrun": 0}, {"passed": 5, "cases": 6, "unrun": 0}, False),    # fewer passed, a higher rate
+    ({"passed": 2, "cases": 4, "unrun": 0}, {"passed": 5, "cases": 6, "unrun": 0}, True),
+    ({"passed": 0, "cases": 12, "unrun": 0}, {"passed": 1, "cases": 6, "unrun": 0}, True),    # the slack never lets 0 pass
+])
+def test_c2_worse_compares_by_rate_across_set_sizes(now, base, is_worse):
+    assert bool(evals().worse("spec", now, base)) == is_worse
