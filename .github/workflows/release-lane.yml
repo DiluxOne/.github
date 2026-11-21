@@ -29,7 +29,11 @@ name: Release lane
 # and main is still the commit they tried, merges the release pull request
 # itself once its checks pass (never by auto-merge, which never merges a
 # CHANGELOG.md-only pull request, `risk:high`, #798), tags vX.Y.Z at its merge
-# commit, moves `v7` (lightweight) and publishes the Release (or edits it
+# commit (#925: an earlier lane's release pull request still open is
+# reused, one a person opened there stops it before anything is pushed;
+# one BEHIND main is brought up to date with `gh pr update-branch` and its
+# new head's checks waited for, and vX.Y.Z is then the commit the scenarios
+# tried, once the merge changed CHANGELOG.md alone), moves `v7` (lightweight) and publishes the Release (or edits it
 # when engine-release.yml, on the tag's push, made it first), then closes
 # the lane's open reports of an earlier candidate's failure, naming the
 # version released (a close that fails is a warning, #832). The candidate's

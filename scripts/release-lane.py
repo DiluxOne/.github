@@ -41,7 +41,11 @@ in the test repository; a breaking change waits on a person.
         other check finished (`gh pr merge --squash --match-head-commit`,
         never auto-merge, which never merges a CHANGELOG.md-only pull
         request, `risk:high`, #798), `vX.Y.Z` tagged at its
-        merge commit when its parent is that `sha`, `vN` moved to it
+        merge commit when its parent is that `sha`, or at that `sha` when
+        main moved and the lane brought the pull request up to date
+        (`gh pr update-branch`, its new head's checks waited for again)
+        and the merge changed CHANGELOG.md alone (#925); an earlier lane's
+        release pull request still open is reused (#925), `vN` moved to it
         (lightweight: `git tag -f` and a force push of that ref alone), its
         GitHub Release published or, when engine-release.yml made it first,
         edited; JSON {moved_at, version, previous[, error]} on stdout, and
@@ -281,9 +285,13 @@ def decide(p, results, lane_run=""):
 def release(p, repo, run=sh, sleep=time.sleep, minutes=60, root="."):
     """The release pull request, merged, the tag, the move and the Release,
     of the commit the scenarios tried (the plan's `sha`) and nothing else:
-    main past it releases nothing (the next green run plans it again), and
-    a release pull request merged on a main that moved meanwhile is tagged
-    nowhere. Returns {moved_at, version, previous}, with `error` when the
+    main past it releases nothing (the next green run plans it again). An
+    earlier lane's release pull request of this version, still open, is
+    reused; one someone else opened there stops it, nothing pushed (#925).
+    A release pull request merged on a main that moved meanwhile (brought
+    up to date by merge_when_checked) tags the commit the scenarios tried,
+    not its merge, and only when the merge changed CHANGELOG.md alone.
+    Returns {moved_at, version, previous}, with `error` when the
     Release could not be published after `vN` moved (the watch still runs);
     or {do: none, why} when main moved."""
     version, major, planned = p["version"], p["major"], p.get("sha") or ""
@@ -319,11 +327,26 @@ def release(p, repo, run=sh, sleep=time.sleep, minutes=60, root="."):
     sha = merge_when_checked(repo, number, run, sleep, minutes)
     run("git", "-C", root, "fetch", "-q", "origin", sha)
     parent = run("git", "-C", root, "rev-parse", f"{sha}^").strip()
+    target = sha
     if parent != planned:
-        raise RuntimeError(f"the release pull request #{number} merged onto {parent[:12]}, not {planned[:12]}, the commit the scenarios tried: nothing tagged, {major} did not move")
-    run("git", "-C", root, "tag", version, sha)
+        # Main moved while it merged (#925, the Spec's rule E): the merge's
+        # parent carries commits no scenario played, so the tag is the
+        # commit they tried, on main below it, once the merge is the lane's
+        # own release (its diff is CHANGELOG.md alone); CHANGELOG.md gains
+        # its section on main one commit later.
+        changed = [f for f in run("git", "-C", root, "diff", "--name-only", parent, sha).split() if f]
+        try:
+            run("git", "-C", root, "merge-base", "--is-ancestor", planned, parent)
+            below = True
+        except RuntimeError:
+            below = False
+        if changed != ["CHANGELOG.md"] or not below:
+            raise RuntimeError(f"the release pull request #{number} merged onto {parent[:12]}, not {planned[:12]}, the commit the scenarios tried, "
+                               f"and {'it changed ' + ', '.join(changed) if changed != ['CHANGELOG.md'] else 'that commit is not below it'}: nothing tagged, {major} did not move")
+        target = planned
+    run("git", "-C", root, "tag", version, target)
     run("git", "-C", root, "push", "origin", f"refs/tags/{version}")
-    move(major, sha, run, root)
+    move(major, target, run, root)
     out = {"moved_at": now(), "version": version, "previous": p["previous"]}
     # From here `vN` moved: whatever fails, the watch must still run.
     try:
@@ -384,12 +407,16 @@ def merge_when_checked(repo, number, run=sh, sleep=time.sleep, minutes=60):
     its required checks pass at the head first seen and every other check
     there finished, `gh pr merge --squash --match-head-commit`, once, which
     merges or queues in the merge queue and never goes past either; then
-    waited for until it merged. Returns the merge commit. Raises on a
-    required check that fails or is cancelled, a pull request that closes,
-    a head that moves, or `minutes` running out, naming what it waited on."""
-    head, waited, queued, why, settled = "", 0, False, "its checks did not finish", None
+    waited for until it merged. One that is BEHIND main (main moved while
+    it waited, #925) is brought up to date first (`gh pr update-branch`,
+    once per move of main): the head that update makes is the one it
+    follows, its checks waited for again. Returns the merge commit. Raises
+    on a required check that fails or is cancelled, a pull request that
+    closes, a head that anyone else moves, or `minutes` running out, naming
+    what it waited on."""
+    head, waited, queued, why, settled, updating = "", 0, False, "its checks did not finish", None, False
     while True:
-        view = json.loads(run("gh", "pr", "view", number, "--repo", repo, "--json", "mergedAt,mergeCommit,state,headRefOid,statusCheckRollup") or "{}")
+        view = json.loads(run("gh", "pr", "view", number, "--repo", repo, "--json", "mergedAt,mergeCommit,state,headRefOid,mergeStateStatus,statusCheckRollup") or "{}")
         if view.get("mergedAt"):
             return (view.get("mergeCommit") or {}).get("oid", "")
         if view.get("state") == "CLOSED":
@@ -397,8 +424,17 @@ def merge_when_checked(repo, number, run=sh, sleep=time.sleep, minutes=60):
         seen = view.get("headRefOid") or ""
         head = head or seen
         if seen and seen != head:
-            raise RuntimeError(f"the release pull request #{number} changed head ({seen[:12]}, not {head[:12]}): nothing tagged")
-        if not queued and head:
+            if not updating:
+                raise RuntimeError(f"the release pull request #{number} changed head ({seen[:12]}, not {head[:12]}): nothing tagged")
+            # The head the lane's own update made (#925): followed, and its
+            # checks waited for again.
+            head, updating, settled = seen, False, None
+        if not queued and head and not updating and str(view.get("mergeStateStatus") or "").upper() == "BEHIND":
+            # Main moved while it waited (#925): GitHub merges main into it
+            # (a commit it makes and signs), once per move of main.
+            run("gh", "pr", "update-branch", number, "--repo", repo)
+            updating, why = True, "its update with main did not show"
+        elif not queued and head and not updating:
             required = required_checks(repo, number, run)
             bad = [c.get("name") for c in required if c.get("bucket") in ("fail", "cancel")]
             if bad:
