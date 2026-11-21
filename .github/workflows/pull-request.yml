@@ -316,7 +316,8 @@ jobs:
     secrets: inherit
 
   # An autopilot pull request here whose review blocks, or one of whose
-  # gates fails (#741): one round of fixes (#504), as org-pull-request.yml runs it in every other repository, with
+  # gates fails (#741), or whose review says its description does not
+  # match (#924, a round that rewrites it): one round of fixes (#504), as org-pull-request.yml runs it in every other repository, with
   # the same condition but the repository (that one excludes this one, so
   # the round never runs twice; scripts/autopilot.py --test keeps the two
   # the same). Only dilux-bot's own branch matches, never a fork's. The
@@ -333,7 +334,7 @@ jobs:
     # description keeps the review's verdict and must not spend a round).
     # #888: nor on a run whose commit is no longer the head: the head's run
     # starts the round.
-    if: always() && github.event_name == 'pull_request' && github.repository == 'DiluxOne/.github' && (needs.review.outputs.blocking == 'true' || needs.review.result == 'failure' || needs.conventions.result == 'failure' || needs.actionlint.result == 'failure' || needs.scripts.result == 'failure') && needs.review.outputs.current != 'false' && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN && github.event.action != 'edited'
+    if: always() && github.event_name == 'pull_request' && github.repository == 'DiluxOne/.github' && (needs.review.outputs.blocking == 'true' || needs.review.result == 'failure' || needs.conventions.result == 'failure' || needs.actionlint.result == 'failure' || needs.scripts.result == 'failure' || needs.review.outputs.description-mismatch == 'true') && needs.review.outputs.current != 'false' && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN && github.event.action != 'edited'
     # The agent's jobs read the repository with the job's own token (#287).
     permissions:
       contents: read
@@ -341,6 +342,10 @@ jobs:
     with:
       mode: fix
       pr: ${{ format('{0}', github.event.pull_request.number) }}
+      # #924 C3: the review read this description and said it does not
+      # match: the round rewrites it (autopilot.py describe). One edited
+      # since the review is unchecked, not wrong, and asks for no rewrite.
+      description-ok: ${{ needs.review.outputs.description-mismatch == 'true' && 'false' || 'true' }}
       central-ref: main
     secrets: inherit
 

@@ -32,7 +32,7 @@ def test_the_work_merges_main_before_the_agent_and_leaves_a_conflict_to_it():
     # goes out (a fix round's prompt already asks for it).
     assert "goes on from the branch as it is" not in run
     note = run.index('autopilot.py conflict-note "$DEFAULT" >> .dx-io/prompt.md')
-    assert run.index("git merge --abort") < note < run.index("cat .dx-io/prompt.md")
+    assert run.index("git merge --abort") < note < run.index('echo "prompt=')
     assert 'grep -q "Main does not merge cleanly" .dx-io/prompt.md' in run
 
 
