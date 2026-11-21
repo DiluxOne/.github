@@ -375,8 +375,13 @@ flows:
 # bugfix-reproduced lane writes through spec, draft and work).
 # A flow the same (#699): C2's shape refusal is a safety net once C1
 # holds, and C6's issue is dilux-bot's, which the test identity cannot open.
+# C4's hint needs an autopilot pull request that waits on the autopilot
+# and lasts: Test first is red on every scenario's feat pull request, so
+# none does once ready, a draft turns ready faster than the play loop
+# polls, and a retitle with no type fails conventions at once (#906, #919).
 statically:
   flow:edit-starts: "scripts/autopilot.py --test: '#699 C2: next-step on an edited accepted issue that passes now starts it, once refused for its shape'; scripts/issue-schema.py --test; tests/workflows/test_edit_starts_autopilot.py"
+  flow:hint-no-needs-human: "scripts/autopilot.py --test: '#699 C4: a decider's comment on an autopilot pull request that waits on the autopilot is a hint, stopped or not'; tests/workflows/test_hint_without_needs_human.py"
   flow:release-bug-reproduced: "scripts/release-lane.py --test and scripts/autonomy.py --test (#699 C6); tests/workflows/test_release_bug_reproduced.py"
   next_step:fix: "scripts/autopilot.py --test: next_step's case 'ready, the review blocks at its head' (fix), and '#563: a review round on the fixed change stops for a person'"
 
@@ -626,19 +631,6 @@ scenarios:
             {until: {pull: {closes: true, draft: "^False$", body: "\\[x\\] \\*\\*C1\\*\\*"}}},
             {retitle: "a greeting, retitled"}, {until: {pull: {title: "^a greeting"}}}, {push: retitled}]
     expect: {pull: {closes: true, title: "^feat(\\(.+\\))?: "}, absent: [needs-human], hands: [accepted]}
-  # C4: the ready pull request retitled with no type, an edit that starts
-  # no fix round, so it waits on the autopilot with nothing running (#689);
-  # a hint of the test identity, who decides there, brings it back: the
-  # bot adds `autopilot:continue`.
-  - id: hint-no-needs-human
-    covers: [flow:hint-no-needs-human]
-    minutes: 15
-    opens: {issue: {title: "feat: a greeting, hinted", body: complete-feature}}
-    steps: [{until: {labels: [awaiting-acceptance]}}, {label: accepted}, {until: {comments: ["<!-- dx-prd-seal -->"]}},
-            {until: {pull: {closes: true, draft: "^False$", body: "\\[x\\] \\*\\*C1\\*\\*"}}},
-            {retitle: "a greeting, hinted"}, {until: {pull: {title: "^a greeting", waits: "^the autopilot$"}}},
-            {comment: "Hint: give the pull request back its type, feat."}]
-    expect: {bot_labeled: [autopilot:continue], hands: [accepted]}
   # C5: a pull request whose file carries a token, which the review
   # profile blocks on; the test identity, who decides there, settles it in
   # a comment, and the review runs again on the same head. #882: it waits

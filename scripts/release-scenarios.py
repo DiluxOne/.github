@@ -3935,7 +3935,7 @@ def self_test():
     check("#713 C2: the real file: every scenario that reads the autopilot's result waits for it, each within 15 minutes",
           (autopilot_problems(real["scenarios"]), sorted(reads), {limit(by713[i]) for i in reads}),
           ([], sorted(["accepted-spec", "spec-to-draft", "core-one-at-a-time", "decision-sub-issues", "prd-edited-after-acceptance", "question-answered", "stop-hint-continue", "draft-in-conflict", "ready-behind-main", "bug-by-person-merges", "stop-answered", "stop-edited-reaccepted-answered",
-                     "marker-g1-start", "conventions-fix", "hint-no-needs-human"]), {15}))
+                     "marker-g1-start", "conventions-fix"]), {15}))
     # #764 C2: high-risk-waits's floor is high from the path it changes.
     hrw = by713["high-risk-waits"]
     rhigh, rlow = risk_patterns()
@@ -4199,11 +4199,11 @@ def self_test():
           ([bool(re.fullmatch(r"DX_API_TOKEN=dx_live_[A-Za-z0-9]{32}", t)) and "fake" not in t for t in tok], tok[0] != tok[1],
            scenario_text("s", "note", "main", "7-1").count("\n")), ([True, True], True, 1))
     flows_real = flows(real)
-    check("#699 C7: the real file: each step of the flow is played by a scenario that moves no label but the acceptance, or held by its test, C2 and C6",
+    check("#699 C7: the real file: each step of the flow is played by a scenario that moves no label but the acceptance, or held by its test, C2, C4 (#919) and C6",
           (sorted(flows_real), sorted(c for s in real["scenarios"] for c in s.get("covers") or [] if c.startswith("flow:")),
            sorted(k for k in real.get("statically") or {} if k.startswith("flow:")), hands_problems(real["scenarios"])),
           (sorted(f"flow:{f}" for f in ("marker-g1-start", "edit-starts", "conventions-fix", "hint-no-needs-human", "settled-rerun", "release-bug-reproduced")),
-           ["flow:conventions-fix", "flow:hint-no-needs-human", "flow:marker-g1-start", "flow:settled-rerun"], ["flow:edit-starts", "flow:release-bug-reproduced"], []))
+           ["flow:conventions-fix", "flow:marker-g1-start", "flow:settled-rerun"], ["flow:edit-starts", "flow:hint-no-needs-human", "flow:release-bug-reproduced"], []))
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
