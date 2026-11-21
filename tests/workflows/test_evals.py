@@ -17,8 +17,15 @@ SIX = ("triage", "repro", "spec", "autopilot", "review", "reply")
 WITH_SETS = ("spec", "autopilot", "review")
 
 
+def need(rel):
+    """The path of a file the feature adds, asserted to exist before a test uses it (so the base fails an assertion, not an error)."""
+    path = ROOT / rel
+    assert path.exists(), f"{rel} does not exist"
+    return path
+
+
 def evals():
-    spec = importlib.util.spec_from_file_location("evals", ROOT / "scripts" / "evals.py")
+    spec = importlib.util.spec_from_file_location("evals", need("scripts/evals.py"))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -40,7 +47,7 @@ def test_c1_the_runner_knows_the_six_steps():
 @pytest.mark.parametrize("step", WITH_SETS)
 def test_c1_each_set_holds_six_real_cases(step):
     mod = evals()
-    cases = json.loads((ROOT / "evals" / step / "cases.json").read_text(encoding="utf-8"))
+    cases = json.loads((need(f"evals/{step}/cases.json")).read_text(encoding="utf-8"))
     assert len(cases) >= 6, f"{step}: {len(cases)} cases"
     assert len({c["id"] for c in cases}) == len(cases), f"{step}: an id twice"
     repos = public_repos()
@@ -62,7 +69,7 @@ def test_c1_the_grades_are_deterministic_but_reply():
 @pytest.mark.parametrize("step", WITH_SETS)
 def test_c1_each_set_has_its_baseline(step):
     mod = evals()
-    base = json.loads((ROOT / "evals" / step / "baseline.json").read_text(encoding="utf-8"))
+    base = json.loads((need(f"evals/{step}/baseline.json")).read_text(encoding="utf-8"))
     # Either a whole run's score, or pending its first paid run (which
     # passes with a warning and proposes its results, until `evals.py baseline` writes it).
     if "pending" in base:
@@ -136,7 +143,7 @@ def test_c2_the_steps_listed_are_those_with_a_set():
 
 def test_c2_evals_yml_runs_on_the_union_of_the_paths():
     mod = evals()
-    wf = yaml.safe_load((ROOT / ".github" / "workflows" / "evals.yml").read_text(encoding="utf-8"))
+    wf = yaml.safe_load((need(".github/workflows/evals.yml")).read_text(encoding="utf-8"))
     on = wf.get("on") or wf.get(True)
     assert sorted(on["pull_request"]["paths"]) == sorted(mod.all_paths())
     assert "step" in on["workflow_dispatch"]["inputs"]
@@ -144,7 +151,7 @@ def test_c2_evals_yml_runs_on_the_union_of_the_paths():
 
 
 def test_c2_evals_yml_runs_the_listed_steps_with_the_runner():
-    text = (ROOT / ".github" / "workflows" / "evals.yml").read_text(encoding="utf-8")
+    text = (need(".github/workflows/evals.yml")).read_text(encoding="utf-8")
     wf = yaml.safe_load(text)
     jobs = wf["jobs"]
     assert "evals.py steps" in text and "evals.py run" in text and "evals.py score" in text
@@ -163,7 +170,7 @@ def run_score(tmp_path, step, results, base):
     root = Path(tempfile.mkdtemp(dir=tmp_path))
     (root / "scripts").mkdir(parents=True)
     for f in ("evals.py", "org.py", "issue-schema.py"):
-        shutil.copy(ROOT / "scripts" / f, root / "scripts" / f)
+        shutil.copy(need(f"scripts/{f}"), root / "scripts" / f)
     shutil.copy(ROOT / "org.yml", root / "org.yml")
     (root / "policy").mkdir()
     shutil.copy(ROOT / "policy" / "issue-schema.yml", root / "policy" / "issue-schema.yml")
@@ -229,7 +236,7 @@ def test_c2_a_baseline_that_cannot_be_read_fails_closed(tmp_path, step, base):
 
 def test_c2_autopilot_baseline_of_one_still_gates(tmp_path):
     # 1 of 6 with a slack of one could never fail: below the slack there is none.
-    base = json.loads((ROOT / "evals" / "autopilot" / "baseline.json").read_text(encoding="utf-8"))
+    base = json.loads((need("evals/autopilot/baseline.json")).read_text(encoding="utf-8"))
     assert evals().worse("autopilot", {"passed": 0, "cases": 6, "unrun": 0}, {"passed": 1, "cases": 6, "unrun": 0})
     if base.get("passed", 0) >= 1:
         got = run_score(tmp_path, "autopilot", results(0, base["cases"]), base)
@@ -251,19 +258,19 @@ def test_c2_no_baseline_and_a_case_not_replayed_still_fails(tmp_path):
 
 def test_c2_each_case_is_replayed_in_a_job_of_its_own(tmp_path):
     import subprocess
-    out = subprocess.run(["python3", str(ROOT / "scripts" / "evals.py"), "matrix"], input="spec\nautopilot\n", capture_output=True, text=True, check=True).stdout
+    out = subprocess.run(["python3", str(need("scripts/evals.py")), "matrix"], input="spec\nautopilot\n", capture_output=True, text=True, check=True).stdout
     matrix = json.loads(out)
-    cases = {s: json.loads((ROOT / "evals" / s / "cases.json").read_text(encoding="utf-8")) for s in ("spec", "autopilot")}
+    cases = {s: json.loads((need(f"evals/{s}/cases.json")).read_text(encoding="utf-8")) for s in ("spec", "autopilot")}
     assert [(m["step"], m["case"]) for m in matrix] == [(s, c["id"]) for s in ("spec", "autopilot") for c in cases[s]]
     assert all(isinstance(m["n"], int) and m["minutes"] > evals().STEPS[m["step"]]["minutes"] for m in matrix)
     # The step's jobs merge their results in the cases' order; a case whose
     # job left none is not replayed, by its name.
     one = tmp_path / "one.json"
     one.write_text(json.dumps([{"id": cases["spec"][1]["id"], "expect": "failed", "ok": True}]), encoding="utf-8")
-    merged = json.loads(subprocess.run(["python3", str(ROOT / "scripts" / "evals.py"), "merge", "spec", str(one)], capture_output=True, text=True, check=True).stdout)
+    merged = json.loads(subprocess.run(["python3", str(need("scripts/evals.py")), "merge", "spec", str(one)], capture_output=True, text=True, check=True).stdout)
     assert [r["id"] for r in merged] == [c["id"] for c in cases["spec"]]
     assert [r["ok"] for r in merged] == [None, True] + [None] * (len(cases["spec"]) - 2)
-    wf = yaml.safe_load((ROOT / ".github" / "workflows" / "evals.yml").read_text(encoding="utf-8"))
+    wf = yaml.safe_load((need(".github/workflows/evals.yml")).read_text(encoding="utf-8"))
     replay = [j for j in wf["jobs"].values() if "matrix.case" in str(j.get("name"))]
     assert replay and "matrix.minutes" in str(replay[0]["timeout-minutes"])
 
@@ -375,11 +382,11 @@ def test_c2_an_empty_file_list_fails_steps_not_selects_nothing():
     # not tell", and the check must fail rather than score nothing.
     import subprocess
     import sys
-    out = subprocess.run([sys.executable, str(ROOT / "scripts" / "evals.py"), "steps"], input="\n", capture_output=True, text=True)
+    out = subprocess.run([sys.executable, str(need("scripts/evals.py")), "steps"], input="\n", capture_output=True, text=True)
     assert out.returncode == 1 and out.stdout == "" and "could not" in out.stderr
-    ok = subprocess.run([sys.executable, str(ROOT / "scripts" / "evals.py"), "steps"], input="README.md\n", capture_output=True, text=True)
+    ok = subprocess.run([sys.executable, str(need("scripts/evals.py")), "steps"], input="README.md\n", capture_output=True, text=True)
     assert ok.returncode == 0 and ok.stdout.strip() == ""
-    text = (ROOT / ".github" / "workflows" / "evals.yml").read_text(encoding="utf-8")
+    text = (need(".github/workflows/evals.yml")).read_text(encoding="utf-8")
     assert "set -euo pipefail" in text and "pr-files.py | python3 scripts/evals.py steps" in text
 
 
@@ -427,7 +434,7 @@ def test_c3_the_review_verdict_on_its_baseline_is_the_same_through_both_scripts(
         for blocked in (0, 1, 2):
             res = tmp_path / f"r{found}{blocked}.json"
             res.write_text(json.dumps(review_results(found, base["flag"], blocked, base["clean"])), encoding="utf-8")
-            new = subprocess.run(["python3", str(ROOT / "scripts" / "evals.py"), "score", "review", str(res)], capture_output=True, text=True)
+            new = subprocess.run(["python3", str(need("scripts/evals.py")), "score", "review", str(res)], capture_output=True, text=True)
             old = subprocess.run(["python3", str(ROOT / "scripts" / "review-eval.py"), "score", str(res)], capture_output=True, text=True)
             assert (new.returncode, new.stdout) == (old.returncode, old.stdout)
             now = evals().score("review", json.loads(res.read_text(encoding="utf-8")))
@@ -455,6 +462,6 @@ def test_c2_worse_compares_by_rate_across_set_sizes(now, base, is_worse):
 def test_c2_the_runner_counts_for_every_step(path):
     mod = evals()
     assert mod.steps_of([path]) == list(SIX)
-    wf = yaml.safe_load((ROOT / ".github" / "workflows" / "evals.yml").read_text(encoding="utf-8"))
+    wf = yaml.safe_load((need(".github/workflows/evals.yml")).read_text(encoding="utf-8"))
     on = wf.get("on") or wf.get(True)
     assert path in on["pull_request"]["paths"]
