@@ -66,6 +66,8 @@ name: Release lane
 # its PATH as `gh` (`--install` with the job's timeout-minutes), so a call
 # that finds the App's calls spent waits for the reset, within the job's
 # time less 3 minutes (DX_RATE_DEADLINE), and runs again instead of failing.
+# All but `play`, whose scenario player retries a rate limit itself, within
+# its own deadline (release-scenarios.py, #878).
 
 on:
   workflow_run:
@@ -314,13 +316,10 @@ jobs:
           ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
 
-      # GitHub's API rate limit (#925): gh waits for its reset, within this
-      # job's time (scripts/gh-wait.sh), before the job's first gh.
-      - name: The waiting gh (#925)
-        env:
-          TIMEOUT: 30
-        run: test ! -f scripts/gh-wait.sh || bash scripts/gh-wait.sh --install "$TIMEOUT"
-
+      # No waiting gh here (#925): the player retries a rate limit itself,
+      # within its own --minutes, and records an `infrastructure` row when
+      # the limit outlasts it (#698, #878); a wrapper waiting to the job's
+      # deadline would sleep past the player's and the step's.
       - name: The test repository
         id: test
         run: echo "repo=$(python3 scripts/org.py test-repo)" >> "$GITHUB_OUTPUT"

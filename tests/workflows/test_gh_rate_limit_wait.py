@@ -127,6 +127,11 @@ WORKFLOWS = ("autopilot.yml", "claude-review.yml", "review-reply.yml", "release-
 CALLS_GH = re.compile(r"(^|[\s(|;&`$])gh\s|scripts/(?!config-overlay\.sh|gh-wait\.sh)[\w.-]+\.(py|sh)")
 
 
+# Jobs whose own script retries a rate limit within a deadline shorter than
+# the job's: the wrapper, waiting to the job's deadline, would sleep past it.
+OWN_RETRY = {("release-lane.yml", "play")}
+
+
 def install_step(s):
     return bool(re.search(r'gh-wait\.sh"? --install', str(s.get("run") or "")))
 
@@ -136,6 +141,8 @@ def test_every_job_puts_the_waiting_gh_on_path_before_its_first_gh():
     for name in WORKFLOWS:
         wf = yaml.safe_load((ROOT / ".github" / "workflows" / name).read_text())
         for job_id, job in wf["jobs"].items():
+            if (name, job_id) in OWN_RETRY:
+                continue
             steps = job.get("steps") or []
             first = next((i for i, s in enumerate(steps) if CALLS_GH.search(str(s.get("run") or "")) and not install_step(s)), None)
             if first is None:
@@ -151,6 +158,23 @@ def test_every_job_puts_the_waiting_gh_on_path_before_its_first_gh():
             if timeout != str(job.get("timeout-minutes")):
                 missing.append(f"{name} {job_id}: its TIMEOUT {timeout!r} is not the job's {job.get('timeout-minutes')!r}")
     assert not missing, "\n".join(missing)
+
+
+def test_a_job_that_retries_itself_never_has_the_wrapper_waiting_past_its_steps():
+    # The scenario player's own retry stops at its --minutes and writes an
+    # `infrastructure` row (#878); a wrapper with a deadline past the play
+    # step's timeout-minutes sleeps through it and the step is killed.
+    for name, job_id in OWN_RETRY:
+        job = yaml.safe_load((ROOT / ".github" / "workflows" / name).read_text())["jobs"][job_id]
+        steps = job.get("steps") or []
+        for s in steps:
+            if not install_step(s):
+                continue
+            deadline = int(str((s.get("env") or {}).get("TIMEOUT", "0"))) - 3
+            later = [int(t["timeout-minutes"]) for t in steps if t.get("timeout-minutes")]
+            assert all(deadline <= t for t in later), f"{name} {job_id}: the wrapper waits to minute {deadline}, past a step's timeout {later}"
+    play = yaml.safe_load((ROOT / ".github" / "workflows" / "release-lane.yml").read_text())["jobs"]["play"]
+    assert not any(install_step(s) for s in play["steps"]), "release-lane.yml play: the player retries a rate limit itself (#878)"
 
 
 def test_the_scripts_job_runs_its_own_test():
