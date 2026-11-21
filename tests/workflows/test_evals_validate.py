@@ -166,6 +166,26 @@ def test_c1_evals_yml_validates_before_the_sets():
     assert "validate" in (needs if isinstance(needs, list) else [needs])
 
 
+def test_c1_a_set_that_fails_validate_gets_no_score_nor_results():
+    import yaml
+    wf = yaml.safe_load((ROOT / ".github" / "workflows" / "evals.yml").read_text(encoding="utf-8"))
+    ev = wf["jobs"]["eval"]
+    needs = ev["needs"] if isinstance(ev["needs"], list) else [ev["needs"]]
+    assert "validate" in needs, "the score does not wait on validate"
+    steps = ev["steps"]
+    # The first thing the job does past the checkout: fail, with no score,
+    # when validate ran and did not pass.
+    guard = next((i for i, s in enumerate(steps) if "needs.validate.result" in str(s.get("if", ""))
+                  and "exit 1" in s.get("run", "")), None)
+    assert guard is not None, "no step stops the score when validate failed"
+    later = steps[guard + 1:]
+    assert any("evals.py score" in s.get("run", "") for s in later), "the score runs before the guard"
+    # Nothing after it runs once it failed: no step forces itself with always() past an invalid set.
+    for s in later:
+        cond = str(s.get("if", ""))
+        assert "always()" not in cond or "needs.validate.result == 'success'" in cond, s.get("name")
+
+
 def test_c1_the_docs_state_the_rule():
     text = (ROOT / "docs" / "testing-and-quality.md").read_text(encoding="utf-8")
     assert "evals.py validate" in text

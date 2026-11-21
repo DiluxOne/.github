@@ -24,7 +24,8 @@ name: AI evaluation
 # of the sets to the rule of docs/testing-and-quality.md: it passes on its
 # merged fix, fails on an assertion at its base, and asserts none of the
 # fix's own literals; a case that does not fails the job "The cases are
-# valid" by its name, and nothing is replayed. The autopilot's replay is
+# valid" by its name, and nothing is replayed nor scored: the score job
+# then fails with no score, no results and no baseline. The autopilot's replay is
 # the production's loop: the work, then the review (local-review.sh) and
 # its fix rounds, up to policy/autonomy.yml's `autopilot-rounds`.
 #
@@ -291,8 +292,10 @@ jobs:
       - steps
       - collect  # order: by hand with `mode: collect`, it merges the new set's results and keeps them.
       - replay  # order: it scores the evals-<step>-case-<n> artifacts the replay jobs upload.
+      - validate  # order: a set that fails validate gets no score, no results and no baseline (#840).
     # It scores whatever its cases' jobs left: a job that ran out of time
-    # leaves its case not replayed, which fails the check by its name.
+    # leaves its case not replayed, which fails the check by its name. A set
+    # that failed validate stops it first (skipped only when it has no case).
     if: ${{ !cancelled() && needs.steps.result == 'success' && needs.collect.result != 'failure' && needs.steps.outputs.steps != '[]' && needs.steps.outputs.steps != '' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -304,6 +307,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Only a valid set is scored
+        if: needs.validate.result != 'success' && needs.validate.result != 'skipped'
+        env:
+          RESULT: ${{ needs.validate.result }}
+        run: |
+          echo "**Not scored:** the set did not pass \`evals.py validate\` ($RESULT), so it gets no score, no results and no baseline (#840)." | tee -a "$GITHUB_STEP_SUMMARY"
+          exit 1
 
       - name: The new set
         if: needs.collect.result == 'success'
@@ -339,7 +350,7 @@ jobs:
           exit "${PIPESTATUS[0]}"
 
       - name: Keep the results
-        if: always()
+        if: always() && needs.validate.result == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: evals-${{ matrix.step }}
