@@ -68,14 +68,20 @@ def test_the_score_table_gives_each_flag_case_its_reasons(tmp_path, monkeypatch)
         f.write_text(json.dumps(run))
         runs.append(str(f))
     _, out = run_main(m, ["score", *runs])
-    assert "| Why |" in out.splitlines()[0] or "Why" in out.splitlines()[0], out.splitlines()[0]
-    rows = {line.split("|")[1].strip(): line for line in out.splitlines() if line.startswith("| f")}
+    lines = [line for line in out.splitlines() if line.startswith("|")]
+    header = cells(lines[0])
+    assert "Why" in header, header
+    rows = {r["Case"]: r for r in (dict(zip(header, cells(line))) for line in lines[2:]) if r["Expects"] == "flag"}
     assert len(rows) == 10
-    assert "found" in rows["f0"].split("|")[-2]
-    assert "outside the fixed lines, 3 lines away" in rows["f1"]
-    assert "rejected by verification" in rows["f2"]
-    assert "no finding in the file" in rows["f3"]
-    assert "not reviewed" in rows["f4"]
+    want = {"f0": "found (3)", "f1": "outside the fixed lines, 3 lines away (3)", "f2": "rejected by verification (3)",
+            "f3": "no finding in the file (3)", "f4": "not reviewed (1), no finding in the file (2)"}
+    for case, why in want.items():
+        assert rows[case]["Why"] == why, (case, rows[case])
+
+
+def cells(line):
+    """A markdown table row's cells."""
+    return [c.strip() for c in line.strip().strip("|").split("|")]
 
 
 def test_merge_keeps_each_play_reason():

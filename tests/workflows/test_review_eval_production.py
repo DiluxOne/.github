@@ -140,6 +140,7 @@ def test_a_case_is_played_with_production_review_then_verified(scratch):
 def test_a_policy_that_fails_reviews_nothing(scratch, monkeypatch):
     case, log, tmp = scratch
     m = mod()
+    assert hasattr(m, "policy_of"), "review-eval.py computes no policy for a case"
     monkeypatch.setattr(m, "policy_of", lambda *a: None)
     assert m.run_case(case, str(ROOT), str(tmp / "work")) is None
     assert calls(log) == []
@@ -182,7 +183,7 @@ def test_a_case_out_of_time_is_not_reviewed(scratch, monkeypatch):
     m = mod()
     # A play of 20 cases fits the job's 350 minutes: a case has 15 between
     # its review and its verification, and none left reviews nothing.
-    assert m.CASE_SECONDS == 900
+    assert getattr(m, "CASE_SECONDS", None) == 900
     monkeypatch.setattr(m, "CASE_SECONDS", 0)
     assert m.run_case(case, str(ROOT), str(tmp / "work")) is None
     assert calls(log) == []
