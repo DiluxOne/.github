@@ -881,6 +881,20 @@ jobs:
           if [ "$MODE" = start ]; then
             if gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments | map({body, createdAt, author: {login: .author.login}})' > "$RUNNER_TEMP/comments.json"; then
               settle
+              # #924 C1: an answer on the issue before its pull request
+              # exists, read as the work reads one on the pull request
+              # (autopilot.py answers, after the autopilot's last end there,
+              # by those who decide), so it settles what the PRD leaves open
+              # without an edit to the PRD, which would unseal `accepted`.
+              # Never for a reproduced bug (#84), as `settle`.
+              export ANSWERS="$RUNNER_TEMP/answers.md"
+              : > "$ANSWERS"
+              if [ "${LANE:-}" != bugfix-reproduced ]; then
+                [ -f "$RUNNER_TEMP/deciders.txt" ] || { jq -r '.[].author.login' "$RUNNER_TEMP/comments.json" | sort -u \
+                  | python3 .dx-central/scripts/deciders.py list answer > "$RUNNER_TEMP/deciders.txt" || : > "$RUNNER_TEMP/deciders.txt"; }
+                COMMENTS="$RUNNER_TEMP/comments.json" DECIDERS="$RUNNER_TEMP/deciders.txt" ENDED_ONLY=true python3 .dx-central/scripts/autopilot.py answers > "$ANSWERS" \
+                  || { : > "$ANSWERS"; echo "::warning::#$NUMBER's answers could not be read: the Spec reads none."; }
+              fi
             else
               echo "::warning::#$NUMBER's comments could not be read: the Spec reads no answer."
             fi
