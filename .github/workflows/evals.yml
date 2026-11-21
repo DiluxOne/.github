@@ -42,6 +42,8 @@ on:
       - .github/workflows/issue-triage.yml
       - scripts/triage-brief.sh
       - policy/autonomy.yml
+      - scripts/evals.py
+      - .github/workflows/evals.yml
       - evals/triage/**
       - .github/workflows/issue-repro.yml
       - scripts/repro-ways.py

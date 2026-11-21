@@ -447,3 +447,14 @@ def test_c3_the_review_verdict_on_its_baseline_is_the_same_through_both_scripts(
 ])
 def test_c2_worse_compares_by_rate_across_set_sizes(now, base, is_worse):
     assert bool(evals().worse("spec", now, base)) == is_worse
+
+
+# C2: a change to the runner or its workflow is scored too, for every step.
+
+@pytest.mark.parametrize("path", ["scripts/evals.py", ".github/workflows/evals.yml"])
+def test_c2_the_runner_counts_for_every_step(path):
+    mod = evals()
+    assert mod.steps_of([path]) == list(SIX)
+    wf = yaml.safe_load((ROOT / ".github" / "workflows" / "evals.yml").read_text(encoding="utf-8"))
+    on = wf.get("on") or wf.get(True)
+    assert path in on["pull_request"]["paths"]

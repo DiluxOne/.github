@@ -91,7 +91,9 @@ RECALL = 0.5
 # A smaller change is a fairer case: no more files than this.
 MAX_FILES = 20
 # What counts for every step: its model and AI settings.
-COMMON = ("policy/autonomy.yml",)
+# The runner and its workflow count for every step: a change to them is
+# scored too.
+COMMON = ("policy/autonomy.yml", "scripts/evals.py", ".github/workflows/evals.yml")
 REVIEW_PATHS = (
     "review-profiles/**",
     "kinds/*/review-profile.md",
