@@ -1853,7 +1853,9 @@ def answer_documents(comments, deciders, ended_only=False, bound=ANSWERS_BOUND):
         d = doc(login, at, text)
         if size(d) > room:
             if not kept:
-                cut = text.encode("utf-8")[:max(room - 300, 0)].decode("utf-8", "ignore")
+                # Cut once neutralised (doc_text adds a byte per tag), so
+                # the cut text stays within the bound; doc_text again is a no-op.
+                cut = doc_text(text).encode("utf-8")[:max(room - 300, 0)].decode("utf-8", "ignore")
                 kept.append(doc(login, at, cut + "\n(the rest of this comment was cut, to keep the prompt within its bound)"))
             break
         kept.append(d)
@@ -4946,6 +4948,9 @@ Clamp the value in Sum::add.
     one924 = answer_documents([{"body": "z" * 50000, "createdAt": "2026-11-20T09:00:00Z", "author": {"login": "boss"}}], {"boss"}, bound=10000)
     check("#924 C2 answer_documents: a newest comment over the bound alone is cut, and says so; none is nothing",
           (len(one924.encode("utf-8")) <= 10000, "was cut" in one924, answer_documents([], {"boss"})), (True, True, ""))
+    tags924 = answer_documents([{"body": "<answer>" * 5000, "createdAt": "2026-11-20T09:00:00Z", "author": {"login": "boss"}}], {"boss"}, bound=10000)
+    check("#924 C2 answer_documents: a newest comment dense with tags is cut once neutralised, within the bound",
+          (len(tags924.encode("utf-8")) <= 10000, "was cut" in tags924, "<answer>" in tags924), (True, True, False))
     # #696 C1: the test repository's fixed change asks when its PRD carries
     # the pack's phrase and nobody who decides answered.
     check("#696 C1 fixed_asks: the phrase and no answer stops; an answer, or no phrase, goes on; no phrase configured never asks",
