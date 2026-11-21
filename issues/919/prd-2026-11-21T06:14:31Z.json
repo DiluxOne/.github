@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 919,
+  "prd_sha256": "01f623134338d001f44268219bf027fa455e63d9e3d0c197625cf7b102a8b7d0",
+  "prd": "### Problem\n\nThe release candidate v7.20.0 fails the release scenario `hint-no-needs-human` in what the engine did: its `until` or `expect` did not hold, or could no longer hold, so the lane releases nothing and `v7` stays where it is.\nReproduced by: https://github.com/DiluxOne/.github/actions/runs/44873212617 scenario `hint-no-needs-human`.\n\n### Scope\n\n- The cause of the failure above, in the engine, fixed with a test that would have caught it.\n\n### Out of scope\n\n- Changing the gates or what they check.\n\n### Acceptance criteria\n\n- C1: Given v7.20.0's candidate with the fix, when the release lane plays `hint-no-needs-human` in the test repository, then it passes and the lane releases it.\n\n### Criticality\n\nCritical",
+  "accepted_by": "policy (lane bugfix-reproduced)",
+  "at": "2026-11-21T06:14:31Z",
+  "policy": "DiluxOne/.github@bfba11a3fcd0"
+}
