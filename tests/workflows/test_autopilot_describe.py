@@ -24,12 +24,14 @@ def fix_if(name):
     return re.sub(r"^\$\{\{\s*|\s*\}\}$", "", cond.strip())
 
 
-def event(repo, description_ok, blocking="false"):
+def event(repo, mismatch, blocking="false", description_ok=None):
     return {
         "github.event_name": "pull_request", "github.repository": repo, "github.event.action": "synchronize",
         "needs.review.outputs.blocking": blocking, "needs.review.result": "success", "needs.conventions.result": "success",
         "needs.actionlint.result": "success", "needs.scripts.result": "success", "needs.review.outputs.current": "true",
-        "needs.review.outputs.description-ok": description_ok, "github.event.pull_request.draft": False,
+        "needs.review.outputs.description-mismatch": mismatch,
+        "needs.review.outputs.description-ok": description_ok or ("false" if mismatch == "true" else "true"),
+        "github.event.pull_request.draft": False,
         "github.event.pull_request.labels.*.name": ["autopilot"], "github.event.pull_request.user.login": "dilux-bot[bot]",
         "vars.DX_BOT_LOGIN": "dilux-bot[bot]",
     }
@@ -38,13 +40,24 @@ def event(repo, description_ok, blocking="false"):
 def test_the_fix_round_starts_when_the_review_says_the_description_does_not_match():
     for name, repo in (("pull-request.yml", "DiluxOne/.github"), ("org-pull-request.yml", "DiluxOne/site")):
         cond = fix_if(name)
-        assert evaluate(cond, event(repo, "false")) is True, name
-        assert evaluate(cond, event(repo, "true")) is False, name
+        assert evaluate(cond, event(repo, "true")) is True, name
+        assert evaluate(cond, event(repo, "false")) is False, name
+        # A description edited since the review (a reused verdict on a new
+        # text: description-ok false, nobody found it wrong) starts no round,
+        # on any event that reaches the trigger.
+        for action in ("synchronize", "ready_for_review", "reopened"):
+            edited = {**event(repo, "false", description_ok="false"), "github.event.action": action}
+            assert evaluate(cond, edited) is False, (name, action)
         # Never for someone else's pull request.
-        other = {**event(repo, "false"), "github.event.pull_request.user.login": "alice"}
+        other = {**event(repo, "true"), "github.event.pull_request.user.login": "alice"}
         assert evaluate(cond, other) is False, name
-        # The round knows why it runs.
-        assert workflow(name)["jobs"]["autopilot-fix"]["with"]["description-ok"] == "${{ needs.review.outputs.description-ok }}", name
+        # The round knows why it runs: only a found mismatch asks for a rewrite.
+        passed = workflow(name)["jobs"]["autopilot-fix"]["with"]["description-ok"]
+        expr = re.sub(r"^\$\{\{\s*|\s*\}\}$", "", passed)
+        assert evaluate(expr, {"needs.review.outputs.description-mismatch": "true"}) == "false", name
+        assert evaluate(expr, {"needs.review.outputs.description-mismatch": "false"}) == "true", name
+        assert evaluate(expr, {"needs.review.outputs.description-mismatch": ""}) == "true", name
+    assert "description-mismatch" in workflow("claude-review.yml")[True]["workflow_call"]["outputs"]
 
 
 def test_the_fix_inputs_reach_the_prompt():
@@ -215,3 +228,39 @@ esac"""
     record = json.loads(re.findall(r"<!-- dx-review-record (.*?) -->", posted.read_text())[-1])
     assert record["description_matches"] is True and record["mode"] == "full"
     assert ran.output.get("description_ok") == "true"
+    assert ran.output.get("description_mismatch") == "false"
+
+
+def verdict_step():
+    return next(s for _, s in __import__("steps").steps_of("claude-review.yml") if "dx-review-record" in str(s.get("run", ""))
+                and "OUT" in (s.get("env") or {}))
+
+
+def reuse(tmp_path, recorded_text, matches):
+    """The verdict step reusing a record of MATCHES for the text whose hash
+    is RECORDED_TEXT, with the body "The body"."""
+    import hashlib
+    (tmp_path / "temp").mkdir(parents=True, exist_ok=True)
+    text = hashlib.sha256(recorded_text.encode()).hexdigest()[:16]
+    (tmp_path / "temp" / "previous.json").write_text(json.dumps(
+        {"sha": HEAD, "count": 1, "risk": "low", "complexity": "low", "blocking": False, "type": "fix", "description_matches": matches, "text": text}))
+    env = {"BOT": BOT, "PR": "8", "OUT": "", "SHA": HEAD, "MODE": "reuse", "LAST": HEAD, "COUNT": "1", "MODEL": "m",
+           "MAX_AUTO": "5", "FLOOR": "low", "KIND": "", "BODY": "The body", "TRUSTED": "true", "REASONS": ""}
+    ran = run(verdict_step(), tmp_path, env=env, stubs={"gh": "echo '[]'"})
+    assert ran.code == 0, ran.stdout + ran.stderr
+    return ran.output
+
+
+def test_a_reused_verdict_on_an_edited_description_is_unchecked_not_a_mismatch(tmp_path):
+    out = reuse(tmp_path, "An older body", True)
+    assert (out["description_ok"], out["description_mismatch"]) == ("false", "false")
+    # Nor when the older text was found wrong: the new one was not read.
+    out = reuse(tmp_path / "b", "An older body", False)
+    assert (out["description_ok"], out["description_mismatch"]) == ("false", "false")
+
+
+def test_a_reused_verdict_on_the_same_description_keeps_its_mismatch(tmp_path):
+    out = reuse(tmp_path, "The body", False)
+    assert (out["description_ok"], out["description_mismatch"]) == ("false", "true")
+    out = reuse(tmp_path / "b", "The body", True)
+    assert (out["description_ok"], out["description_mismatch"]) == ("true", "false")

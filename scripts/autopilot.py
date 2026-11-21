@@ -4675,14 +4675,14 @@ Clamp the value in Sum::add.
         org_trigger = trigger(org_fix).strip("()").split(" || ")
         # #924 C3: a review that says the description does not match starts
         # the round too, in both pipelines.
-        DESCRIPTION_FIX = "needs.review.outputs.description-ok == 'false'"
+        DESCRIPTION_FIX = "needs.review.outputs.description-mismatch == 'true'"
         gate_clause = lambda gate: f"needs.{gate}.result == 'failure'"
         check("#504 C3: every other repository's round never runs here, and is called as it was",
               (theirs in cond(org_fix), mine in cond(org_fix), "review" in org_fix.get("needs"), bool(re.fullmatch(r"DiluxOne/\.github/\.github/workflows/autopilot\.yml@v\d+", str(org_fix.get("uses")))),
                org_fix.get("with"), org_fix.get("permissions"), org_fix.get("secrets"),
                guards(org_fix) == ["always()", clauses[0], theirs, "!github.event.pull_request.draft"] + clauses[2:]),
               (True, False, True, True, {"mode": "fix", "pr": "${{ format('{0}', github.event.pull_request.number) }}",
-                                         "description-ok": "${{ needs.review.outputs.description-ok }}"}, {"contents": "read"}, "inherit", True))
+                                         "description-ok": "${{ needs.review.outputs.description-mismatch == 'true' && 'false' || 'true' }}"}, {"contents": "read"}, "inherit", True))
         org_jobs = yaml.safe_load(open(os.path.join(HERE, "..", ".github", "workflows", "org-pull-request.yml"), encoding="utf-8"))["jobs"]
         check("#741 C5: every other repository's round waits for the conventions and the review, and starts on either failing or a blocking review, on a ready pull request",
               (org_fix.get("needs"), org_trigger, sorted(org_fix.get("needs")) == sorted(org_jobs["review"]["needs"] + ["review"]), "!github.event.pull_request.draft" in guards(org_fix)),
