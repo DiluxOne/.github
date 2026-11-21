@@ -149,7 +149,15 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    or a gate of the pipeline fails or the review ends without a verdict
    (#741: a round from the failed jobs' log), the autopilot fixes and
    pushes, up to five rounds, then hands it to a
-   person (`needs-human`). A sync run's pull request (lane `org-sync`)
+   person (`needs-human`). A review that says the description does not
+   match starts a round too (#924): the autopilot rewrites its own
+   description's What changes, How I tested it and `Test:` lines
+   (`autopilot.py describe`), never `Closes`, the criteria, their ticks or
+   the Credits; the new body is set before the round's commits are pushed,
+   and a round with no commit adds `review:full`, so the review reads the
+   new description in full. Its prompt reaches the agent as a file the
+   action is pointed at, and carries only the comments of those who decide
+   since its last end, within 64 KiB. A sync run's pull request (lane `org-sync`)
    merges by policy too ([`scripts/autonomy.py`](../scripts/autonomy.py)
    `lane-merge`) when the lane accepts its issue and every file it changes
    is what the commit of this repository the issue names holds (CODEOWNERS

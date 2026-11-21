@@ -177,7 +177,8 @@ name: Autopilot
 # #247), it asked a maintainer a question and waits (`asked` on the issue's
 # board, #802):
 # their answer, in their own words, brings it back (review-reply.yml) and
-# reaches its prompt; or the run continues; otherwise this workflow says so
+# reaches its prompt, on the issue before its pull request exists too
+# (#924); or the run continues; otherwise this workflow says so
 # itself, adds `needs-human` and fails. Every run writes a readable account
 # to its job summary and keeps the agent's transcript, scrubbed of tokens,
 # as an artifact, and the issue's board links the pull request, the run and
@@ -197,7 +198,10 @@ name: Autopilot
 # transcript fall back to the session the CLI kept as it went
 # (scripts/autopilot.py work-log), and the end rule still counts it as a run
 # out of time. Every input it reads from the issue is the PRD at its sealed
-# text, fenced as data in the prompt.
+# text, fenced as data in the prompt. The prompt carries only the deciders'
+# comments since the autopilot's last end, as `<answers>` documents within a
+# bound (64 KiB), and lives in .dx-io/prompt.md: the action gets a short
+# pointer to it, never its text, so its size never stops a round (#924).
 #
 # A reproduced bug (lane `bugfix-reproduced`): its failing test, written from
 # an outsider's report, is untrusted code. It never enters the agent's
@@ -244,6 +248,10 @@ on:
         default: ''
       pr:
         description: The pull request (mode fix).
+        type: string
+        default: ''
+      description-ok:
+        description: The review's word on the description (mode fix, #924 C3); `false` asks the round to rewrite it.
         type: string
         default: ''
       central-ref:
@@ -891,6 +899,8 @@ jobs:
           # without a verdict (#741: `inputs fix` reads the calling run's
           # jobs, and writes checks.md, which `prompt fix` points at).
           QUEUE: ${{ github.event_name == 'pull_request' && github.event.action == 'dequeued' }}
+          # #924 C3: a review that said the description does not match.
+          DESCRIPTION_OK: ${{ inputs.description-ok }}
           RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
         run: |
           set -euo pipefail
@@ -902,7 +912,8 @@ jobs:
           # `/` commands left out, read with the PRD so the agent does not ask
           # again what they answered. Who decides is `who-decides` (#588,
           # deciders.py list answer), checked now; anyone else's words never
-          # reach the prompt. Read here for a start, below for the work.
+          # reach the prompt. Read for a start only: the work reads what
+          # followed the autopilot's last end (#924 C2, `answers` below).
           export SETTLED="$RUNNER_TEMP/settled.md"
           : > "$SETTLED"
           # A read of the events that fails, or finds no `accepted` (a
@@ -924,6 +935,20 @@ jobs:
           if [ "$MODE" = start ]; then
             if gh issue view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments | map({body, createdAt, author: {login: .author.login}})' > "$RUNNER_TEMP/comments.json"; then
               settle
+              # #924 C1: an answer on the issue before its pull request
+              # exists, read as the work reads one on the pull request
+              # (autopilot.py answers, after the autopilot's last end there,
+              # by those who decide), so it settles what the PRD leaves open
+              # without an edit to the PRD, which would unseal `accepted`.
+              # Never for a reproduced bug (#84), as `settle`.
+              export ANSWERS="$RUNNER_TEMP/answers.md"
+              : > "$ANSWERS"
+              if [ "${LANE:-}" != bugfix-reproduced ]; then
+                [ -f "$RUNNER_TEMP/deciders.txt" ] || { jq -r '.[].author.login' "$RUNNER_TEMP/comments.json" | sort -u \
+                  | python3 .dx-central/scripts/deciders.py list answer > "$RUNNER_TEMP/deciders.txt" || : > "$RUNNER_TEMP/deciders.txt"; }
+                COMMENTS="$RUNNER_TEMP/comments.json" DECIDERS="$RUNNER_TEMP/deciders.txt" ENDED_ONLY=true DOCUMENTS=true python3 .dx-central/scripts/autopilot.py answers > "$ANSWERS" \
+                  || { : > "$ANSWERS"; echo "::warning::#$NUMBER's answers could not be read: the Spec reads none."; }
+              fi
             else
               echo "::warning::#$NUMBER's comments could not be read: the Spec reads no answer."
             fi
@@ -985,7 +1010,10 @@ jobs:
           jq -r '.[].author.login' "$RUNNER_TEMP/comments.json" | sort -u \
             | python3 .dx-central/scripts/deciders.py list answer > "$RUNNER_TEMP/deciders.txt" || : > "$RUNNER_TEMP/deciders.txt"
           COMMENTS="$RUNNER_TEMP/comments.json" DECIDERS="$RUNNER_TEMP/deciders.txt" python3 .dx-central/scripts/autopilot.py answers > "$RUNNER_TEMP/answers.md"
-          settle
+          # #924 C2: the prompt carries those comments alone (never every
+          # settled one, which on a long thread passed the ~128 KiB a
+          # variable holds), as `<answers>` documents within a bound.
+          COMMENTS="$RUNNER_TEMP/comments.json" DECIDERS="$RUNNER_TEMP/deciders.txt" DOCUMENTS=true python3 .dx-central/scripts/autopilot.py answers > "$RUNNER_TEMP/answer-documents.md"
           # #673: the last run's `make pre-pr` did not pass in full after its
           # step: the output's tail, from dilux-bot's own comment, in
           # .dx-io/pre-pr.md, which the prompt asks the agent to fix first.
@@ -995,7 +1023,7 @@ jobs:
           # and logged in the Decisions (#561): the work and the finish
           # read the checklist as it is then.
           ANSWERS="$RUNNER_TEMP/answers.md" python3 .dx-central/scripts/autopilot.py criteria-edit
-          ANSWERS="$RUNNER_TEMP/answers.md" python3 .dx-central/scripts/autopilot.py prompt work > "$DX_IO/prompt.md"
+          ANSWERS="$RUNNER_TEMP/answer-documents.md" python3 .dx-central/scripts/autopilot.py prompt work > "$DX_IO/prompt.md"
 
       - name: Hand it to the agent
         if: steps.may.outputs.go == 'true'
@@ -1081,9 +1109,11 @@ jobs:
         id: task
         run: |
           set -euo pipefail
-          # A random delimiter: the PRD's text cannot end the output early.
-          eof="DX_$(openssl rand -hex 16)"
-          { echo "prompt<<$eof"; cat .dx-io/prompt.md; echo "$eof"; } >> "$GITHUB_OUTPUT"
+          # #924 C2: the action gets a short pointer to the task's file,
+          # never its text, which the runner passes as one environment
+          # variable: a long one stops the round before the model starts
+          # ("Argument list too long", at about 128 KiB).
+          echo "prompt=Your task is in the file $GITHUB_WORKSPACE/.dx-io/prompt.md: read it whole, every line, before anything else, and follow it." >> "$GITHUB_OUTPUT"
 
       - name: Claude writes the Spec
         id: spec
@@ -1497,9 +1527,9 @@ jobs:
           # The agent's step's deadline (#673): its start plus its limit
           # (timeout-minutes of "Claude works") less a margin of 10 minutes,
           # for the credits and the finish. `check` stops `make pre-pr` there.
-          echo "deadline=$(( $(date +%s) + (75 - 10) * 60 ))" >> "$GITHUB_OUTPUT"
-          eof="DX_$(openssl rand -hex 16)"
-          { echo "prompt<<$eof"; cat .dx-io/prompt.md; echo "$eof"; } >> "$GITHUB_OUTPUT"
+          # #924 C2: with it, a short pointer to .dx-io/prompt.md, never its text.
+          { echo "deadline=$(( $(date +%s) + (75 - 10) * 60 ))"
+            echo "prompt=Your task is in the file $GITHUB_WORKSPACE/.dx-io/prompt.md: read it whole, every line, before anything else, and follow it."; } >> "$GITHUB_OUTPUT"
 
       # The test repository's fixed change (#563): each unticked criterion's
       # file, committed and ticked, then ready, through the agent's own
@@ -1897,6 +1927,17 @@ jobs:
           rc=0
           held=$(python3 .dx-central/scripts/autopilot.py holder) || rc=$?
           if [ "$rc" -ne 0 ]; then echo "The autopilot steps aside: $held"; echo "held=$held" >> "$GITHUB_OUTPUT"; exit 0; fi
+          # #924 C3: the agent's rewrite of the description (`describe`) is
+          # set before its commits are pushed, so the review the push starts
+          # reads it; with no commit, apply adds `review:full` first, so the
+          # edit's review is a full one on the new body, never a reuse.
+          # Older central scripts have no `describe`: nothing to apply.
+          describe() {
+            grep -q '^def describe_body' .dx-central/scripts/autopilot.py || return 0
+            NO_COMMIT="$1" python3 .dx-central/scripts/autopilot.py apply .dx-out/outbox.jsonl +describe \
+              || echo "::warning::The description was not rewritten (the log says why)."
+          }
+          described=false
           if [ -f .dx-out/work.bundle ]; then
             git fetch -q .dx-out/work.bundle HEAD
             new=$(git rev-parse FETCH_HEAD)
@@ -1925,11 +1966,18 @@ jobs:
             git checkout -q -B "$BRANCH" "$new"
             if [ "$REWORD" = true ]; then
               # The lease: GitHub's branch is still the head this round
-              # read, or nothing is written over.
+              # read, or nothing is written over. Read before the
+              # description is set, so a lost lease leaves it as it was.
               there=$(gh api "repos/$GITHUB_REPOSITORY/branches/$BRANCH" --jq .commit.sha)
               if [ "$there" != "$(git rev-parse "origin/$BRANCH")" ]; then
                 echo "::error::$BRANCH moved on GitHub while the agent worked (the lease does not hold): nothing is pushed."; exit 1
               fi
+            fi
+            # Before any push of the round, the reworded history's too, so
+            # the review that push starts reads the new description (#924).
+            if [ "$REWORD" != true ] && [ "$(git rev-parse HEAD)" = "$(git rev-parse "origin/$BRANCH")" ]; then describe true; else describe false; fi
+            described=true
+            if [ "$REWORD" = true ]; then
               python3 .dx-central/scripts/api-commit.py push "$BRANCH" --force --onto "$(git merge-base "origin/$BRANCH" "origin/$DEFAULT")"
               git fetch -q origin "$BRANCH"
             fi
@@ -1954,7 +2002,12 @@ jobs:
               [ "$shown" = true ] || echo "::warning::#$PR does not show $pushed after a minute; a tick may find no commit (a continue run ticks it)."
             fi
           fi
-          python3 .dx-central/scripts/autopilot.py apply .dx-out/outbox.jsonl
+          [ "$described" = true ] || describe true
+          if grep -q '^def describe_body' .dx-central/scripts/autopilot.py; then
+            python3 .dx-central/scripts/autopilot.py apply .dx-out/outbox.jsonl -describe
+          else
+            python3 .dx-central/scripts/autopilot.py apply .dx-out/outbox.jsonl
+          fi
 
       # A fresh token for the verdict, however long the rest took.
       - name: App token for the end
@@ -1984,6 +2037,8 @@ jobs:
           HEAD_BEFORE: ${{ needs.prep.outputs.mode == 'fix' && needs.prep.outputs.head || '' }}
           # #699 C3: a fix round that set the title alone did its work.
           RETITLED: ${{ steps.applied.outputs.retitled }}
+          # #924 C3: so did one that rewrote the description alone.
+          DESCRIBED: ${{ steps.applied.outputs.described }}
           WORK_OUTCOME: ${{ needs.work.outputs.outcome || needs.work.result }}
           # #479: a work job that failed without its agent's outcome lost its
           # runner, and the run does not count.

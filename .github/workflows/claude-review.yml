@@ -99,6 +99,9 @@ on:
       description-ok:
         description: Whether the description matches the code. false stops auto-merge.
         value: ${{ jobs.review.outputs.description-ok }}
+      description-mismatch:
+        description: true only when a review read this description and found it does not match the code (#924); a description edited since the review is not checked (description-ok false), not found wrong, and leaves this false.
+        value: ${{ jobs.review.outputs.description-mismatch }}
       auto-merge:
         description: Whether the policy lets qualifying pull requests merge on their own.
         value: ${{ jobs.review.outputs.auto-merge }}
@@ -248,6 +251,7 @@ jobs:
       blocking: ${{ steps.verdict.outputs.blocking }}
       type: ${{ steps.verdict.outputs.type }}
       description-ok: ${{ steps.verdict.outputs.description_ok }}
+      description-mismatch: ${{ steps.verdict.outputs.description_mismatch }}
       auto-merge: ${{ steps.policy.outputs.auto_merge }}
     steps:
       # For the run's cost in its summary (#694, scripts/model-cache.py).
@@ -767,8 +771,11 @@ jobs:
             # been read by anyone: it does not merge on its own until a push or
             # the review:full label brings a new review.
             text=$(printf '%s' "$BODY" | tr -d '\r' | sha256sum | cut -c1-16)
+            # The mismatch is the review's finding on the text it read: a
+            # different text now is unchecked, not found wrong (#924).
+            mismatch=false; if [ "$dmatch" = false ] && [ "$(jq -r '.text // ""' "$previous")" = "$text" ]; then mismatch=true; fi
             edited=false; if [ "$(jq -r '.text // ""' "$previous")" != "$text" ] && [ "$MODE" = reuse ]; then edited=true; dmatch=false; fi
-            { echo "type=$(jq -r '.type // "chore"' "$previous")"; echo "description_ok=$dmatch"; } >> "$GITHUB_OUTPUT"
+            { echo "type=$(jq -r '.type // "chore"' "$previous")"; echo "description_ok=$dmatch"; echo "description_mismatch=$mismatch"; } >> "$GITHUB_OUTPUT"
             if [ "$(rank "$FLOOR")" -gt "$(rank "$risk")" ]; then risk=$FLOOR; fi
             if [ "$MODE" = capped ] && [ "$risk" = low ]; then
               # Nobody reviewed these commits: they never merge on their own.
@@ -850,7 +857,7 @@ jobs:
           if [ "$type" != "$(jq -r '.type // "chore"' <<<"$OUT")" ]; then
             echo "The type applied is $type (a person's type:* label, the review's docs on files that are not documentation, or the title's type for a fixed change, #895); the review's reading ($(jq -r .type <<<"$OUT")) is recorded."
           fi
-          { echo "risk=$risk"; echo "complexity=$complexity"; echo "blocking=$blocking"; echo "type=$type"; echo "description_ok=$dmatch"; } >> "$GITHUB_OUTPUT"
+          { echo "risk=$risk"; echo "complexity=$complexity"; echo "blocking=$blocking"; echo "type=$type"; echo "description_ok=$dmatch"; echo "description_mismatch=$([ "$dmatch" = false ] && echo true || echo false)"; } >> "$GITHUB_OUTPUT"
 
           for l in risk:low risk:medium risk:high complexity:low complexity:medium complexity:high; do
             case $l in *:low) c=0E8A16;; *:medium) c=FBCA04;; *) c=D93F0B;; esac
