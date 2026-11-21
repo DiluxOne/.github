@@ -17,6 +17,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from steps import evaluate
+
 ROOT = Path(__file__).resolve().parents[2]
 FLOWS = ROOT / ".github" / "workflows"
 REQUIRED = ["Scripts (self-tests)", "test-first / Test first"]
@@ -101,9 +103,13 @@ def test_both_required_checks_run_on_every_pull_request():
     assert "if" not in jobs["scripts"]
     assert jobs["test-first"]["if"] == "github.event_name == 'pull_request'"
     assert jobs["test-first"]["uses"] == "./.github/workflows/test-first.yml"
-    text = (FLOWS / "pull-request.yml").read_text(encoding="utf-8")
-    header = " ".join(line.lstrip("# ") for line in text[:text.index("\non:")].splitlines())
-    assert "required checks" in header and "Scripts (self-tests)" in header and "test-first / Test first" in header
+    assert evaluate(jobs["test-first"]["if"], {"github.event_name": "pull_request"}) is True
+    # The contexts these jobs report are the two the ruleset requires: a
+    # called workflow's check is `<caller job's name> / <its job's name>`.
+    called = workflow("test-first.yml")["jobs"]
+    contexts = [jobs["scripts"]["name"]] + [f"{jobs['test-first'].get('name', 'test-first')} / {j['name']}"
+                                            for j in called.values() if j.get("name") == "Test first"]
+    assert contexts == REQUIRED
 
 
 # repos.yml and the ruleset "own checks".

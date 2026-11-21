@@ -9,6 +9,7 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -36,9 +37,6 @@ def runs(wf):
 def test_c1_no_triage_step_sets_needs_triage():
     for job_name, s in runs(workflow("issue-triage.yml")):
         assert "needs-triage" not in s["run"], f"{job_name} / {s.get('name')} still uses needs-triage"
-    # Nor does the script the triage acts with, outside its self-test.
-    code = ACT.read_text(encoding="utf-8").split('if [ "${1:-}" = "--test" ]', 1)[0]
-    assert "needs-triage" not in code
 
 
 def act(tmp_path, verdict):
@@ -87,6 +85,13 @@ def test_c1_an_unknown_category_says_it_could_not_run(tmp_path):
     assert "needs-triage" not in calls
 
 
+@pytest.mark.parametrize("category", ["bug_unconfirmed", "needs_info", "by_design", "pro_feature", "planned",
+                                      "enhancement", "question", "duplicate", "nonsense"])
+def test_c1_no_verdict_of_the_triage_sets_needs_triage(tmp_path, category):
+    _, _, calls = act(tmp_path, json.dumps({"category": category}))
+    assert calls and "needs-triage" not in calls
+
+
 def test_c1_the_board_shows_the_triage_row():
     r = receipts()
     ran = r.board_text(7, True, None, None, state={"triage": {"ran": True, "verdict": "by_design", "at": "2026-11-17T00:00:00Z"}})
@@ -104,7 +109,25 @@ def test_c2_an_answered_spike_needs_human():
     for name in ("issue-triage.yml", "runner-image.yml", "autonomy-digest.yml"):
         for job_name, s in runs(workflow(name)):
             assert "needs:maintainer" not in s["run"], f"{name} {job_name} / {s.get('name')}"
-    assert "needs:maintainer" not in (ROOT / "scripts" / "run-issue.sh").read_text(encoding="utf-8").split("self_test() {", 1)[0]
+
+
+def test_c2_a_run_that_needs_a_person_opens_its_issue_with_needs_human(tmp_path):
+    """run-issue.sh open, with a stand-in gh: the run's issue waits with
+    `needs-human`, never `needs:maintainer`."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "gh.log"
+    gh = bin_dir / "gh"
+    gh.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> ' + str(log) + '\n'
+                  'case "$1 $2" in "issue create") echo https://github.com/o/r/issues/12;; esac\n', encoding="utf-8")
+    gh.chmod(0o755)
+    env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", GITHUB_REPOSITORY="o/r", NEEDS="1", LABELS="lane:platform")
+    out = subprocess.run(["bash", str(ROOT / "scripts" / "run-issue.sh"), "open", "runner-image", "The build failed"],
+                         input="It failed.", env=env, capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    calls = log.read_text(encoding="utf-8")
+    assert "--label run:runner-image,lane:platform,needs-human " in calls
+    assert "needs:maintainer" not in calls
 
 
 def test_c3_the_forms_set_no_bug_or_enhancement_label():

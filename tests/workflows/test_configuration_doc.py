@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from steps import sections
 
 ROOT = Path(__file__).resolve().parents[2]
 PARTS = ("org.yml", "repos.yml", "labels.yml", "kinds", "scripts", "policy", ".github/workflows", "docs/configuration.md")
@@ -40,9 +41,10 @@ def test_the_page_is_what_docs_writes():
 def test_every_setting_is_on_the_page_with_its_default_levels_and_limit():
     page = (ROOT / "docs" / "configuration.md").read_text(encoding="utf-8")
     schema = yaml.safe_load((ROOT / "policy" / "settings-schema.yml").read_text(encoding="utf-8"))
+    parts = sections(page)
     for pattern, entries in schema["files"].items():
-        assert f"## `{pattern}`" in page
-        section = page.split(f"## `{pattern}`", 1)[1].split("\n## ", 1)[0]
+        assert f"`{pattern}`" in parts, f"no section for `{pattern}`"
+        section = parts[f"`{pattern}`"]
         for s in entries:
             name = "(the whole list)" if s["key"] == "." else f"`{s['key']}`"
             row = next(line for line in section.split("\n") if line.startswith(f"| {name}: "))

@@ -205,6 +205,41 @@ bodies:
     ### Criticality
 
     Normal
+  # #881: its own body, naming only its own file, so the triage never reads
+  # it as `bug-not-reproduced`'s report (a `duplicate`, with no reproduction).
+  bug-by-person-merges: |
+    ### What happened?
+
+    A reader saw "helo" in `scenarios/bug-by-person-merges/greeting.md` one morning, and nobody kept a copy of it.
+
+    ### Steps to reproduce
+
+    1. Open `scenarios/bug-by-person-merges/greeting.md` on `main`.
+    2. Check whether its word is "helo" rather than "hello".
+
+    ### Version
+
+    The test repository's `main`.
+
+    ### Problem
+
+    A reader reported that the greeting of this scenario was misspelt as "helo".
+
+    ### Scope
+
+    - The word the greeting says.
+
+    ### Out of scope
+
+    - Any other file.
+
+    ### Acceptance criteria
+
+    - C1: Given the repository, when `scenarios/bug-by-person-merges/greeting.md` is read, then it says "hello".
+
+    ### Criticality
+
+    Normal
   # A decision's PRD (#713: the schema's, with its Repositories), naming
   # only the test repository, so it reaches no other.
   decision: |
@@ -311,6 +346,7 @@ types:
   edited-asking-feature: Feature
   bug: Bug
   bug-not-reproduced: Bug
+  bug-by-person-merges: Bug
   task: Task
   release: Task
 
@@ -380,7 +416,7 @@ scenarios:
     before: [{issue: {title: "feat: a greeting on the core, first", body: complete-feature}}]
     opens: {issue: {title: "feat: a greeting on the core, second", body: complete-feature}}
     # #694: until the first one's fixed change is on its pull request (its
-    # box ticked), polled every 50 seconds (#726).
+    # box ticked), polled every 75 seconds (#726, #878).
     steps: [{until: {of: before, labels: [awaiting-acceptance]}}, {label: accepted, of: before}, {until: {of: before, comments: ["<!-- dx-prd-seal -->"]}},
             {until: {of: before, pull: {closes: true, body: "\\[x\\] \\*\\*C1\\*\\*"}}},
             {until: {labels: [awaiting-acceptance]}}, {label: accepted}, {until: {comments: ["<!-- dx-prd-seal -->"]}}]
@@ -444,7 +480,7 @@ scenarios:
     covers: []
     minutes: 15
     before: [{lands: greeting, says: hello}]
-    opens: {issue: {title: "fix: something failed once, accepted", body: bug-not-reproduced}}
+    opens: {issue: {title: "fix: a reader saw a misspelt word one morning", body: bug-by-person-merges}}
     steps: [{until: {labels: [awaiting-acceptance, needs-info]}}, {label: accepted}, {until: {comments: ["<!-- dx-prd-seal -->"]}},
             {until: {pull: {closes: true, branch: "^fix/[0-9]+-"}}}]
     expect: {state: CLOSED, absent: [needs-human]}
@@ -601,11 +637,14 @@ scenarios:
     expect: {bot_labeled: [autopilot:continue], hands: [accepted]}
   # C5: a pull request whose file carries a token, which the review
   # profile blocks on; the test identity, who decides there, settles it in
-  # a comment, and the review runs again on the same head.
+  # a comment, and the review runs again on the same head. #882: it waits
+  # for the review's record with "blocking":true (claude-review.yml writes
+  # it with jq -c) before it settles, so a review that does not block fails
+  # at that step, saying what it saw, never later as no re-run.
   - id: settled-rerun
     covers: [flow:settled-rerun]
     minutes: 15
     opens: {pull: {title: "docs: a greeting with a token", body: pull, issue: {title: "docs: a greeting with a token", body: task, labels: [accepted]}}}
-    steps: [{push: token}, {until: {comments: ["<!-- dx-review -->"]}},
+    steps: [{push: token}, {until: {comments: ["\"blocking\":true"]}},
             {comment: "@dilux-bot the token in scenarios/settled-rerun/token.md is this scenario's fake, which no service issues: settled, it stays."}]
     expect: {rerun: true, hands: [accepted]}

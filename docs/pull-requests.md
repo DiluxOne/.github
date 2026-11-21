@@ -203,7 +203,10 @@ The path every change takes in a DiluxOne repository, step by step. The short ve
    `DX_AUTOPILOT=off`: nothing is reverted, and the run says why.
 
 Mention `@dilux-bot` in a review thread or in the conversation and Claude
-answers there; it resolves its own thread when the point is settled.
+answers there; it resolves its own thread when the point is settled. An
+answer in the conversation can settle any of the review's findings, one
+raised inline included: the reply records it, resolves that finding's thread
+and, when the review blocked, runs it again on the same head (#871).
 
 The description's Credits block names who proposed what the change uses
 (CONTRIBUTING.md, "Who signs what"); the merge writes them as the commit's
@@ -233,7 +236,10 @@ runs in a concurrency group of its own: it cancels nothing and nothing
 cancels it, since a cancelled run leaves a cancelled check that blocks the
 merge. It spends nothing: on a commit the review read it reuses the
 verdict, and on one its push's run is still reviewing it waits for that
-verdict and reuses it, or fails when none comes. Once a week everything
+verdict and reuses it, or fails when none comes. A run of a commit that
+is no longer the head (a push seconds after the pull request opened)
+reads the head first and reviews nothing, so it never cancels the head's
+review, and its merge decision and fix round skip (#888). Once a week everything
 runs against today's WordPress and tools, and a failure opens one
 `ci:weekly` issue; *Run workflow* runs everything by hand, and its failure
 is in the run alone.

@@ -151,6 +151,11 @@ jobs:
       - run: python3 scripts/repro-ways.py --test
       - run: bash scripts/repro-run.sh --test
       - run: python3 scripts/test-first.py --test
+      # A test cuts a workflow's text between two literals (#845): it tests
+      # the wording, not the step. No test may: KNOWN in the script is
+      # empty, and only a reasoned exception goes back on it.
+      - run: python3 scripts/literal-slices.py --test
+      - run: python3 scripts/literal-slices.py tests/workflows tests/repro
       - run: python3 scripts/no-widening.py --test
       # The tests under tests/ (#376): the reproduction ways' examples, the
       # reproductions kept as regression tests, and the workflows' wiring,
@@ -288,7 +293,9 @@ jobs:
     # order: after the "Test first" check too (#842), whose verdict at the
     # head G7 reads for a criterion's test.
     needs: [review, test-first]
-    if: always() && needs.review.result != 'skipped'
+    # #888: not on a run whose commit is no longer the head (its review
+    # was skipped); the head's run decides.
+    if: always() && needs.review.result != 'skipped' && needs.review.outputs.current != 'false'
     # Its `repro` job reads the lane issue a reproduced bug's fix closes (#397).
     permissions:
       contents: read
@@ -323,7 +330,9 @@ jobs:
     # Only dilux-bot's own pull requests, only once ready (a draft's own run
     # checks its work), and only for a new commit (an edit of the
     # description keeps the review's verdict and must not spend a round).
-    if: always() && github.event_name == 'pull_request' && github.repository == 'DiluxOne/.github' && (needs.review.outputs.blocking == 'true' || needs.review.result == 'failure' || needs.conventions.result == 'failure' || needs.actionlint.result == 'failure' || needs.scripts.result == 'failure') && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN && github.event.action != 'edited'
+    # #888: nor on a run whose commit is no longer the head: the head's run
+    # starts the round.
+    if: always() && github.event_name == 'pull_request' && github.repository == 'DiluxOne/.github' && (needs.review.outputs.blocking == 'true' || needs.review.result == 'failure' || needs.conventions.result == 'failure' || needs.actionlint.result == 'failure' || needs.scripts.result == 'failure') && needs.review.outputs.current != 'false' && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN && github.event.action != 'edited'
     # The agent's jobs read the repository with the job's own token (#287).
     permissions:
       contents: read

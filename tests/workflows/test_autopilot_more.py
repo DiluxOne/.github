@@ -1,0 +1,381 @@
+"""#856: `/autopilot more` on an issue gives its autopilot pull request, at its
+cap, more runs, on the word of someone `who-decides` allows, at most twice.
+issue-claim.yml's `more` job reads it (the workflow that reads `/claim`),
+asks scripts/deciders.py, and runs `autopilot.py more`, whose decisions are
+`more_plan` and `runs_cap`; the hint reaches the next run through
+`answers()`. Run here with gh stood in and the fixture boards
+(RECEIPTS_FIXTURE)."""
+import importlib.util
+import json
+import re
+from pathlib import Path
+
+import yaml
+
+ROOT = Path(__file__).resolve().parents[2]
+BOT = "app/dilux-bot"
+ISSUE_URL = "https://github.com/o/r/issues/7"
+COMMENT_URL = ISSUE_URL + "#issuecomment-1"
+
+
+def autopilot():
+    spec = importlib.util.spec_from_file_location("autopilot_more", ROOT / "scripts/autopilot.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def wf(name):
+    return yaml.safe_load((ROOT / ".github/workflows" / name).read_text(encoding="utf-8"))
+
+
+def board(fx, number):
+    path = fx / "comments" / str(number) / "board.md"
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    m = re.search(r"<!-- dx-state v1 (.*?) -->", text, re.S)
+    data = json.loads(m.group(1)) if m else {}
+    data.pop("sha256", None)
+    return data
+
+
+class World:
+    """Issue #7 of o/r and its autopilot draft #8, at its cap of 5 runs, with
+    `needs-human` on it: gh stood in, logging what is written."""
+
+    def __init__(self, tmp_path, monkeypatch, runs=5, extensions=(), comments=()):
+        self.fx = tmp_path / "fx"
+        self.fx.mkdir()
+        self.calls = []
+        self.comments = list(comments)
+        monkeypatch.setenv("RECEIPTS_FIXTURE", str(self.fx))
+        monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+        monkeypatch.setenv("DX_BOT_APP", "dilux-bot")
+        monkeypatch.setenv("DX_BOT_LOGIN", "dilux-bot[bot]")
+        monkeypatch.setenv("NUMBER", "7")
+        monkeypatch.delenv("PR", raising=False)
+        monkeypatch.delenv("DX_IO", raising=False)
+        monkeypatch.delenv("REPO_AUTONOMY", raising=False)
+        self.ap = ap = autopilot()
+        state = {"runs": [{"n": n, "free": False} for n in range(1, runs + 1)]}
+        if extensions:
+            state["extensions"] = list(extensions)
+        ap.set_board("o/r", 8, "pr", **state)
+
+        def fake_gh(*args, input_text=None):
+            line = " ".join(str(a) for a in args)
+            self.calls.append(line)
+            if args[:2] == ("issue", "view"):
+                return json.dumps({"url": ISSUE_URL, "comments": self.comments, "closedByPullRequestsReferences": [{"number": 8}]})
+            if args[:2] == ("pr", "view"):
+                return json.dumps({"state": "OPEN", "labels": [{"name": "autopilot"}, {"name": "needs-human"}], "author": {"login": BOT}})
+            return ""
+
+        monkeypatch.setattr(ap, "gh", fake_gh)
+        monkeypatch.setattr(ap, "refresh_board", lambda repo, number: None)
+        self.tmp = tmp_path
+        self.monkeypatch = monkeypatch
+
+    def more(self, login, allowed, body="/autopilot more"):
+        (self.tmp / "comment.md").write_text(body, encoding="utf-8")
+        self.monkeypatch.setenv("LOGIN", login)
+        self.monkeypatch.setenv("ALLOWED", allowed)
+        self.monkeypatch.setenv("COMMENT", str(self.tmp / "comment.md"))
+        self.monkeypatch.setenv("COMMENT_URL", COMMENT_URL)
+        return self.ap.main(["more"])
+
+    def replies(self):
+        return [c for c in self.calls if c.startswith("issue comment 7")]
+
+
+# --- C2: a decider's `/autopilot more` --------------------------------------
+
+def test_c2_the_cap_reads_the_pull_requests_extensions():
+    ap = autopilot()
+    runs_cap = getattr(ap, "runs_cap", None)
+    assert callable(runs_cap), "autopilot.py has no runs_cap"
+    one = {"by": "boss", "at": "2026-11-19T10:00:00Z", "comment": COMMENT_URL}
+    assert runs_cap(5, {}) == 5
+    assert runs_cap(5, {"extensions": [one]}) == 10
+    assert runs_cap(5, {"extensions": [one, one]}) == 15
+    # Each extension adds the policy's own number (the Spec's choice a).
+    assert runs_cap(3, {"extensions": [one]}) == 6
+    # Never past two, whatever a board says.
+    assert runs_cap(5, {"extensions": [one, one, one]}) == 15
+
+
+def test_c2_the_planner_extends_a_pull_request_at_its_cap():
+    ap = autopilot()
+    more_plan = getattr(ap, "more_plan", None)
+    assert callable(more_plan), "autopilot.py has no more_plan"
+    plan = more_plan(True, {"runs": [{"n": n, "free": False} for n in range(1, 6)]}, True, 5, True, False)
+    assert plan["go"] is True and plan["cap"] == 10
+
+
+def test_c2_a_decider_extends_it_and_the_next_run_starts(tmp_path, monkeypatch):
+    w = World(tmp_path, monkeypatch)
+    assert w.more("boss", "0", "/autopilot more\nTry the other fixture first.") == 0
+    st = board(w.fx, 8)
+    assert st["extensions"] == [{"by": "boss", "at": st["extensions"][0]["at"], "comment": COMMENT_URL}]
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", st["extensions"][0]["at"])
+    # The runs on its board are as they were; its cap is now 10.
+    assert w.ap.run_numbers(st)[1] == 5 and w.ap.runs_cap(5, st) == 10
+    body = "<!-- dx-checklist -->\n- [ ] **C1** x\n<!-- /dx-checklist -->\n"
+    assert w.ap.may_continue(["autopilot"], body, w.ap.run_numbers(st)[1], w.ap.runs_cap(5, st))[0] is True
+    # needs-human off the pull request, the bot's continue on the issue, and
+    # no `answered`: the run counts against the new cap.
+    assert any(c.startswith("pr edit 8") and "--remove-label needs-human" in c for c in w.calls)
+    assert any(c.startswith("issue edit 7") and "--add-label autopilot:continue" in c for c in w.calls)
+    assert "answered" not in board(w.fx, 7)
+    assert len(w.replies()) == 1 and "10" in w.replies()[0]
+
+
+def test_c2_the_rest_of_the_comment_is_the_next_runs_hint():
+    ap = autopilot()
+    cap = {"body": ap.cap_comment("the autopilot already ran 5 times on it (the cap is 5)"), "createdAt": "2026-11-19T09:00:00Z", "author": {"login": BOT}}
+    before = {"body": "an old hint, before the cap", "createdAt": "2026-11-19T08:00:00Z", "author": {"login": "boss"}}
+    more = {"body": "/autopilot more\nTry the other fixture first.", "createdAt": "2026-11-19T10:00:00Z", "author": {"login": "boss"}}
+    # A hint before the cap, which no run read, comes in too (#857).
+    said = ap.answers([before, cap, more], {"boss"})
+    assert said == "boss: an old hint, before the cap\n\nboss: Try the other fixture first."
+    # On the same line too; with no rest, nothing.
+    assert ap.answers([cap, dict(more, body="/autopilot more use the fixture")], {"boss"}) == "boss: use the fixture"
+    assert ap.answers([cap, dict(more, body="/autopilot more")], {"boss"}) == ""
+    # Someone who does not decide gives no hint.
+    assert ap.answers([cap, dict(more, author={"login": "fork-dev"})], {"boss"}) == ""
+
+
+def test_c2_the_more_job_reads_it_on_an_issue():
+    jobs = wf("issue-claim.yml")["jobs"]
+    assert "more" in jobs, "issue-claim.yml has no `more` job"
+    more = jobs["more"]
+    cond = more["if"]
+    assert "github.event_name == 'issue_comment'" in cond and "!github.event.issue.pull_request" in cond
+    assert "startsWith(github.event.comment.body, '/autopilot more')" in cond
+    assert "github.event.comment.user.type != 'Bot'" in cond
+    # "still on it" inside a hint never extends a claim.
+    assert "!startsWith(github.event.comment.body, '/autopilot more')" in jobs["claim"]["if"]
+    assert more["permissions"] == {} and more["runs-on"].startswith("ubuntu-latest")
+    token = next(s for s in more["steps"] if s.get("id") == "bot")["with"]
+    assert token["permission-issues"] == "write" and token["permission-pull-requests"] == "write" and token["permission-contents"] == "read"
+    assert not any(k.startswith("permission-") and k not in ("permission-issues", "permission-pull-requests", "permission-contents") for k in token)
+    run = next(s for s in more["steps"] if s.get("id") == "more")["run"]
+    assert 'deciders.py may continue "$LOGIN"' in run and "autopilot.py more" in run
+    # Untrusted text from the event's file, never an expression in the script.
+    assert "${{" not in run
+
+
+# --- C3: someone `who-decides` does not allow -------------------------------
+
+def test_c3_the_planner_gives_no_run_and_answers_once():
+    ap = autopilot()
+    st = {"runs": [{"n": n, "free": False} for n in range(1, 6)]}
+    assert ap.more_plan(False, st, True, 5, True, False) == {"go": False, "reply": "refused", "cap": None}
+    assert ap.more_plan(False, st, True, 5, True, True) == {"go": False, "reply": "", "cap": None}
+
+
+def test_c3_a_contributor_gets_one_reply_and_the_board_is_unchanged(tmp_path, monkeypatch):
+    w = World(tmp_path, monkeypatch)
+    before = board(w.fx, 8)
+    assert w.more("fork-dev", "1", "/autopilot more\nplease, just one more") == 0
+    assert board(w.fx, 8) == before and "extensions" not in board(w.fx, 8)
+    # No run: no label moved, nothing on the pull request.
+    assert not any("--add-label" in c or "--remove-label" in c for c in w.calls)
+    assert not any(c.startswith(("pr edit", "pr comment")) for c in w.calls)
+    [reply] = w.replies()
+    assert "<!-- dx-autopilot-more-refused -->" in reply
+    assert "A maintainer decides" in reply and ISSUE_URL in reply
+    assert reply.rstrip().endswith("🤖 AI-generated · Claude Opus 5.5 (Anthropic)")
+
+
+def test_c3_a_repeat_gets_no_second_reply(tmp_path, monkeypatch):
+    ap = autopilot()
+    said = {"body": ap.more_reply("refused", ISSUE_URL), "createdAt": "2026-11-19T10:00:00Z", "author": {"login": BOT}}
+    w = World(tmp_path, monkeypatch, comments=[said])
+    before = board(w.fx, 8)
+    assert w.more("fork-dev", "1") == 0
+    assert w.replies() == [] and board(w.fx, 8) == before
+    assert not any("--add-label" in c or "--remove-label" in c for c in w.calls)
+
+
+def test_c3_who_decides_unread_is_never_a_yes(tmp_path, monkeypatch):
+    w = World(tmp_path, monkeypatch)
+    before = board(w.fx, 8)
+    assert w.more("boss", "2") == 0
+    assert board(w.fx, 8) == before
+    assert not any("--add-label" in c or "--remove-label" in c for c in w.calls)
+    [reply] = w.replies()
+    assert "dx-autopilot-more-refused" not in reply
+
+
+def test_an_unexpected_deciders_exit_is_could_not_tell_not_a_no(tmp_path, monkeypatch):
+    # 1 is deciders.py's documented no; any other code (a signal's 137,
+    # one it never gives) is "could not tell", never a refusal whose
+    # marker would silence later replies.
+    for rc in ("137", "3", "-1"):
+        (tmp_path / rc).mkdir()
+        w = World(tmp_path / rc, monkeypatch)
+        before = board(w.fx, 8)
+        assert w.more("boss", rc) == 0
+        assert board(w.fx, 8) == before
+        [reply] = w.replies()
+        assert "dx-autopilot-more-refused" not in reply
+
+
+def test_a_continue_that_fails_leaves_the_board_as_before_and_a_repeat_extends(tmp_path, monkeypatch):
+    w = World(tmp_path, monkeypatch)
+    before = board(w.fx, 8)
+    plain = w.ap.gh
+
+    def failing(*args, input_text=None):
+        if args[:2] == ("issue", "edit") and "autopilot:continue" in args:
+            w.calls.append(" ".join(args))
+            raise RuntimeError("API rate limit exceeded")
+        return plain(*args, input_text=input_text)
+
+    monkeypatch.setattr(w.ap, "gh", failing)
+    try:
+        w.more("boss", "0")
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("a continue that could not be added must fail the job")
+    # The extension is not recorded, and needs-human is back on the pull
+    # request, so the stop is still one a maintainer can answer.
+    assert board(w.fx, 8) == before
+    assert any(c.startswith("pr edit 8") and "--add-label needs-human" in c for c in w.calls)
+    assert w.replies() == []
+    # The same comment again: the pull request is still at its cap, so it
+    # is extended this time, not refused as "below".
+    monkeypatch.setattr(w.ap, "gh", plain)
+    assert w.more("boss", "0") == 0
+    assert len(board(w.fx, 8)["extensions"]) == 1
+    assert any(c.startswith("issue edit 7") and "autopilot:continue" in c for c in w.calls)
+    assert "not at its cap" not in w.replies()[-1]
+
+
+# --- C4: two extensions already ---------------------------------------------
+
+TWO = [{"by": "boss", "at": "2026-11-19T10:00:00Z", "comment": COMMENT_URL}, {"by": "boss", "at": "2026-11-20T10:00:00Z", "comment": COMMENT_URL}]
+
+
+def test_c4_the_planner_refuses_a_third():
+    ap = autopilot()
+    st = {"runs": [{"n": n, "free": False} for n in range(1, 16)], "extensions": TWO}
+    plan = ap.more_plan(True, st, True, 5, True, False)
+    assert plan["go"] is False and plan["reply"] == "spent" and plan["cap"] == 15
+
+
+def test_c4_a_third_is_refused_naming_claim_and_closing(tmp_path, monkeypatch):
+    w = World(tmp_path, monkeypatch, runs=15, extensions=TWO)
+    before = board(w.fx, 8)
+    assert w.more("boss", "0", "/autopilot more\none more, please") == 0
+    assert board(w.fx, 8) == before and len(board(w.fx, 8)["extensions"]) == 2
+    assert not any("--add-label" in c or "--remove-label" in c for c in w.calls)
+    [reply] = w.replies()
+    assert "`/claim`" in reply and "closes the pull request" in reply
+
+
+def test_c4_a_pull_request_below_its_cap_or_with_a_board_edited_by_hand_gets_none(tmp_path, monkeypatch):
+    ap = autopilot()
+    assert ap.more_plan(True, {"runs": [{"n": 1, "free": False}]}, True, 5, False, False)["reply"] == "below"
+    assert ap.more_plan(True, {}, False, 5, True, False)["reply"] == "hand"
+    w = World(tmp_path, monkeypatch, runs=3)
+    assert w.more("boss", "0") == 0
+    assert "extensions" not in board(w.fx, 8)
+    assert not any("--add-label" in c or "--remove-label" in c for c in w.calls)
+    [reply] = w.replies()
+    assert "not at its cap" in reply
+
+
+# --- C5: the policy's number stays 5 ----------------------------------------
+
+def test_c5_autopilot_runs_is_still_5_and_its_comment_names_the_way_past_it():
+    text = (ROOT / "policy/autonomy.yml").read_text(encoding="utf-8")
+    assert yaml.safe_load(text)["autopilot-runs"] == 5
+    lines = text.splitlines()
+    at = next(i for i, l in enumerate(lines) if l.startswith("autopilot-runs:"))
+    comment = []
+    for l in reversed(lines[:at]):
+        if not l.startswith("#"):
+            break
+        comment.insert(0, l)
+    assert "`/autopilot more" in " ".join(comment), "autopilot-runs' comment does not name /autopilot more"
+
+
+def test_c5_the_cap_message_says_how_a_maintainer_gives_more_runs():
+    ap = autopilot()
+    assert "`/autopilot more <hint>`" in ap.cap_comment("the autopilot already ran 5 times on it (the cap is 5)")
+    # Its extensions spent, the comment no longer offers one.
+    assert "/autopilot more" not in ap.cap_comment("the autopilot already ran 15 times on it (the cap is 15)", 5, False)
+    # The issue's comment, while extensions are left, offers it too.
+    assert "`/autopilot more <hint>`" in ap.open_to_claim(5, True) and "`/claim`" in ap.open_to_claim(5, True)
+
+
+def test_a_comment_that_only_starts_like_the_command_does_nothing(tmp_path, monkeypatch):
+    w = World(tmp_path, monkeypatch)
+    before = board(w.fx, 8)
+    assert w.more("boss", "0", "/autopilot moreover, a thought") == 0
+    assert board(w.fx, 8) == before and w.replies() == []
+    assert not any("--add-label" in c or "--remove-label" in c for c in w.calls)
+
+
+# --- The review's minors (#857) ---------------------------------------------
+
+def test_past_the_second_extension_the_issue_is_told_only_claim_and_closing(tmp_path, monkeypatch):
+    ap = autopilot()
+    # The pull request's cap comment and the issue's, from the same words.
+    spent = ap.cap_comment("the autopilot already ran 15 times on it (the cap is 15)", 5, False)
+    assert "`/claim`" in spent and "closes the pull request" in spent
+    left = ap.open_to_claim(5, True)
+    assert "`/autopilot more <hint>`" in left and "`/claim`" in left
+    none_left = ap.open_to_claim(5, False)
+    assert "/autopilot more" not in none_left
+    assert "`/claim`" in none_left and "closes the pull request" in none_left
+    assert none_left.rstrip().endswith("🤖 AI-generated · Claude Opus 5.5 (Anthropic)")
+    # `cap-comment --issue` reads the pull request's board.
+    w = World(tmp_path, monkeypatch, runs=15, extensions=TWO)
+    monkeypatch.setenv("PR", "8")
+    import contextlib
+    import io
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        assert w.ap.main(["cap-comment", "--issue", "the cap is 15"]) == 0
+    said = out.getvalue()
+    assert said.startswith("The autopilot reached its") and "/autopilot more" not in said and "`/claim`" in said
+    # The workflow posts that text on the issue at the runs cap; its own
+    # OPEN_TO_CLAIM (the rounds cap, and scripts older than it) offers no
+    # `/autopilot more`, which gives nothing there.
+    text = (ROOT / ".github/workflows/autopilot.yml").read_text(encoding="utf-8")
+    assert "autopilot.py cap-comment --issue" in text
+    env = next(st["env"] for st in wf("autopilot.yml")["jobs"]["prep"]["steps"] if "OPEN_TO_CLAIM" in (st.get("env") or {}))
+    assert "/autopilot more" not in env["OPEN_TO_CLAIM"] and "`/claim`" in env["OPEN_TO_CLAIM"]
+
+
+def test_the_sweep_has_no_board_plumbing_that_nothing_feeds():
+    import inspect
+    ap = autopilot()
+    assert "pr_board" not in inspect.signature(ap.sweep_step).parameters
+    assert "pr_board" not in (ROOT / "scripts/autopilot.py").read_text(encoding="utf-8")
+    assert "pr_board" not in (ROOT / ".github/workflows/autopilot-sweep.yml").read_text(encoding="utf-8")
+
+
+def test_who_decides_unread_is_said_once(tmp_path, monkeypatch):
+    ap = autopilot()
+    said = {"body": ap.more_reply("unread", ISSUE_URL, unread="x"), "createdAt": "2026-11-19T10:00:00Z", "author": {"login": BOT}}
+    assert said["body"].startswith(ap.MORE_UNREAD)
+    w = World(tmp_path, monkeypatch, comments=[said])
+    assert w.more("boss", "2") == 0
+    assert w.replies() == []
+    # It silences no other answer: a refusal after it is still said.
+    assert w.more("fork-dev", "1") == 0
+    assert len(w.replies()) == 1 and "dx-autopilot-more-refused" in w.replies()[0]
+
+
+def test_a_hint_before_the_cap_and_the_more_both_reach_the_next_run():
+    ap = autopilot()
+    stop = {"body": ap.STOP + " Stopped.", "createdAt": "2026-11-19T07:00:00Z", "author": {"login": BOT}}
+    stale = {"body": "a hint the last run had", "createdAt": "2026-11-19T06:00:00Z", "author": {"login": "boss"}}
+    hint = {"body": "The failing test is t.py", "createdAt": "2026-11-19T08:00:00Z", "author": {"login": "boss"}}
+    cap = {"body": ap.cap_comment("the cap is 5"), "createdAt": "2026-11-19T09:00:00Z", "author": {"login": BOT}}
+    more = {"body": "/autopilot more\nTry the other fixture first.", "createdAt": "2026-11-19T10:00:00Z", "author": {"login": "boss"}}
+    assert ap.answers([stale, stop, hint, cap, more], {"boss"}) == "boss: The failing test is t.py\n\nboss: Try the other fixture first."

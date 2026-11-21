@@ -32,8 +32,9 @@ complete feature, and its `{files}` the files of its diff, one
 `comment`, `label`, `unlabel`, `edit`, `push`, `dispatch`, `retitle` (the
 title of the pull request it observes, an issue's the autopilot's, #699),
 and `until`,
-an `expect` polled every 50 seconds (#726: every scenario at once shares
-the test identity's 5000 requests an hour) on its issue or pull request, or with
+an `expect` polled every 75 seconds (#726: every scenario at once shares
+the test identity's 5000 requests an hour, #878: with their setup, cleanup
+and retry) on its issue or pull request, or with
 `of: before` on its first `before` issue, never a fixed wait: #694; a
 `comment` or a `label` with `of: before` acts on that issue too, #713; a
 file is written in a commit GitHub signs, `createCommitOnBranch` (#709); a
@@ -123,7 +124,22 @@ after GitHub's back-off within the scenario's limit, then named.
         ref, each one first deleting its leftover `scenario/<id>` branch
         and closing the issues and pull requests an earlier run of it left
         (the `dx-scenario: <id>` mark first in every body it opens), and
-        again after (#694); their table to FILE; exits 1 when one fails
+        again after (#694); a scenario that failed is played once more
+        (#843, `retried`) within what is left of N minutes, the player's
+        own deadline below the play step's timeout (#878), less the first
+        attempt's own time (RETRY_ALLOWANCE minutes at least) and a poll,
+        and passing then is `flaky`, its row
+        `pass (flaky: <first why>)`, which fails nothing; with less than
+        a minute left it is not, and says so; a transient `gh` error is
+        retried within it (#878, `patient`); their table to FILE, written
+        before the first attempt and after each, a scenario not ended yet
+        a failing `infrastructure` row (ENDED), and again on a SIGTERM
+        or SIGINT, so a step killed in the middle still leaves it; exits
+        1 when one fails. Each row keeps in `triggered` (#843) the pairs
+        its runs triggered (`run_triggered`, read once at its end). A
+        failing row says its `class` (#843, CLASSES:
+        engine, harness or infrastructure), which release-lane.py files
+        each its own way
   release-scenarios.py merge --dir DIR --groups JSON --job NAME=RESULT ...
                              --out FILE [--run URL] [--minutes N]
                              [--play-minutes M]
@@ -133,7 +149,10 @@ after GitHub's back-off within the scenario's limit, then named.
         file is missing (its job failed, timed out or was cancelled), a
         scenario with no row, and a job whose RESULT is not success (a play
         job's naming its timeout of N minutes, and its play step's of M,
-        #690); exits 1 when a row fails
+        #690), then the pairs no row's runs triggered (#843,
+        `run_coverage`: "Pairs no scenario triggered: …", a warning that
+        fails nothing, never counting `covers:`, which `coverage` reads as
+        each scenario's plan); exits 1 when a row fails
   release-scenarios.py run --repo OWNER/NAME [--ref v7-next] [--only ID ...]
                            [--out FILE] [--minutes N]
         moves the test repository's callers to the ref through a pull
@@ -474,11 +493,19 @@ def preconditions(scenarios, bodies, pack, can_dispatch=(), passes=None, types=N
     report), and (#760) a pull request whose description, `pull_text` of
     its body, would not name every file of its diff (`pull_files`), its
     body with no `{files}` among them, or the one it lands on main
-    through, of the `pull` body. Pure."""
+    through, of the `pull` body, and (#881) an issue or a pull request
+    whose body names another scenario's file (`scenarios/<other>/`): the
+    triage reads it as that scenario's report, a `duplicate`. Pure."""
     import fnmatch
     out = []
     for s in scenarios:
         sid, expect, opens = s.get("id") or "?", s.get("expect") or {}, s.get("opens") or {}
+        for kind in ("issue", "pull"):
+            if kind in opens:
+                body = body_of((opens[kind] or {}).get("body"), bodies)
+                for other in sorted(set(re.findall(r"scenarios/([A-Za-z0-9_-]+)/", body)) - {sid}):
+                    out.append(f"scenario {sid}: its {kind}'s body names scenarios/{other}/, another scenario's file, "
+                               f"so the triage reads it as that scenario's report (a duplicate)")
         # #696: `count` is {marker: how many comments carry it}.
         count = expect.get("count")
         if count is not None and (not isinstance(count, dict) or not count
@@ -685,8 +712,9 @@ def by_hand(expect, seen):
 
 # Every wait polls its state (#694): never a fixed sleep. Every scenario
 # polls at once with the test identity's token (#726), which GitHub allows
-# RATE_LIMIT requests an hour: `poll_budget` stays under it.
-POLL = 50
+# RATE_LIMIT requests an hour: `call_budget`, its polls with (#878) every
+# scenario's setup, cleanup and retry, stays under it at 75 seconds.
+POLL = 75
 RATE_LIMIT = 5000
 # A scenario's limit, in minutes: its own `minutes`, or LIMIT; none past
 # MAX_LIMIT, which the play step's timeout-minutes in release-lane.yml
@@ -762,11 +790,52 @@ def poll_budget(scenarios):
     return sum(calls(s) * 3600 // POLL for s in scenarios)
 
 
-def timing(scenarios):
+# The attempts a scenario can take in a play step (#843: one retry).
+ATTEMPTS = 2
+
+
+def setup_calls(s, bodies=None):
+    """The `gh` calls one attempt of the scenario `s` makes besides its
+    polls (#878), as `_play` makes them: its `clear` before and after (its
+    branches deleted, the lane's leftovers and the two searches), each
+    issue it opens (its creation, comments and labels) and its cleanup (the
+    view, the pull request that closes it, its close and lock), its pull
+    request (its branch, its file, its creation, from a fork its fork and
+    login), each land on main (its branch, its file, its pull request, its
+    close), each step, and the read of the runs it triggered. Pure."""
+    sid, opens, bodies = s.get("id") or "?", s.get("opens") or {}, bodies or {}
+    lands = [str(b["lands"]) for b in s.get("before") or [] if isinstance(b, dict) and "lands" in b]
+    cleared = len(dict.fromkeys([f"scenario/{sid}", branch_of(s)] + [landing(sid, a) for a in (*LANDS, *lands)])) + 3
+    n = 2 * cleared + 2
+    for spec, _ in opened_issues(s, bodies):
+        first = spec.get("comments") or []
+        n += 1 + len(first) + (1 if first and spec.get("labels") else 0) + 4
+    landed = len(lands) + sum(1 for st in s.get("steps") or [] if isinstance(st, dict) and st.get("push") in LANDS)
+    n += 7 * landed + len(lands)
+    if "pull" in opens:
+        n += 7 + (2 if (opens.get("pull") or {}).get("fork") else 0)
+    for st in s.get("steps") or []:
+        if not isinstance(st, dict):
+            continue
+        verb = next((k for k in st if k != "of"), None)
+        looked = 3 if "issue" in opens and verb in ("retitle", "push") else 0
+        n += looked + (2 if verb == "push" and st.get("push") != "behind" else 0 if verb in ("push", "until", "wait") else 1)
+    return n
+
+
+def call_budget(scenarios, bodies=None):
+    """The `gh` calls an hour every scenario played at once makes (#878):
+    its polls (`poll_budget`) and, for each of its ATTEMPTS, its setup and
+    cleanup (`setup_calls`). Pure."""
+    return poll_budget(scenarios) + sum(ATTEMPTS * setup_calls(s, bodies) for s in scenarios)
+
+
+def timing(scenarios, bodies=None):
     """What is wrong with the plan's waits (#694): a fixed `wait` step
     (every wait is an `until` that polls its state), an `until` that names
     no expectation, a limit past MAX_LIMIT minutes, and (#726) polls that,
-    every scenario at once, pass the test identity's RATE_LIMIT. Pure."""
+    every scenario at once, with (#878) the setup, cleanup and retry of
+    each (`call_budget`), pass the test identity's RATE_LIMIT. Pure."""
     out = []
     for s in scenarios:
         sid = s.get("id") or "?"
@@ -777,8 +846,9 @@ def timing(scenarios):
                 out.append(f"scenario {sid}: an `until` with no expectation")
         if limit(s) > MAX_LIMIT:
             out.append(f"scenario {sid}: its limit is {limit(s)} minutes, past {MAX_LIMIT}")
-    if poll_budget(scenarios) > RATE_LIMIT:
-        out.append(f"the plan's {len(scenarios)} scenarios poll GitHub {poll_budget(scenarios)} times an hour, every {POLL} seconds, past the test identity's {RATE_LIMIT}")
+    calls = call_budget(scenarios, bodies)
+    if calls > RATE_LIMIT:
+        out.append(f"the plan's {len(scenarios)} scenarios call GitHub {calls} times an hour, polling every {POLL} seconds, with their setup, cleanup and retry, past the test identity's {RATE_LIMIT}")
     return out
 
 
@@ -787,6 +857,9 @@ def table(results):
     lines = ["| Scenario | Result | Run |", "| --- | --- | --- |"]
     for r in results:
         why = f" ({'; '.join(r['why'])})" if r.get("why") else ""
+        if r.get("ok") and r.get("flaky"):
+            # #843: it failed, then passed on its retry.
+            why = f" (flaky: {'; '.join(r.get('first_why') or []) or 'failed once'})"
         lines.append(f"| `{r['id']}` | {'pass' if r['ok'] else 'fail'}{why} | {r.get('run') or ''} |")
     return "\n".join(lines) + "\n"
 
@@ -1064,6 +1137,33 @@ def backoff(e, tries, now=None):
     return min(POLL * 2 ** tries, 120)
 
 
+# How many times `patient` retries a transient `gh` error (#878).
+GH_TRIES = 3
+
+
+def patient(run, sleep=None, deadline=None, clock=None):
+    """`run` retrying a transient `gh` error (#878, `transient`) after its
+    `backoff`, up to GH_TRIES times and never past `deadline` (on `clock`):
+    a rate limit or a 5xx in a scenario's setup or cleanup is waited out,
+    not a failure at once. Any other error, or one past its tries or the
+    deadline, is raised as it came."""
+    sleep = sleep or time.sleep
+    clock = clock or time.monotonic
+
+    def call(*args, **kw):
+        tries = 0
+        while True:
+            try:
+                return run(*args, **kw)
+            except GhError as e:
+                wait = backoff(e, tries)
+                if not transient(e) or tries >= GH_TRIES or (deadline is not None and clock() + wait > deadline):
+                    raise
+                sleep(wait)
+                tries += 1
+    return call
+
+
 def run_mark(env=None, now=None, rand=None):
     """The id of this run of the lane (#778), which every text `play` writes
     under scenarios/<id>/ carries: `GITHUB_RUN_ID-GITHUB_RUN_ATTEMPT` in the
@@ -1085,12 +1185,136 @@ def scenario_text(sid, name, where, run_id):
     its pull request with no diff, and on the head another than on main, so
     `conflict` conflicts. Pure."""
     text = f"{name} on {where}, scenario {sid}, run {run_id}\n"
-    # #699 C5: `token` carries one, a fake no service issues, which the
-    # test repository's review profile blocks on.
-    return text + (f"DX_API_TOKEN=dxfake_{re.sub(r'[^A-Za-z0-9]', '', str(run_id))}\n" if name == "token" else "")
+    # #699 C5: `token` carries one no service issues, which the test
+    # repository's review profile blocks on. #882: it has a real
+    # credential's shape, a live-style key of 32 base62 characters of its
+    # own per run, with no "fake" in it: a value that reads as visibly fake
+    # the review lists as a minor and never blocks on, so `settled-rerun`
+    # had nothing to re-run. No prefix GitHub's secret scanning knows (no
+    # ghp_, AKIA or sk_live_), so writing it is never refused.
+    return text + (f"DX_API_TOKEN=dx_live_{live_key(sid, run_id)}\n" if name == "token" else "")
 
 
-def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, types=None, run_id=None):
+BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+
+def live_key(sid, run_id, size=32):
+    """SIZE base62 characters from a sha256 of the scenario `sid` and the
+    run `run_id` (#882): high-entropy, its own per run. Pure."""
+    import hashlib
+    n = int.from_bytes(hashlib.sha256(f"{sid}\n{run_id}".encode()).digest(), "big")
+    out = []
+    for _ in range(size):
+        n, r = divmod(n, 62)
+        out.append(BASE62[r])
+    return "".join(out)
+
+
+# What failed a scenario (#843), a failing row's `class`, set where the row
+# is made (scripts/release-lane.py files each its own way): `engine`, its
+# `until` or `expect` did not hold, or could no longer, against what the
+# engine did; `harness`, the player itself (an exception that is no `gh`
+# error, a fixture or body missing, a group or a result missing, the
+# callers' move, a `before` or a land that did not hold before the engine
+# acted); `infrastructure`, GitHub failing or rate limited until the
+# scenario's time ran out, a play job cancelled or past its timeout, a group
+# that left no results, a run GitHub held or never started.
+CLASSES = ("engine", "harness", "infrastructure")
+
+
+def blocked(seen):
+    """Whether what a poll saw is GitHub's doing, not the engine's (#843): a
+    run on the head GitHub holds for approval, or a check that never
+    started (`startup_failure`). Pure."""
+    seen = seen or {}
+    return bool(seen.get("held")) or "startup_failure" in (seen.get("checks") or {}).values()
+
+
+def caller_pairs(root=ROOT, pack=None):
+    """{caller's file name: its pairs} for the test repository's callers
+    (#843), each file's `pairs` alone, so a run maps through the caller at
+    its `path`. Pure but for reading the files."""
+    out = {}
+    for pattern in test_callers(test_pack(root) if pack is None else pack):
+        for path in sorted(glob.glob(os.path.join(root, pattern))):
+            out[os.path.basename(path)] = {p for p in pairs(root, (os.path.relpath(path, root),)) if p.rsplit(":", 1)[1] not in UNPLAYABLE}
+    return out
+
+
+def run_triggered(runs, sid, titles, branches, wired, start, end):
+    """The pairs the runs of the test repository (as the runs API lists
+    them: path, event, display_title, head_branch, created_at) triggered
+    for the scenario `sid` (#843): those created between `start` and `end`
+    (ISO times) that belong to it (a title that ends with `[<sid>]` or is
+    one of `titles`, the pull requests it observed, or a head branch among
+    `branches`, its own and theirs), each through the caller at its `path`
+    (`wired`, `caller_pairs`) and its event. Sorted. Pure."""
+    out = set()
+    for r in runs:
+        if not isinstance(r, dict):
+            continue
+        at = str(r.get("created_at") or "")
+        if at and not (start <= at <= end):
+            continue
+        title, branch = str(r.get("display_title") or ""), str(r.get("head_branch") or "")
+        if not (title.endswith(f"[{sid}]") or title in titles or branch in branches):
+            continue
+        name, event = os.path.basename(str(r.get("path") or "").split("@", 1)[0]), str(r.get("event") or "")
+        out |= {p for p in wired.get(name, ()) if p.rsplit(":", 1)[1] == event}
+    return sorted(out)
+
+
+def run_coverage(rows, wanted):
+    """The workflow pairs of `wanted` no row triggered (#843): counted from
+    each row's `triggered`, what its runs did, never its `covers:`, which
+    stays its plan (`coverage`). A transition or a step of the flow is no
+    workflow pair, and is never named here. Sorted. Pure."""
+    done = {p for r in rows if isinstance(r, dict) for p in r.get("triggered") or []}
+    return sorted(w for w in wanted if not str(w).startswith(STATIC) and w not in done)
+
+
+def runs_json(text):
+    """The items of `gh api --paginate --jq` output, one JSON array per
+    page: every page's, joined. Pure."""
+    out, at, decoder = [], 0, json.JSONDecoder()
+    text = text or ""
+    while True:
+        while at < len(text) and text[at].isspace():
+            at += 1
+        if at >= len(text):
+            return out
+        value, at = decoder.raw_decode(text, at)
+        out.extend(value if isinstance(value, list) else [value])
+
+
+def now_iso():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, types=None, run_id=None, wired=None):
+    """`_play`, and then, once (#843), the runs of `repo` created since it
+    started that belong to it, in its row's `triggered` (`run_triggered`,
+    through `wired`, `caller_pairs` when None); a read that fails leaves
+    no `triggered`, never a failure."""
+    start, seen = now_iso(), {"titles": set(), "branches": {branch_of(s)}}
+    row = _play(s, repo, ref, bodies, run, sleep, minutes, fork, types, run_id, seen)
+    if seen.get("tidy") is not None:
+        # #878: its cleanup failed: GitHub's when transient, else the
+        # player's.
+        e = seen["tidy"]
+        row = {"id": s["id"], "ok": False, "why": list(row.get("why") or []) + [f"its cleanup failed: {e}"], "run": row.get("run", ""),
+               "class": "infrastructure" if transient(e) else "harness"}
+    end = now_iso()
+    try:
+        runs = runs_json(run("api", "--paginate", f"repos/{repo}/actions/runs?created=>={start}&per_page=100",
+                             "--jq", "[.workflow_runs[] | {path, event, display_title, head_branch, created_at}]"))
+        row["triggered"] = run_triggered(runs, s["id"], seen["titles"], seen["branches"], caller_pairs() if wired is None else wired, start, end)
+    except (RuntimeError, ValueError, OSError):
+        pass
+    return row
+
+
+def _play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, types=None, run_id=None, observed=None):
     """One scenario in `repo`: clears what an earlier run of it left
     (`clear`), opens what it opens (its `before` first), takes its steps,
     polls until its `expect` holds or `minutes` pass, then cleans up and
@@ -1103,6 +1327,16 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
     spec = opens.get("pull") or opens.get("issue") or {}
     sid, own = s["id"], branch_of(s)
     left = [min(minutes, limit(s)) * 60]
+    # #843: set once `look` ran out of time with `gh` still failing.
+    gone = [False]
+
+    def failed(why, url, cls="engine", seen=None):
+        """A failing row of its class: GitHub's (`infrastructure`) whatever
+        the step when `gh` kept failing or a run was held or never
+        started."""
+        if gone[0] or blocked(seen):
+            cls = "infrastructure"
+        return {"id": sid, "ok": False, "why": why, "run": url, "class": cls}
 
     def look(on, want=None, closes=None):
         """`on` observed, a transient `gh` error (#698: a rate limit, a
@@ -1117,6 +1351,11 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
         while True:
             try:
                 seen = observe(repo, on[0], on[1], run, heads(want))
+                pull = seen.get("pull") or {}
+                if observed is not None:
+                    # #843: the pull requests it observed, whose runs are its.
+                    observed["titles"] |= {str(pull["title"])} if pull.get("title") else set()
+                    observed["branches"] |= {str(pull["branch"])} if pull.get("branch") else set()
                 if closes:
                     seen["closes"] = closes
                 if rest != (want or {}) and not holds(rest, seen):
@@ -1127,6 +1366,7 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
                 if not transient(e):
                     raise
                 if left[0] <= 0:
+                    gone[0] = True
                     return None, f"{str(e).split(': ', 1)[0]} rate limited or failing at GitHub until the scenario's time ran out: {str(e).split(': ', 1)[-1][:200]}"
                 wait = min(backoff(e, tries), max(left[0], 1))
                 sleep(wait)
@@ -1189,7 +1429,7 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
                 if there != content:
                     why = land(str(first["lands"]), path, content)
                     if why:
-                        return {"id": sid, "ok": False, "why": [w.replace("push ", "before: lands ", 1) for w in why], "run": ""}
+                        return failed([w.replace("push ", "before: lands ", 1) for w in why], "", "harness")
                 continue
             befores.append(open_issue(repo, first.get("issue") or {}, bodies, f"{sid}: before", run, sid, types))
             made.append(("issue", befores[-1]))
@@ -1241,7 +1481,7 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
                     seen, failing = look((what, number))
                     target = ((seen or {}).get("pull") or {}).get("number")
                     if not target:
-                        return {"id": sid, "ok": False, "why": [failing or f"retitle: no pull request closes #{number} to retitle"], "run": (seen or {}).get("run", "")}
+                        return failed([failing or f"retitle: no pull request closes #{number} to retitle"], (seen or {}).get("run", ""), seen=seen)
                 run("pr", "edit", str(target), "--repo", repo, "--title", str(arg))
             elif verb == "push":
                 # #698: on the head branch of the pull request it observes
@@ -1254,12 +1494,13 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
                         seen, failing = look((what, number))
                         head = ((seen or {}).get("pull") or {}).get("branch")
                         if not head:
-                            return {"id": sid, "ok": False, "why": [failing or f"push {arg}: no pull request closes #{number} to push to"], "run": (seen or {}).get("run", "")}
+                            return failed([failing or f"push {arg}: no pull request closes #{number} to push to"], (seen or {}).get("run", ""), seen=seen)
                     write_file(repo, head, path, scenario_text(sid, arg, "the pull request", run_id), run)
                 if arg in LANDS:
                     why = land(arg, path)
                     if why:
-                        return {"id": sid, "ok": False, "why": why, "run": ""}
+                        # A land is the scenario's own setup (#843).
+                        return failed(why, "", "harness")
             elif verb == "until":
                 # #694: polled every POLL seconds, never a fixed wait: on
                 # the scenario's own issue or pull request, or with `of:
@@ -1268,17 +1509,30 @@ def play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None, 
                 on = (("issue", befores[0]) if (arg or {}).get("of") == "before" and befores else (what, number))
                 seen, why = poll(want, on, None if on[1] != number else closes)
                 if why:
-                    return {"id": sid, "ok": False, "why": [f"until {json.dumps(want, sort_keys=True)}: {w}" for w in why], "run": seen.get("run", "")}
+                    return failed([f"until {json.dumps(want, sort_keys=True)}: {w}" for w in why], seen.get("run", ""), seen=seen)
             elif verb == "wait":
                 # Refused by `timing`; never slept.
                 raise ValueError(f"a fixed wait of {arg} seconds: wait `until` a state")
         seen, why = poll(s.get("expect") or {}, (what, number), closes)
-        return {"id": sid, "ok": not why, "why": why, "run": seen.get("run", "")}
+        if why:
+            return failed(why, seen.get("run", ""), seen=seen)
+        return {"id": sid, "ok": True, "why": [], "run": seen.get("run", "")}
     except (RuntimeError, ValueError) as e:
-        return {"id": sid, "ok": False, "why": [str(e)], "run": ""}
+        # #843: a transient `gh` error is GitHub's; any other exception
+        # that is no `gh` error, the player's; another `gh` error is read
+        # as the engine's, so no failure is hidden as someone else's.
+        cls = "infrastructure" if transient(e) else "engine" if isinstance(e, GhError) else "harness"
+        return failed([str(e)], "", cls)
     finally:
-        cleanup(repo, made, run)
-        clear(repo, sid, run, own, lands)
+        # #878: an error that escapes the cleanup kills no process: `play`
+        # makes it a failing row.
+        try:
+            cleanup(repo, made, run)
+            clear(repo, sid, run, own, lands)
+        except Exception as e:  # noqa: BLE001 - any error, a row
+            if observed is None:
+                raise
+            observed["tidy"] = e
 
 
 def bot_login(login):
@@ -1611,7 +1865,7 @@ def put_back(repo, ref, moved, callers=gh, central=None, sleep=time.sleep, minut
     try:
         point_callers(repo, ref, callers, central, back={m["name"]: m["before"] for m in moved}, sleep=sleep, minutes=minutes)
     except (RuntimeError, ValueError) as e:
-        return [{"id": "callers", "ok": False, "why": [f"the callers were not put back from {ref}: {e}"], "run": ""}]
+        return [{"id": "callers", "ok": False, "why": [f"the callers were not put back from {ref}: {e}"], "run": "", "class": "harness"}]
     return []
 
 
@@ -1633,7 +1887,7 @@ def read_moved(path, ref):
             raise ValueError("not a list of moved callers")
         return moved, []
     except (OSError, ValueError) as e:
-        return [], [{"id": "callers", "ok": False, "why": [f"could not read what moved to {ref}, the callers may be left there: {e}"], "run": ""}]
+        return [], [{"id": "callers", "ok": False, "why": [f"could not read what moved to {ref}, the callers may be left there: {e}"], "run": "", "class": "harness"}]
 
 
 def at_candidate(repo, ref, run=gh, central=None):
@@ -1662,7 +1916,7 @@ def at_candidate(repo, ref, run=gh, central=None):
         got = json.loads(run("api", f"repos/{repo}/contents/.github/workflows/{name}") or "{}")
         for line in off_ref(base64.b64decode(got.get("content") or "").decode(), central, ref):
             why.append(f".github/workflows/{name} {line}: calls the engine off {ref} after the move")
-    return [{"id": "callers", "ok": False, "why": [w], "run": ""} for w in why]
+    return [{"id": "callers", "ok": False, "why": [w], "run": "", "class": "harness"} for w in why]
 
 
 def move_callers(repo, ref, callers=gh, central=None, sleep=time.sleep, minutes=20, record=None):
@@ -1677,13 +1931,13 @@ def move_callers(repo, ref, callers=gh, central=None, sleep=time.sleep, minutes=
     except (RuntimeError, ValueError) as e:
         if record:
             record([])
-        return [], [{"id": "callers", "ok": False, "why": [f"the callers did not reach {ref}: {e}"], "run": ""}]
+        return [], [{"id": "callers", "ok": False, "why": [f"the callers did not reach {ref}: {e}"], "run": "", "class": "harness"}]
     if record:
         record(moved)
     try:
         return moved, at_candidate(repo, ref, callers, central)
     except (RuntimeError, ValueError) as e:
-        return moved, [{"id": "callers", "ok": False, "why": [f"could not tell whether every pipeline of {repo} runs at {ref}: {e}"], "run": ""}]
+        return moved, [{"id": "callers", "ok": False, "why": [f"could not tell whether every pipeline of {repo} runs at {ref}: {e}"], "run": "", "class": "harness"}]
 
 
 GROUP_ID = re.compile(r"[a-z0-9-]+")
@@ -1873,18 +2127,142 @@ def core_problems(scenarios, pack):
     return out
 
 
-def play_group(conf, gid, repo, ref, run=gh, sleep=time.sleep, minutes=20, run_id=None):
+# The least minutes a retry leaves the play step for what is not its polls
+# (#878): its clear, steps, cleanup and the read of its runs. The retry
+# leaves the first attempt's own time for them when that is more.
+RETRY_ALLOWANCE = 3
+NOT_RETRIED = "not retried: no time left in the play step"
+
+
+def retried(s, attempt, minutes, deadline=None, clock=None, slept=None):
+    """The scenario `s` played by `attempt(minutes)`, and once more when it
+    failed (#843): the retry is limited to `min(limit(s), minutes)` and,
+    with a `deadline` (the player's end, on `clock`), to what is left of it
+    less (#878) an allowance for what is not its polls, the first
+    attempt's own time (its time on `clock` but what it slept, `slept`
+    the seconds slept so far), RETRY_ALLOWANCE minutes at least, and one
+    POLL its last poll may overrun by; with less than a minute it is not
+    played, and the row says so. The row gains
+    `attempts` (1 or 2) and, after a retry, `first_why` (the first
+    attempt's why); `flaky: true` when the retry passed, which makes it
+    `ok` with no `class`; failing on both, it keeps the first failure's
+    `class`."""
+    clock = clock or time.monotonic
+    began, napped = (clock(), slept() if slept else 0) if deadline is not None else (0, 0)
+    first = attempt(minutes)
+    if first.get("ok"):
+        return dict(first, attempts=1)
+    budget = min(minutes, limit(s))
+    if deadline is not None:
+        now = clock()
+        own = (now - began) - ((slept() - napped) if slept else 0)
+        allowance = max(RETRY_ALLOWANCE * 60, own) + POLL
+        budget = min(budget, (deadline - now - allowance) / 60)
+    if budget < 1:
+        return dict(first, attempts=1, why=list(first.get("why") or []) + [NOT_RETRIED])
+    second = attempt(budget)
+    out = dict(second, attempts=2, first_why=list(first.get("why") or []))
+    if "triggered" in first or "triggered" in second:
+        # #843: what either attempt's runs triggered.
+        out["triggered"] = sorted(set(first.get("triggered") or []) | set(second.get("triggered") or []))
+    # #843: the row's class comes from both attempts: passing on its retry
+    # it is flaky and no failure's; failing on both, the first failure's.
+    out.pop("class", None)
+    if second.get("ok"):
+        out["flaky"] = True
+    elif first.get("class") or second.get("class"):
+        out["class"] = first.get("class") or second.get("class")
+    return out
+
+
+# The row of a scenario the play step ended before (#878): what the group's
+# file says until its attempt ends, and what a signal leaves.
+ENDED = "the play step ended before the scenario did"
+
+
+def ended(sid, why=()):
+    """The failing `infrastructure` row of the scenario `sid` the play step
+    ended before (#878, ENDED), after the `why` of an attempt that failed.
+    Pure."""
+    return {"id": sid, "ok": False, "why": list(why) + [ENDED], "run": "", "class": "infrastructure"}
+
+
+def play_group(conf, gid, repo, ref, run=None, sleep=None, minutes=20, run_id=None, clock=None, record=None):
     """The scenarios of the group `gid` (one, #694), in its order, at
     `ref` (the callers already there), with the test identity's token (the
-    ambient GH_TOKEN): their rows, or one failing row when `gid` is no
-    group."""
+    ambient GH_TOKEN, `gh` when `run` is None): their rows, or one failing
+    row when `gid` is no group. `minutes` is the player's own deadline, on
+    `clock` (#878: below the play step's timeout, which release-lane.yml
+    passes as `--minutes`): a scenario that failed is played once more
+    within what is left of it (`retried`), and a transient `gh` error is
+    retried within it (`patient`). `record`, when given, is called with
+    the rows so far before the first attempt and after each, a scenario
+    not played yet or still playing an `ended` row, so a step killed in the
+    middle still leaves them. An error that escapes an attempt is its
+    failing `harness` row, never the process's end."""
+    sleep, clock = sleep or time.sleep, clock or time.monotonic
     scenarios = conf.get("scenarios") or []
     group = next((g for g in groups(scenarios) if g["id"] == gid), None)
     if group is None:
-        return [{"id": gid, "ok": False, "why": [f"{gid} is no group of {SCENARIOS}"], "run": ""}]
+        return [{"id": gid, "ok": False, "why": [f"{gid} is no group of {SCENARIOS}"], "run": "", "class": "harness"}]
     by_id, run_id = {s.get("id"): s for s in scenarios}, run_id or run_mark()
-    return [play(by_id[sid], repo, ref, conf.get("bodies") or {}, run, sleep, minutes, types=conf.get("types") or {}, run_id=run_id)
-            for sid in group["scenarios"]]
+    deadline = clock() + minutes * 60
+    run = patient(gh if run is None else run, sleep, deadline, clock)
+    slept = [0.0]
+
+    def nap(seconds):
+        slept[0] += seconds
+        sleep(seconds)
+
+    out = []
+
+    def note(current=()):
+        if record:
+            done = {r["id"] for r in out} | {r["id"] for r in current}
+            record(out + list(current) + [ended(sid) for sid in group["scenarios"] if sid not in done])
+
+    note()
+    for sid in group["scenarios"]:
+        s = by_id[sid]
+
+        def attempt(m, s=s):
+            try:
+                row = play(s, repo, ref, conf.get("bodies") or {}, run, nap, m, types=conf.get("types") or {}, run_id=run_id)
+            except Exception as e:  # noqa: BLE001 - any error, a row
+                row = {"id": s["id"], "ok": False, "why": [f"the player broke: {type(e).__name__}: {e}"], "run": "", "class": "harness"}
+            note([row if row.get("ok") else ended(s["id"], row.get("why") or [])])
+            return row
+
+        out.append(retried(s, attempt, minutes, deadline, clock, lambda: slept[0]))
+        note()
+    return out
+
+
+def play_watched(conf, gid, repo, ref, minutes, out):
+    """`play_group` with its rows written to `out` before its first attempt
+    and after each (#878), and again on a SIGTERM or SIGINT (GitHub signals
+    a step past its timeout before it kills it), which then ends the
+    process: a group always leaves its file. The handlers it set are put
+    back. Its rows."""
+    import signal
+    rows = []
+
+    def record(now):
+        rows[:] = now
+        if out:
+            write_results(now, out, echo=False)
+
+    def stop(signum, frame):
+        if out:
+            write_results(rows, out)
+        raise SystemExit(128 + signum)
+
+    before = {sig: signal.signal(sig, stop) for sig in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        return play_group(conf, gid, repo, ref, minutes=minutes, record=record)
+    finally:
+        for sig, handler in before.items():
+            signal.signal(sig, handler)
 
 
 def run_all(conf, repo, ref, only=(), run=gh, sleep=time.sleep, minutes=20, central=None, callers=None, moved_out=None, record=None, run_id=None):
@@ -1914,24 +2292,47 @@ def run_all(conf, repo, ref, only=(), run=gh, sleep=time.sleep, minutes=20, cent
     try:
         for s in conf.get("scenarios") or []:
             if not only or s["id"] in only:
-                results.append(play(s, repo, ref, bodies, run, sleep, minutes, types=conf.get("types") or {}, run_id=run_id))
+                # #843: a failure is played once more (`retried`).
+                results.append(retried(s, lambda m, s=s: play(s, repo, ref, bodies, run, sleep, m, types=conf.get("types") or {}, run_id=run_id), minutes))
     finally:
         if moved_out is None:
             results.extend(put_back(repo, ref, moved, callers, central, sleep, minutes))
     return results
 
 
-def write_results(results, out):
-    """The table of `results` to stdout, and to `out` with the record the
-    lane's next job reads."""
-    text = table(results)
-    sys.stdout.write(text)
+def untriggered_line(missing):
+    """The table's line naming the pairs no scenario's runs triggered
+    (#843), a warning that fails nothing; "" when none. Pure."""
+    return f"\nPairs no scenario triggered: {', '.join(f'`{p}`' for p in missing)}\n" if missing else ""
+
+
+def write_results(results, out, untriggered=None, echo=True):
+    """The table of `results` to stdout (but with `echo` false, #878: the
+    rows a group writes while it plays), and to `out` with the record the
+    lane's next job reads; with `untriggered` (#843, `run_coverage`), its
+    line after the table and its own record, which release-lane.py act
+    names as a warning."""
+    text = table(results) + untriggered_line(untriggered)
+    if echo:
+        sys.stdout.write(text)
     if out:
         # The job's --out may name a directory no step made (#693).
         os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
-        with open(out, "w", encoding="utf-8") as fh:
-            fh.write(text)
-            fh.write(f"\n<!-- dx-scenarios {json.dumps(results)} -->\n")
+        # #878: whole or not at all, through a file of its own: a signal's
+        # write never meets one it cut in the middle.
+        import tempfile
+        fd, part = tempfile.mkstemp(dir=os.path.dirname(out) or ".", prefix=".results-")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(text)
+                fh.write(f"\n<!-- dx-scenarios {json.dumps(results)} -->\n")
+                if untriggered:
+                    fh.write(f"<!-- dx-untriggered {json.dumps(untriggered)} -->\n")
+            os.replace(part, out)
+        except BaseException:
+            if os.path.exists(part):
+                os.unlink(part)
+            raise
 
 
 def read_results(path):
@@ -1961,23 +2362,39 @@ def merge(gs, files, jobs, run="", minutes=0, play_minutes=0):
     rows = []
     timeout = f" (its play step at {play_minutes} minutes, its job at {minutes}: timeout-minutes in release-lane.yml)" if minutes else ""
 
-    def fail(rid, why):
-        rows.append({"id": rid, "ok": False, "why": [why], "run": run})
+    def fail(rid, why, cls):
+        rows.append({"id": rid, "ok": False, "why": [why], "run": run, "class": cls})
 
-    def own(r):
-        return {"id": str(r.get("id")), "ok": r.get("ok") is True, "why": [str(w) for w in r.get("why") or []], "run": str(r.get("run") or "")}
+    def own(r, cls=None):
+        out = {"id": str(r.get("id")), "ok": r.get("ok") is True, "why": [str(w) for w in r.get("why") or []], "run": str(r.get("run") or "")}
+        # #843: a failing row's class, as its writer set it; a move's or a
+        # back's row is the harness's.
+        if not out["ok"]:
+            c = r.get("class") if r.get("class") in CLASSES else cls
+            if c:
+                out["class"] = c
+        # #843: the retry's keys, kept.
+        if isinstance(r.get("attempts"), int):
+            out["attempts"] = r["attempts"]
+        if r.get("flaky") is True:
+            out["flaky"] = True
+        if isinstance(r.get("first_why"), list):
+            out["first_why"] = [str(w) for w in r["first_why"]]
+        if isinstance(r.get("triggered"), list):
+            out["triggered"] = [str(p) for p in r["triggered"]]
+        return out
     if files.get("move") is None:
-        fail("move", "the move job left no results")
+        fail("move", "the move job left no results", "harness")
     else:
-        rows += [own(r) for r in files["move"] if isinstance(r, dict)]
+        rows += [own(r, "harness") for r in files["move"] if isinstance(r, dict)]
     if not gs:
-        fail("groups", "no groups of scenarios to read: none played")
+        fail("groups", "no groups of scenarios to read: none played", "harness")
     for g in gs:
         got = files.get(g["id"])
         if got is None:
             # A play job that was skipped is its own failing row below.
             if jobs.get("play") != "skipped":
-                fail(g["id"], f"the group {g['id']} left no results: its play job failed before it wrote them, timed out{timeout} or was cancelled")
+                fail(g["id"], f"the group {g['id']} left no results: its play job failed before it wrote them, timed out{timeout} or was cancelled", "infrastructure")
             continue
         by_id = {}
         for r in got:
@@ -1987,20 +2404,20 @@ def merge(gs, files, jobs, run="", minutes=0, play_minutes=0):
             if sid in by_id:
                 rows.append(by_id[sid])
             else:
-                fail(sid, f"no result in the results of its group {g['id']}")
+                fail(sid, f"no result in the results of its group {g['id']}", "harness")
     if files.get("back") is None:
-        fail("back", "the back job left no results: the callers may be left at the ref")
+        fail("back", "the back job left no results: the callers may be left at the ref", "harness")
     else:
-        rows += [own(r) for r in files["back"] if isinstance(r, dict)]
+        rows += [own(r, "harness") for r in files["back"] if isinstance(r, dict)]
     for name, result in jobs.items():
         if result == "success":
             continue
         if name == "play" and minutes and result == "cancelled":
-            fail(name, f"a play job ran past its timeout of {minutes} minutes and was cancelled (timeout-minutes in release-lane.yml)")
+            fail(name, f"a play job ran past its timeout of {minutes} minutes and was cancelled (timeout-minutes in release-lane.yml)", "infrastructure")
         elif name == "play" and play_minutes and result == "failure":
-            fail(name, f"a play job ended in failure: a step that broke, or its play step past its timeout of {play_minutes} minutes (timeout-minutes in release-lane.yml)")
+            fail(name, f"a play job ended in failure: a step that broke, or its play step past its timeout of {play_minutes} minutes (timeout-minutes in release-lane.yml)", "infrastructure")
         else:
-            fail(name, f"the {name} job ended in {result or 'nothing'}")
+            fail(name, f"the {name} job ended in {result or 'nothing'}", "harness")
     return rows
 
 
@@ -2227,16 +2644,35 @@ def test_repro(root=ROOT):
 LANE = os.path.join(".github", "workflows", "release-lane.yml")
 
 
+# The minutes the play step keeps past the player's deadline (#878): to
+# write its results and exit before GitHub stops it.
+PLAY_SPARE = 3
+
+
 def lane_problems(lane):
     """What is wrong with the release lane's jobs (`lane`, release-lane.yml
     read; #707): a `play` job whose `runs-on` can name DX_RUNNER_HEAVY (or
     any self-hosted runner), where the test repository's own jobs run, so
-    the play jobs that wait for them hold the runners they need. Pure."""
+    the play jobs that wait for them hold the runners they need; and (#878)
+    a play step (its id `play`) that passes the player no `--minutes`, or
+    one that leaves it less than PLAY_SPARE minutes of the step's
+    timeout-minutes to write its results and exit. Pure."""
     play = ((lane or {}).get("jobs") or {}).get("play") or {}
     runs = json.dumps(play.get("runs-on"))
     if "DX_RUNNER_HEAVY" in runs or "self-hosted" in runs:
         return [f"{LANE}: the `play` job runs on {play.get('runs-on')}, where the test repository's own jobs run: "
                 "its jobs that wait for them would hold those runners; it runs on ubuntu-latest"]
+    step = next((s for s in play.get("steps") or [] if isinstance(s, dict) and s.get("id") == "play"), None)
+    if step is None:
+        return []
+    m = re.search(r"--minutes\s+(\d+)", str(step.get("run") or ""))
+    timeout = int(step.get("timeout-minutes") or 0)
+    if not m:
+        return [f"{LANE}: the play step passes release-scenarios.py play no --minutes: "
+                f"the player's deadline must be below the step's {timeout} minutes"]
+    if int(m.group(1)) > timeout - PLAY_SPARE:
+        return [f"{LANE}: the play step passes --minutes {m.group(1)}, which leaves less than {PLAY_SPARE} "
+                f"of its {timeout} minutes to write its results and exit"]
     return []
 
 
@@ -2391,7 +2827,7 @@ def self_test():
     check("C2: the real file: no two scenarios write to the same core path of the test repository", partition(real["scenarios"], real_groups, rpack), [])
     check("C2: each scenario writes under its own directory, its fixed change too, and only core-one-at-a-time's is the core (#709)",
           (sorted(core_writes({"id": "x"}, rpack)), {org_key(p, rpack) for p in core_writes({"id": "x"}, rpack)}, {org_key(p, rpack) for p in core_writes({"id": "core-one-at-a-time"}, rpack)}),
-          (["scenarios/x/*", "scenarios/x/*.md"], {None}, {""}))
+          (["scenarios/x/*", "scenarios/x/*.test.md"], {None}, {""}))
     shared = {"fixed-change": {"file": "scenarios/{n}.md"}, "core": ["scenarios/*"]}
     check("C2: partition fails when two scenarios could write to the same core path (a fixed change outside their own directory)",
           partition([{"id": "a", "expect": {"comments": [CORE_MARK]}}, {"id": "b", "expect": {"comments": [CORE_MARK]}}], groups([{"id": "a"}, {"id": "b"}]), shared),
@@ -2413,16 +2849,20 @@ def self_test():
     busy709 = {sid for sid, n, path in issues709 if _ap.core_busy([path], rpack["core"], [{"number": m, "files": [q]} for _, m, q in issues709 if m != n], mine=n)}
     check("#709 C1: from the real pack, with every scenario's fixed change open at once, only core-one-at-a-time can wait on the core", busy709, {"core-one-at-a-time"})
     plan_real = scenario_plan(real["scenarios"])
-    check("C3: the real plan: no fixed wait, every wait an `until`, polling every 50 seconds, each limit 15 minutes or less",
-          (timing(real["scenarios"]), {p["poll"] for p in plan_real}, max(p["minutes"] for p in plan_real) <= 15, len(plan_real) == len(real["scenarios"]),
-           [st for s in real["scenarios"] for st in s.get("steps") or [] if "wait" in st]), ([], {50}, True, True, []))
-    check("#726: the real plan, every scenario polling at once, stays under the test identity's rate limit; a plan of many scenarios is refused",
-          (poll_budget(real["scenarios"]) < RATE_LIMIT, poll_budget([{"opens": {"issue": {}}}, {"opens": {"pull": {}}, "expect": {"check": {"c": "success"}}}]),
+    check("C3: the real plan: no fixed wait, every wait an `until`, polling every 75 seconds, each limit 15 minutes or less",
+          (timing(real["scenarios"], real["bodies"]), {p["poll"] for p in plan_real}, max(p["minutes"] for p in plan_real) <= 15, len(plan_real) == len(real["scenarios"]),
+           [st for s in real["scenarios"] for st in s.get("steps") or [] if "wait" in st]), ([], {75}, True, True, []))
+    check("#726 #878: the real plan, every scenario polling at once with its setup, cleanup and retry, stays under the test identity's rate limit; a plan of many scenarios is refused",
+          (call_budget(real["scenarios"], real["bodies"]) < RATE_LIMIT, poll_budget([{"opens": {"issue": {}}}, {"opens": {"pull": {}}, "expect": {"check": {"c": "success"}}}]),
            timing([{"id": f"s{i}", "opens": {"pull": {}}, "expect": {"check": {"c": "success"}}} for i in range(30)])),
-          (True, 360, ["the plan's 30 scenarios poll GitHub 6480 times an hour, every 50 seconds, past the test identity's 5000"]))
+          (True, 240, ["the plan's 30 scenarios call GitHub 5700 times an hour, polling every 75 seconds, with their setup, cleanup and retry, past the test identity's 5000"]))
+    check("#878: a scenario's setup calls: its clear twice, its issue and its cleanup, its pull request, its steps, a land on main",
+          [setup_calls(s) for s in ({"id": "i", "opens": {"issue": {}}}, {"id": "p", "opens": {"pull": {}}},
+                                    {"id": "p", "opens": {"pull": {}}, "steps": [{"comment": "x"}, {"until": {"labels": ["y"]}}, {"push": "conflict"}]})],
+          [21, 23, 40])
     check("C3: timing names a fixed wait, an empty `until` and a limit past 15 minutes",
           timing([{"id": "w", "steps": [{"wait": 60}, {"until": {"of": "before"}}], "minutes": 16}]),
-          ["scenario w: waits a fixed 60 seconds; wait `until` the state it waits for, polled every 50 seconds", "scenario w: an `until` with no expectation",
+          ["scenario w: waits a fixed 60 seconds; wait `until` the state it waits for, polled every 75 seconds", "scenario w: an `until` with no expectation",
            "scenario w: its limit is 16 minutes, past 15"])
     check("C3: the play step's 20 minutes stay above every scenario's limit", MAX_LIMIT < 20, True)
     check("C3: hopeless: merged when it should not, closed unmerged, a check that ended otherwise, an absent label once settled",
@@ -2487,19 +2927,19 @@ def self_test():
     got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "steps": [{"until": {"labels": ["claimed"]}}, {"comment": "/unclaim"}], "expect": {"labels": ["done"]}},
                "o/t", "v7-next", {}, fake, st["sleeps"].append, 10)
     comment = st["calls"].index(next(c for c in st["calls"] if c[:2] == ("issue", "comment")))
-    check("C3: an `until` polls every 50 seconds until its state holds, then the next step goes on",
-          (got["ok"], st["sleeps"], comment > [i for i, c in enumerate(st["calls"]) if c[:2] == ("issue", "view")][2]), (True, [50, 50], True))
+    check("C3: an `until` polls every 75 seconds until its state holds, then the next step goes on",
+          (got["ok"], st["sleeps"], comment > [i for i, c in enumerate(st["calls"]) if c[:2] == ("issue", "view")][2]), (True, [75, 75], True))
     st, fake = polled([{"labels": []}])
     got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "steps": [{"until": {"labels": ["claimed"]}}, {"comment": "x"}], "expect": {}}, "o/t", "v7-next", {}, fake, st["sleeps"].append, 1)
     check("C3: an `until` that never holds fails at the scenario's limit, named, and takes no further step",
-          (got["ok"], got["why"], len(st["sleeps"]), any(c[:2] == ("issue", "comment") for c in st["calls"])), (False, ['until {"labels": ["claimed"]}: no label claimed', f'until {{"labels": ["claimed"]}}: {NONE}'], 2, False))
+          (got["ok"], got["why"], len(st["sleeps"]), any(c[:2] == ("issue", "comment") for c in st["calls"])), (False, ['until {"labels": ["claimed"]}: no label claimed', f'until {{"labels": ["claimed"]}}: {NONE}'], 1, False))
     st, fake = polled([{"labels": [{"name": "incomplete"}]}], runs=lambda n: [{"url": "u", "status": "completed"}])
     got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "expect": {"labels": ["awaiting-acceptance"], "absent": ["incomplete"]}}, "o/t", "v7-next", {}, fake, st["sleeps"].append, 15)
     check("C3: a scenario stops as soon as its expectation can no longer hold, not at its limit",
-          (got["ok"], st["sleeps"], got["why"][-1]), (False, [50], "it can no longer hold: label incomplete stays, with nothing left running"))
+          (got["ok"], st["sleeps"], got["why"][-1]), (False, [75], "it can no longer hold: label incomplete stays, with nothing left running"))
     st, fake = polled([{"labels": []}])
     got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "minutes": 2, "expect": {"labels": ["x"]}}, "o/t", "v7-next", {}, fake, st["sleeps"].append, 20)
-    check("C3: a scenario's own limit bounds its polls (2 minutes: 3 polls of 50 seconds)", (got["ok"], len(st["sleeps"]), set(st["sleeps"])), (False, 3, {50}))
+    check("C3: a scenario's own limit bounds its polls (2 minutes: 2 polls of 75 seconds)", (got["ok"], len(st["sleeps"]), set(st["sleeps"])), (False, 2, {75}))
     st, fake = polled([{"labels": []}])
     got = play({"id": "u", "opens": {"issue": {"title": "t"}}, "steps": [{"wait": 300}], "expect": {}}, "o/t", "v7-next", {}, fake, st["sleeps"].append, 1)
     check("C3: a fixed wait is never slept", (got["ok"], st["sleeps"]), (False, []))
@@ -2517,9 +2957,9 @@ def self_test():
           (got["ok"], got["why"], [c for c in forked if c[:2] == ("repo", "fork")]), (False, [FORK_NEEDS], []))
     lane = load_yaml(os.path.join(ROOT, ".github", "workflows", "release-lane.yml"))["jobs"]
     pstep = next(st for st in lane["play"]["steps"] if st.get("id") == "play")
-    check("C9: the limits the 20-minute run relies on: every scenario at once, each under the play step's 20 minutes, polled every 50 seconds",
+    check("C9: the limits the 20-minute run relies on: every scenario at once, each under the play step's 20 minutes, polled every 75 seconds",
           ("max-parallel" in (lane["play"].get("strategy") or {}), max(limit(s) for s in real["scenarios"]) < pstep["timeout-minutes"] <= 20, POLL,
-           pstep["env"].get(FORK_SECRET)), (False, True, 50, "${{ secrets.DX_TEST_FORK_TOKEN }}"))
+           pstep["env"].get(FORK_SECRET)), (False, True, 75, "${{ secrets.DX_TEST_FORK_TOKEN }}"))
     titles = []
 
     def ordered(*a, input=None):
@@ -2592,6 +3032,13 @@ def self_test():
     check("#707: a confirmed bug's issue expected to have a pull request that closes it is refused: the lane's fix closes its own issue",
           preconditions([{"id": "b", "opens": {"issue": {"body": "bug"}}, "expect": {"labels": ["bug:confirmed"], "pull": {"closes": True}}}], {}, rpack, repro=True),
           ["scenario b: expects bug:confirmed and a pull request that closes its issue, but the reproduction's fix closes the issue the bugfix-reproduced lane opens, never the report"])
+    borrowed = {"id": "copycat", "opens": {"issue": {"body": "borrowed"}}, "expect": {"labels": ["needs-info"]}}
+    check("#881: a scenario whose body names another scenario's file is refused (the triage reads it as a duplicate), its own is not, and no real one does",
+          ([p.split(":")[0] for p in preconditions([borrowed], {"borrowed": "Read `scenarios/someone-else/greeting.md`."}, rpack, repro=True)],
+           preconditions([dict(borrowed, id="someone-else")], {"borrowed": "Read `scenarios/someone-else/greeting.md`."}, rpack, repro=True),
+           [p for p in preconditions(real["scenarios"], real["bodies"], rpack, types=real.get("types") or {}, repro=True) if "another scenario's file" in p],
+           [b for s in real["scenarios"] if s["id"] == "bug-by-person-merges" for b in [s["opens"]["issue"]["body"]]]),
+          (["scenario copycat"], [], [], ["bug-by-person-merges"]))
     check("#707: the bug that reproduces lands the greeting its fixed test reads, under its own directory, and its body names it",
           ([b for b in bugs[0].get("before") or [] if "lands" in b], "scenarios/bug-reproduced/greeting.md" in real["bodies"][bugs[0]["opens"]["issue"]["body"]]),
           ([{"lands": "greeting", "says": "helo"}], True))
@@ -2698,7 +3145,51 @@ def self_test():
                           {"id": "b", "covers": [], "opens": {"issue": {"title": "t"}}, "expect": {"labels": ["accepted"]}}], "bodies": {"b": "body"}}
     res = run_all(scen, "o/t", "v7-next", run=fake, sleep=lambda s: None, minutes=3, central="O/.github")
     check("run: a scenario whose expect holds passes, one whose does not fails, named", [(r["id"], r["ok"], r["why"]) for r in res], [("a", True, []), ("b", False, ["no label accepted", "saw labels awaiting-acceptance; the bot's newest comment: none"])])
-    check("run: its issues are closed and locked after it", sum(1 for c in calls if c[:2] in (("issue", "close"), ("issue", "lock"))), 4)
+    # #843: b failed, so it played twice: its issues of both attempts too.
+    check("run: its issues are closed and locked after it", sum(1 for c in calls if c[:2] in (("issue", "close"), ("issue", "lock"))), 6)
+    check("#843 run: a scenario that failed is played once more, one that passed once", [(r["id"], r.get("attempts"), r.get("flaky")) for r in res], [("a", 1, None), ("b", 2, None)])
+    check("#843 class: an `expect` that does not hold is the engine's", [r.get("class") for r in res], [None, "engine"])
+    waits = {"id": "w", "opens": {"issue": {"title": "t", "body": "b"}}, "steps": [{"wait": 5}], "expect": {"labels": ["x"]}}
+    check("#843 class: the player's own exception (a fixed wait) is the harness's",
+          play(waits, "o/t", "v7-next", {"b": "body"}, fake, lambda s: None, 1).get("class"), "harness")
+
+    def busy(*args, input=None):
+        if args[:2] == ("issue", "view"):
+            raise GhError("gh issue view: HTTP 502", 1, "", "HTTP 502")
+        return fake(*args, input=input)
+    gone = play(scen["scenarios"][1], "o/t", "v7-next", scen["bodies"], busy, lambda s: None, 0)
+    check("#843 class: GitHub failing until the scenario's time ran out is infrastructure's",
+          (gone["ok"], gone.get("class"), "until the scenario's time ran out" in " ".join(gone["why"])), (False, "infrastructure", True))
+
+    def denied(*args, input=None):
+        if args[:2] == ("issue", "create"):
+            raise GhError("gh issue create: HTTP 422 Validation Failed", 1, "", "")
+        return fake(*args, input=input)
+    check("#843 class: a `gh` error that is not GitHub failing is read as the engine's", play(scen["scenarios"][1], "o/t", "v7-next", scen["bodies"], denied, lambda s: None, 1).get("class"), "engine")
+    check("#843 class: a run GitHub held or never started is infrastructure's", (blocked({"held": ["u"]}), blocked({"checks": {"a": "startup_failure"}}), blocked({"checks": {"a": "failure"}})), (True, True, False))
+    clock, naps = iter([0, 15 * 60]), iter([0, 14 * 60])
+    tried = []
+    late = retried({"id": "c"}, lambda m: tried.append(m) or {"id": "c", "ok": False, "why": ["slow"], "run": ""}, 20, 20 * 60, lambda: next(clock), lambda: next(naps))
+    check("#843 #878 retry: with less than a minute left in the player's time, past its allowance and a poll, a failure is not played again and says so",
+          (tried, late["ok"], late["why"], late["attempts"]), ([20], False, ["slow", NOT_RETRIED], 1))
+    clock, naps = iter([0, 5 * 60]), iter([0, 4 * 60])
+    tried = []
+    again = retried({"id": "c", "minutes": 15}, lambda m: tried.append(m) or {"id": "c", "ok": len(tried) > 1, "why": [] if len(tried) > 1 else ["fast"], "run": ""}, 20, 20 * 60, lambda: next(clock), lambda: next(naps))
+    check("#843 #878 retry: the retry has what the player has left less RETRY_ALLOWANCE (the first attempt took 1 minute of its own) and a poll, at most the scenario's limit; passing, it is ok and flaky",
+          (tried, again["ok"], again.get("flaky"), again["first_why"], table([again]).count("pass (flaky: fast)")), ([20, 10.75], True, True, ["fast"], 1))
+    clock, naps = iter([0, 9 * 60]), iter([0, 3 * 60])
+    tried = []
+    retried({"id": "c", "minutes": 15}, lambda m: tried.append(m) or {"id": "c", "ok": False, "why": ["slow"], "run": ""}, 20, 20 * 60, lambda: next(clock), lambda: next(naps))
+    check("#878 retry: a first attempt whose own time (its setup and cleanup) passes RETRY_ALLOWANCE leaves the retry that much more",
+          tried, [20, 20 - 9 - 6 - POLL / 60])
+    # #843: a retried row's class comes from both attempts.
+    both = iter([{"id": "k", "ok": False, "why": ["slow"], "run": "", "class": "infrastructure"}, {"id": "k", "ok": False, "why": ["no"], "run": "", "class": "engine"}])
+    check("#843 retry: failing on both attempts, the row keeps the first failure's class",
+          retried({"id": "k"}, lambda m: next(both), 20).get("class"), "infrastructure")
+    healed = iter([{"id": "k", "ok": False, "why": ["slow"], "run": "", "class": "engine"}, {"id": "k", "ok": True, "why": [], "run": "", "class": "harness"}])
+    got = retried({"id": "k"}, lambda m: next(healed), 20)
+    check("#843 retry: passing on its retry, the row is flaky and carries no failure's class",
+          (got["ok"], got.get("flaky"), "class" in got), (True, True, False))
     ccalls = []
 
     def cfake(*args, input=None):
@@ -2795,7 +3286,21 @@ def self_test():
           (calls694.index(("issue", "close", "3", "--repo", "o/t")) < calls694.index(next(c for c in calls694 if c[:2] == ("issue", "create"))),
            ("issue", "close", "4", "--repo", "o/t") in calls694), (True, False))
     check("C1: after it plays, its branch is deleted again and its leftovers looked for again",
-          (calls694[-1][:2], sum(1 for c in calls694 if c == delete) >= 2), (("pr", "list"), True))
+          ([c for c in calls694 if "actions/runs?created=" not in " ".join(c)][-1][:2], sum(1 for c in calls694 if c == delete) >= 2), (("pr", "list"), True))
+    check("#843: the runs it triggered are read once, last", ("actions/runs?created=" in " ".join(calls694[-1]), sum(1 for c in calls694 if "actions/runs?created=" in " ".join(c))), (True, 1))
+    wired843 = {"issues.yml": {"issue-triage.yml:issues", "issue-triage.yml:issue_comment"}, "test-pull-request.yml": {"conventions.yml:pull_request"}}
+    runs843 = [{"path": ".github/workflows/issues.yml", "event": "issues", "display_title": "feat: x [s]", "head_branch": "main", "created_at": "2026-01-01T00:05:00Z"},
+               {"path": ".github/workflows/issues.yml", "event": "issue_comment", "display_title": "feat: x [s]", "head_branch": "main", "created_at": "2026-01-01T00:20:00Z"},
+               {"path": ".github/workflows/test-pull-request.yml@refs/heads/main", "event": "pull_request", "display_title": "feat: its pull", "head_branch": "feat/1-x", "created_at": "2026-01-01T00:06:00Z"},
+               {"path": ".github/workflows/test-pull-request.yml", "event": "pull_request", "display_title": "fix: y [other]", "head_branch": "fix/scenario-other", "created_at": "2026-01-01T00:06:00Z"}]
+    check("#843 run_triggered: its runs, by title or branch, within its time, through the caller at their path and their event",
+          run_triggered(runs843, "s", {"feat: its pull"}, {"test/scenario-s"}, wired843, "2026-01-01T00:00:00Z", "2026-01-01T00:10:00Z"),
+          ["conventions.yml:pull_request", "issue-triage.yml:issues"])
+    check("#843 run_coverage: what no row triggered, never what `covers:` says, and no transition",
+          run_coverage([{"covers": ["a:issues"], "triggered": ["b:issues"]}, {"id": "x"}], {"a:issues", "b:issues", "next_step:start"}), ["a:issues"])
+    check("#843 retry: what either attempt triggered is kept",
+          retried({"id": "t"}, lambda m: {"id": "t", "ok": m == 10, "why": [], "run": "", "triggered": ["a:issues"] if m == 20 else ["b:issues"]}, 20)["triggered"], ["a:issues", "b:issues"])
+    check("#843 the table names the pairs no scenario triggered, a warning line", untriggered_line(["a:issues"]), "\nPairs no scenario triggered: `a:issues`\n")
     lcalls = []
 
     def lanefake(*a, input=None):
@@ -2922,7 +3427,7 @@ def self_test():
     st, fake = searchless(fail=99, retry="")
     got = play({"id": "s", "minutes": 2, "opens": {"issue": {"title": "feat: x", "body": "f"}}, "expect": {"pull": {"closes": True}}}, "o/t", "v7-next", {"f": "f"}, fake, st["sleeps"].append, 20)
     check("#698: one rate-limited until the scenario's time runs out fails then, naming it, backing off within its limit",
-          (got["ok"], got["why"][0].startswith("gh issue view 9 rate limited"), sum(st["sleeps"]), st["sleeps"][:3]), (False, True, 120, [50, 70]))
+          (got["ok"], got["why"][0].startswith("gh issue view 9 rate limited"), sum(st["sleeps"]), st["sleeps"][:3]), (False, True, 120, [75, 45]))
     st = {"n": 0}
 
     def broken(*a, input=None):
@@ -2933,7 +3438,7 @@ def self_test():
     check("#698: a `gh` error that is not transient still fails at once", (got["ok"], st["n"]), (False, 0))
     check("#698 backoff: retry-after, then the reset, then POLL doubled up to 120",
           (backoff(GhError("x", stderr="Retry-After: 7"), 0), backoff(GhError("x", stderr="x-ratelimit-reset: 1060"), 0, now=1000), backoff(GhError("x"), 0), backoff(GhError("x"), 5)),
-          (7, 60, 50, 120))
+          (7, 60, POLL, 120))
     check("#698 transient: a rate limit, a secondary one, a 5xx; not a 404",
           [transient(GhError(m)) for m in ("gh api: HTTP 429", "You have exceeded a secondary rate limit", "gh api: HTTP 502: Bad Gateway", "gh api: HTTP 404: Not Found")] + [transient(RuntimeError("rate limit"))],
           [True, True, True, False, False])
@@ -3224,7 +3729,7 @@ def self_test():
         with contextlib.redirect_stdout(io.StringIO()):
             write_results([{"id": "a", "ok": True, "why": [], "run": ""}], out)
         check("#622: back reads the run's results and adds its row to them",
-              read_results(out) + [{"id": "callers", "ok": False, "why": ["x"], "run": ""}], [{"id": "a", "ok": True, "why": [], "run": ""}, {"id": "callers", "ok": False, "why": ["x"], "run": ""}])
+              read_results(out) + [{"id": "callers", "ok": False, "why": ["x"], "run": "", "class": "harness"}], [{"id": "a", "ok": True, "why": [], "run": ""}, {"id": "callers", "ok": False, "why": ["x"], "run": "", "class": "harness"}])
         check("#622: no results file reads as none", read_results(os.path.join(d, "none.md")), [])
         nested = os.path.join(d, "back", "results.md")
         with contextlib.redirect_stdout(io.StringIO()):
@@ -3324,7 +3829,7 @@ def self_test():
                 ("a missing scenario row", dict(every, serial=passed("a")), done, {"c"}),
                 ("a row from another group in place of its own", dict(every, b=passed("a")), done, {"b"}),
                 ("a back job that left nothing", dict(every, back=None), dict(done, back="cancelled"), {"back"}),
-                ("a move that failed, and no group played", {"move": [{"id": "callers", "ok": False, "why": ["x"], "run": ""}]}, dict(done, play="skipped", back="success"), {"callers", "play", "back"})):
+                ("a move that failed, and no group played", {"move": [{"id": "callers", "ok": False, "why": ["x"], "run": "", "class": "harness"}]}, dict(done, play="skipped", back="success"), {"callers", "play", "back"})):
             rows = merge_dir(lay(files), mgs, jobs, lane_run)
             bad = {r["id"] for r in rows if not r["ok"]}
             check(f"C3: merge gives a failing row for {how}, with the lane's run, and decide releases nothing",
@@ -3686,8 +4191,10 @@ def self_test():
     play({"id": "s", "opens": {"issue": {"title": "feat: x", "body": "f"}}, "expect": {"labels": ["never"], "hands": ["accepted"]}}, "o/t", "v7-next", {"f": "f"}, fake699(log699), lambda s: None, 1)
     check("#699 C7: the label events are read only once the rest of the expectation holds",
           [a for a in log699 if a[:1] == ("api",) and str(a[1]).endswith("/events")], [])
-    check("#699 C5: a `token` push writes a fake token with the run's id; any other the scenario's text alone",
-          (scenario_text("s", "token", "the pull request", "7-1").splitlines()[1], scenario_text("s", "note", "main", "7-1").count("\n")), ("DX_API_TOKEN=dxfake_71", 1))
+    tok = [scenario_text("s", "token", "the pull request", r).splitlines()[1] for r in ("7-1", "7-2")]
+    check("#699 C5, #882: a `token` push writes a live-shaped token of 32 base62 characters, with no fake in it, its own per run; any other the scenario's text alone",
+          ([bool(re.fullmatch(r"DX_API_TOKEN=dx_live_[A-Za-z0-9]{32}", t)) and "fake" not in t for t in tok], tok[0] != tok[1],
+           scenario_text("s", "note", "main", "7-1").count("\n")), ([True, True], True, 1))
     flows_real = flows(real)
     check("#699 C7: the real file: each step of the flow is played by a scenario that moves no label but the acceptance, or held by its test, C2 and C6",
           (sorted(flows_real), sorted(c for s in real["scenarios"] for c in s.get("covers") or [] if c.startswith("flow:")),
@@ -3726,8 +4233,9 @@ def main(argv):
         write_results(results, a.out)
         return 0 if all(r["ok"] for r in results) else 1
     if argv[:1] == ["plan"] and len(argv) == 1:
-        scenarios = load_yaml(os.path.join(ROOT, SCENARIOS)).get("scenarios") or []
-        wrong = timing(scenarios)
+        conf = load_yaml(os.path.join(ROOT, SCENARIOS))
+        scenarios = conf.get("scenarios") or []
+        wrong = timing(scenarios, conf.get("bodies") or {})
         for line in wrong:
             print(line, file=sys.stderr)
         print(json.dumps(scenario_plan(scenarios), separators=(",", ":")))
@@ -3756,7 +4264,7 @@ def main(argv):
         if argv[0] == "move":
             results = move_callers(a.repo, a.ref, callers_gh(), minutes=a.minutes, record=lambda m: write_moved(m, a.moved))[1]
         else:
-            results = play_group(load_yaml(os.path.join(ROOT, SCENARIOS)), a.group, a.repo, a.ref, minutes=a.minutes)
+            results = play_watched(load_yaml(os.path.join(ROOT, SCENARIOS)), a.group, a.repo, a.ref, a.minutes, a.out)
         write_results(results, a.out)
         return 0 if all(r["ok"] for r in results) else 1
     if argv[:1] == ["merge"]:
@@ -3772,7 +4280,9 @@ def main(argv):
         a = p.parse_args(argv[1:])
         jobs = dict(j.split("=", 1) if "=" in j else (j, "") for j in a.job)
         results = merge_dir(a.dir, read_groups(a.groups), jobs, a.run, a.minutes, a.play_minutes)
-        write_results(results, a.out)
+        # #843: what the runs triggered, never what `covers:` says; a
+        # warning that fails nothing.
+        write_results(results, a.out, run_coverage(results, played(ROOT, test_pack())))
         return 0 if all(r["ok"] for r in results) else 1
     if argv[:1] == ["back"]:
         import argparse
