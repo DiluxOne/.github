@@ -54,7 +54,7 @@ high-risk:
 # How a bug in this repository is reproduced (#376, scripts/repro-ways.py,
 # which says what each key means). It has no kind, so nothing else declares
 # a way for it: a script's logic is a Python test that calls the script, and
-# a workflow's wiring a Python test that reads the workflow's file. Both run
+# a workflow's wiring a Python test that runs the step with stubs. Both run
 # with pytest, installed by `setup` before the test is in the tree, through
 # scripts/repro-run.sh: no network, no secrets, a JUnit report.
 repro:
@@ -96,22 +96,44 @@ repro:
       minutes: 10
       list: [".github/workflows/*.yml", "workflow-templates/*.yml"]
       example: tests/examples/test_workflow.py
+      # #841: a test that does not run the step's command (its `run:`, or a
+      # script a workflow calls) through a process call (subprocess,
+      # os.system) is broken, "the test runs no step", whatever its report
+      # says.
+      runs-step: true
       guide: |
-        A pytest test that reads the workflow the report names as YAML (PyYAML, `yaml.safe_load`) and
-        asserts its wiring: its triggers (`on:`), a job's or a step's `if:`, the order of the steps, the
-        inputs and `env:` a step gets, the arguments a `run:` passes. It never runs the workflow.
-        - PyYAML reads the key `on` as the boolean True: take the triggers with `wf.get("on", wf.get(True))`.
-        - Find a step by its `name` or `id`, never by its position, and compare positions to assert an
-          order: `names.index("A") < names.index("B")`.
-        - For what a `run:` script does, assert on its text (the command and the flags the report says
-          are missing or wrong); when the logic lives in a script under scripts/, test that script
-          instead, as a logic bug.
+        A pytest test that RUNS the step the report names and asserts on what it did. Asserting on the
+        workflow's text alone is no reproduction, nor is running some other command (`echo hi`): a test
+        that does not run the step's `run:` (or the script it calls) through `subprocess` is broken, "the
+        test runs no step", whatever it asserts.
+        - Read the workflow as YAML (PyYAML, `yaml.safe_load`) and find the step by its `name` or `id`,
+          never by its position; take its `run:` script and its `env:`.
+        - Run it with `subprocess.run(["bash", "-c", script], env=..., capture_output=True, text=True)`,
+          from the repository's root (`Path(__file__).resolve().parents[2]`), without `check`, with
+          stubs on PATH: a fake `gh`, `git`, `curl` (whatever the step calls) written in `tmp_path`,
+          each one logging its arguments to a file and printing what the report's case needs. Give it
+          the `${{ }}` values it reads as environment variables, and `GITHUB_OUTPUT` a file in
+          `tmp_path`. Never the network nor a token: it runs with neither.
+        - Assert on what the step did: the stub's log (the command and the flags the report says are
+          missing or wrong), its exit code, its output, the lines it wrote to `$GITHUB_OUTPUT`.
+        - When the logic lives in a script under scripts/ that the step calls, run that script as a command
+          the same way (`subprocess.run(["python3", "scripts/<name>.py", ...])`, its stubs on PATH): a test
+          that only calls its functions runs no step here. Name the script as its own argument, or as the
+          command of a shell string (`bash -c "scripts/<name>.sh ..."`); a string that only mentions it
+          (`bash -c "echo scripts/<name>.sh"`) runs no step.
+        - Write the stubs and the `subprocess` call in the test file itself: the check reads only that
+          file's own process calls, so a helper that runs the step for it (from another module) runs
+          no step here. Never cut the workflow's text
+          between two literals (`text[text.index("..."):text.index("...")]`, `text.split("...")[1]`): the
+          scripts job refuses it (scripts/literal-slices.py, #845).
         - A plain `assert` on what the report expected, so the test FAILS while the bug is there.
         - Small: one or two test functions, named after the expectation.
 
 # The "Test first" check (#734, scripts/test-first.py): a fix or a feature
 # here carries a pytest test under tests/ that fails at the base and passes
-# at the head, run by the `python` way above. A script's own `--test` case
+# at the head, run by the `python` way above. At the base it fails on an
+# assertion, a feature's as a fix's (#845): one that only breaks there (an
+# ImportError, a missing file) asserted nothing. A script's own `--test` case
 # cannot run at the base apart from its code, so it alone is no test here.
 # The release scenarios, fixtures, the reproduction's examples and the
 # review's evaluation set are never a test. Read from the base commit.

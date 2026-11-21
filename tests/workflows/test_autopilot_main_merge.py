@@ -1,8 +1,17 @@
 """The autopilot brings main into its branch (#549, #550, #561): the wiring
 no script's --test can see, read from the workflow's file."""
+import hashlib
+import os
+import subprocess
 from pathlib import Path
+from unittest import mock
 
 import yaml
+
+try:
+    import steps  # tests/workflows/steps.py: it runs a workflow's step with stubs
+except ModuleNotFoundError:  # Test first's base has no steps.py (#845): there each call to it fails an assertion
+    steps = mock.Mock(**{f"{n}.side_effect": AssertionError("tests/workflows/steps.py is missing") for n in ("evaluate", "run", "step", "workflow")})
 
 ROOT = Path(__file__).resolve().parents[2]
 FLOWS = ROOT / ".github" / "workflows"
@@ -54,15 +63,94 @@ def test_start_is_recorded_before_the_merge_and_base_after():
     assert run.index('echo "start=') < merge < run.index('echo "base=')
 
 
-def test_a_reproduced_bugs_draft_starts_at_main_and_checks_the_test_on_top():
-    s = step("draft", "draft")
-    run = s["run"]
-    block = run[run.index('if [ "$LANE" = bugfix-reproduced ]'):run.index("elif adopt=")]
-    assert s["env"]["DEFAULT"] == "${{ needs.prep.outputs.default }}"
-    assert 'git checkout -q -b "$branch" "origin/$DEFAULT"' in block
-    assert block.index("git cherry-pick") < block.index('"HEAD:$REPRO_TEST"')
-    assert "git cherry-pick --abort" in block and "why=" in block
-    assert 'onto="origin/$DEFAULT"' in block
+# The draft step's helpers, stood in: each records its call, and
+# api-commit.py what it would push (the branch's commits onto main).
+FAKE_SCRIPT = r"""import json, os, subprocess, sys
+name = os.path.basename(sys.argv[0])
+with open(os.environ["DX_CALLS"], "a") as fh:
+    fh.write(json.dumps([name, *sys.argv[1:]]) + "\n")
+args = sys.argv[1:]
+if name == "autopilot.py" and args[:1] == ["draft"]:
+    print(json.dumps({"branch": "fix/7-save", "title": "fix: save (#7)", "body": "Closes #7"}))
+elif name == "receipts.py" and args[:2] == ["state", "get"]:
+    print("null")
+elif name == "api-commit.py":
+    log = subprocess.run(["git", "log", "--format=%s", args[args.index("--onto") + 1] + "..HEAD"], capture_output=True, text=True).stdout
+    open(os.environ["RUNNER_TEMP"] + "/pushed.txt", "w").write(log)
+"""
+GH = r"""case "$*" in
+  *"--json comments "*) echo 0 ;;
+  *"--json title "*) echo "Save fails" ;;
+  "api repos/o/r/issues/7 "*) echo Bug ;;
+  "pr create "*) echo https://github.com/o/r/pull/9 ;;
+  "repo view "*) echo main ;;
+esac"""
+TEST = "tests/repro/test_issue_7.py"
+IDENTITY = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+
+def git(cwd, *args):
+    return subprocess.run(["git", *args], cwd=cwd, env={**os.environ, **IDENTITY}, check=True, capture_output=True, text=True).stdout.strip()
+
+
+def reproduced_draft(tmp_path, test_text="def test_save():\n    assert False\n", main_touches_test=False, sealed=None):
+    """The draft step of a reproduced bug: origin has main, moved on since
+    the reproduction branch left it, and that branch with its failing test."""
+    origin, seed = tmp_path / "origin.git", tmp_path / "seed"
+    git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    git(tmp_path, "clone", "-q", str(origin), str(seed))
+    (seed / "app.txt").write_text("v1\n")
+    git(seed, "add", ".")
+    git(seed, "commit", "-q", "-m", "app")
+    git(seed, "push", "-q", "origin", "HEAD:main")
+    git(seed, "checkout", "-q", "-b", "repro/7")
+    (seed / TEST).parent.mkdir(parents=True)
+    (seed / TEST).write_text(test_text)
+    git(seed, "add", ".")
+    git(seed, "commit", "-q", "-m", "test: reproduce #7")
+    git(seed, "push", "-q", "origin", "repro/7")
+    git(seed, "checkout", "-q", "main")
+    if main_touches_test:
+        (seed / TEST).parent.mkdir(parents=True, exist_ok=True)
+        (seed / TEST).write_text("other\n")
+    (seed / "app.txt").write_text("v2\n")
+    git(seed, "add", ".")
+    git(seed, "commit", "-q", "-m", "main moved on")
+    git(seed, "push", "-q", "origin", "HEAD:main")
+    work = tmp_path / "work"
+    git(tmp_path, "clone", "-q", str(origin), str(work))
+    files = {f".dx-central/scripts/{n}": FAKE_SCRIPT for n in ("autopilot.py", "receipts.py", "api-commit.py", "issue-schema.py")}
+    sha = hashlib.sha256(test_text.encode()).hexdigest() if sealed is None else sealed
+    ran = steps.run(steps.step("autopilot.yml", "draft", job="draft"), tmp_path, central=False, files=files, stubs={"gh": GH},
+                    env={"NUMBER": "7", "LANE": "bugfix-reproduced", "DEFAULT": "main", "REPRO_BRANCH": "repro/7",
+                         "REPRO_TEST": TEST, "REPRO_SHA": sha, "STARTED": "", "DX_BOT_APP": "dilux-bot", **IDENTITY})
+    return ran, work
+
+
+def test_a_reproduced_bugs_draft_starts_at_main_and_checks_the_test_on_top(tmp_path):
+    ran, work = reproduced_draft(tmp_path)
+    assert ran.code == 0, ran.stdout + ran.stderr
+    assert ran.output.get("branch") == "fix/7-save" and ran.output.get("pr") == "9", ran.output
+    # Current main, with the reproduction's commit alone on top of it.
+    assert git(work, "rev-parse", "HEAD~1") == git(work, "rev-parse", "origin/main")
+    assert git(work, "show", "HEAD:app.txt") == "v2"
+    assert ["api-commit.py", "push", "fix/7-save", "--onto", "origin/main"] in ran.calls
+    assert (ran.temp / "pushed.txt").read_text().splitlines() == ["test: reproduce #7"]
+
+
+def test_a_reproduction_test_that_is_not_the_sealed_one_opens_no_draft(tmp_path):
+    ran, _ = reproduced_draft(tmp_path, sealed="0" * 64)
+    assert ran.code == 0, ran.stdout + ran.stderr
+    assert "is not the one the PRD sealed" in ran.output.get("why", ""), ran.output
+    assert not any(c[0] == "api-commit.py" for c in ran.calls) and not any(c[:2] == ["pr", "create"] for c in ran.of("gh"))
+
+
+def test_reproduction_commits_that_do_not_apply_on_main_open_no_draft(tmp_path):
+    ran, work = reproduced_draft(tmp_path, main_touches_test=True)
+    assert ran.code == 0, ran.stdout + ran.stderr
+    assert "do not apply on main" in ran.output.get("why", ""), ran.output
+    assert not (work / ".git" / "CHERRY_PICK_HEAD").exists(), "the cherry-pick is aborted"
+    assert not any(c[0] == "api-commit.py" for c in ran.calls)
 
 
 def test_the_workflows_guard_reads_only_the_agents_own_commits():

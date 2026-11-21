@@ -1,34 +1,84 @@
 """An accepted decision's sub-issue starts the autopilot (#415): the start on
 `opened` is only for an issue dilux-bot opens with no label, never a
-reproduced bug's lane issue, and a start that finds no lane asks once more."""
+reproduced bug's lane issue, and a start that finds no lane asks once more.
+
+The triage's autopilot job condition is evaluated on events; autopilot.yml's
+`may` step is run with its central scripts stubbed."""
 from pathlib import Path
+from unittest import mock
 
-import yaml
+try:
+    import steps  # tests/workflows/steps.py: it runs a workflow's step with stubs
+except ModuleNotFoundError:  # Test first's base has no steps.py (#845): there each call to it fails an assertion
+    steps = mock.Mock(**{f"{n}.side_effect": AssertionError("tests/workflows/steps.py is missing") for n in ("evaluate", "run", "step", "workflow")})
+evaluate, run, step, workflow = steps.evaluate, steps.run, steps.step, steps.workflow
 
-ROOT = Path(__file__).resolve().parents[2]
+BOT = "dilux-bot[bot]"
 
 
-def triage_start():
-    job = yaml.safe_load((ROOT / ".github/workflows/issue-triage.yml").read_text(encoding="utf-8"))["jobs"]["autopilot"]
-    return " ".join(str(job["if"]).split()), job["with"]["mode"]
+def starts_on_opened(sender, labels, title="A decision's part"):
+    ctx = {"needs.steer.result": "skipped", "needs.steer.outputs.ok": "", "github.event_name": "issues",
+           "github.event.issue.labels.*.name": [l["name"] for l in labels], "github.event.issue.labels": labels,
+           "github.event.action": "opened", "needs.own.outputs.accepted": "false", "github.event.label.name": "",
+           "github.event.sender.type": "Bot" if sender == BOT else "User", "github.event.sender.login": sender,
+           "vars.DX_BOT_LOGIN": BOT, "needs.edit-start.outputs.start": "", "github.event.issue.title": title}
+    return evaluate(workflow("issue-triage.yml")["jobs"]["autopilot"]["if"], ctx)
 
 
 def test_the_start_on_opened_is_dilux_bots_unlabelled_issue():
-    cond, _ = triage_start()
-    # The last alternative of the condition is the start on `opened`.
-    opened = cond[cond.index("(github.event.action == 'opened'"):]
-    assert "github.event.sender.login == vars.DX_BOT_LOGIN" in opened
-    assert "toJSON(github.event.issue.labels) == '[]'" in opened
-    assert "!startsWith(github.event.issue.title, 'The bug reproduced from ')" in opened
+    assert starts_on_opened(BOT, [])
+    assert not starts_on_opened("mallory", [])
+    assert not starts_on_opened(BOT, [{"name": "spike"}])
+    assert not starts_on_opened(BOT, [], title="The bug reproduced from #7")
 
 
 def test_an_opened_issue_starts_and_only_autopilot_continue_continues():
-    _, mode = triage_start()
+    mode = workflow("issue-triage.yml")["jobs"]["autopilot"]["with"]["mode"]
     assert mode == "${{ github.event.label.name == 'autopilot:continue' && 'continue' || 'start' }}"
 
 
-def test_a_start_that_finds_no_lane_asks_once_more():
-    text = (ROOT / ".github/workflows/autopilot.yml").read_text(encoding="utf-8")
-    step = text[text.index("A decision's sub-issue starts when it opens"):]
-    step = step[:step.index('echo "go=false"')]
-    assert step.count("autopilot.py lane") == 2 and '"$AS" != start' in step and "sleep" in step
+# autopilot.py stand-in: `lane` fails until its LANE_AFTER-th call, then
+# names the lane; `may-start` refuses, which ends the step after the lane.
+AUTOPILOT = """import os, sys
+cmd = sys.argv[1]
+log = os.path.join(os.environ["RUNNER_TEMP"], "autopilot.log")
+open(log, "a").write(cmd + "\\n")
+if cmd == "lane":
+    n = sum(1 for l in open(log) if l == "lane\\n")
+    if n < int(os.environ["LANE_AFTER"]):
+        print("no lane yet")
+        sys.exit(1)
+    print("delegated")
+elif cmd == "may-start":
+    print("stopped here")
+    sys.exit(1)
+"""
+
+
+def may(tmp_path, as_, lane_after):
+    env = {"AS": as_, "MODE": as_, "ISSUE": "9", "PR": "", "LANE_AFTER": str(lane_after), "GH_TOKEN": "t"}
+    ran = run(step("autopilot.yml", "may", job="prep"), tmp_path, env=env, central=False,
+              stubs={"sleep": ":", "gh": "echo"}, files={".dx-central/scripts/autopilot.py": AUTOPILOT})
+    asked = (ran.temp / "autopilot.log").read_text().split()
+    return ran, asked
+
+
+def test_a_start_that_finds_no_lane_asks_once_more(tmp_path):
+    ran, asked = may(tmp_path, "start", 2)
+    assert ran.code == 0, ran.stderr
+    assert asked.count("lane") == 2 and ran.output["lane"] == "delegated"
+    assert ran.of("sleep") == [["15"]]
+
+
+def test_a_start_asks_for_half_a_minute_and_no_more(tmp_path):
+    ran, asked = may(tmp_path, "start", 9)
+    assert ran.code == 0, ran.stderr
+    assert asked.count("lane") == 3 and ran.output == {"go": "false"}
+    assert ran.of("sleep") == [["15"], ["15"]]
+
+
+def test_a_continue_that_finds_no_lane_does_not_wait(tmp_path):
+    ran, asked = may(tmp_path, "continue", 2)
+    assert ran.code == 0, ran.stderr
+    assert asked.count("lane") == 1 and ran.output == {"go": "false"}
+    assert ran.of("sleep") == []

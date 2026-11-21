@@ -6,6 +6,7 @@ still in the working tree, so the bundle the apply job pushes carries it.
 The step runs as written, in a throwaway repository, with the engine's
 helpers stood in."""
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -15,6 +16,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 import autopilot  # noqa: E402
+from steps import numbered  # noqa: E402
 
 JOBS = yaml.safe_load((ROOT / ".github/workflows/autopilot.yml").read_text(encoding="utf-8"))["jobs"]
 SUBJECT = "chore(autopilot): work left when the run ended"
@@ -28,14 +30,28 @@ def prompt():
     return autopilot.prompt_work("DiluxOne/site", 7, 9, "fix/7-x", "the PRD", [("C1", "one", "t1.py"), ("C2", "two", "t2.py")], False)
 
 
+def prompt_lists(p):
+    """The prompt's numbered lists, in order: each block of numbered steps."""
+    return [items for items in (numbered(block) for block in re.split(r"\n\s*\n", p)) if items]
+
+
 def test_the_prompt_commits_and_pushes_each_criterion_before_the_next():
-    p = prompt()
-    steps = p[p.index("For each one, in that order:"):p.index("When every box is ticked")]
-    assert "the moment its test passes" in steps
-    assert "before you read anything for the next one" in steps
-    assert "never batch two criteria" in steps.lower() or "never two criteria in one commit" in steps
-    # The commit, then its push, then the tick, in that order.
-    assert steps.index("Commit it alone") < steps.index("autopilot.py push") < steps.index("autopilot.py tick")
+    lists = prompt_lists(prompt())
+    # Two lists: the steps for each criterion, then the steps once every
+    # box is ticked (the review, make pre-pr, the credits, finish).
+    assert len(lists) == 2
+    per_criterion, at_the_end = lists
+    at = lambda items, word: [i for i, item in enumerate(items) if word in item]
+    commit, push, tick = at(per_criterion, "Commit it alone"), at(per_criterion, "autopilot.py push"), at(per_criterion, "autopilot.py tick")
+    # The commit, then its push, then the tick, each one step, in that
+    # order, all inside the loop over the criteria.
+    assert len(commit) == len(push) == len(tick) == 1
+    assert commit[0] < push[0] < tick[0]
+    assert not at(at_the_end, "autopilot.py tick")
+    step = per_criterion[commit[0]]
+    assert "the moment its test passes" in step
+    assert "before you read anything for the next one" in step
+    assert "never batch two criteria" in step.lower() or "never two criteria in one commit" in step
 
 
 def git(repo, *args):

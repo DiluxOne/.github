@@ -7,10 +7,13 @@ import contextlib
 import importlib.util
 import io
 import os
+import re
 import subprocess
 from pathlib import Path
 
 import yaml
+
+from steps import numbered
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -36,12 +39,18 @@ def test_the_work_step_gets_the_base_and_the_io_the_checks_read():
 def test_the_prompt_reviews_then_runs_make_pre_pr_then_finishes():
     ap = autopilot()
     pw = ap.prompt_work("o/r", "7", "8", "feat/7-x", "x", [("C1", "a", None)], False, notes=("wordpress-plugin", ()))
-    review = pw.index("scripts/local-review.sh --base \"$DX_BASE\"")
-    check = pw.index(f"{ap.HELPER} check")
-    ready = pw.index(f"{ap.HELPER} finish ready")
-    assert review < check < ready
-    assert "make pre-pr" in pw[check:ready]
-    assert "refuses unless `make pre-pr` passed at HEAD" in pw
+    # The prompt's numbered lists: the steps for each criterion, then the
+    # steps once every box is ticked.
+    lists = [items for items in (numbered(block) for block in re.split(r"\n\s*\n", pw)) if items]
+    assert len(lists) == 2
+    finish = lists[-1]
+    at = lambda word: [i for i, item in enumerate(finish) if word in item]
+    review, check, ready = at('scripts/local-review.sh --base "$DX_BASE"'), at(f"{ap.HELPER} check"), at(f"{ap.HELPER} finish ready")
+    # One step each, in that order: the local review, make pre-pr, ready.
+    assert len(review) == len(check) == len(ready) == 1
+    assert review[0] < check[0] < ready[0]
+    assert "make pre-pr" in finish[check[0]]
+    assert "refuses unless `make pre-pr` passed at HEAD" in finish[ready[0]]
 
 
 def git(d, *args):

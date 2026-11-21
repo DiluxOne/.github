@@ -3,8 +3,14 @@ release workflow makes the GitHub release with the release App's token, and
 the publish workflow brings the catalog's entry up to it through a pull
 request on diluxone-plugins-ai, with a token scoped to that repository."""
 from pathlib import Path
+from unittest import mock
 
 import yaml
+
+try:
+    import steps as steps_lib  # tests/workflows/steps.py: it runs a workflow's step with stubs
+except ModuleNotFoundError:  # Test first's base has no steps.py (#845): there each call to it fails an assertion
+    steps_lib = mock.Mock(**{f"{n}.side_effect": AssertionError("tests/workflows/steps.py is missing") for n in ("evaluate", "run", "step", "workflow")})
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -72,20 +78,83 @@ def test_the_pack_releases_to_the_catalog():
     assert "stable" not in release and "{version}" in release["prepare"]
 
 
-def test_the_publish_is_safe_to_re_run():
-    # A re-run after a failed push or pull request reuses the issue the first
-    # run opened, and a failed read of the open ones stops it (#552).
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("agent_manifests", ROOT / "scripts" / "agent-manifests.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    run = " ".join(str(s.get("run", "")) for s in steps(load(".github/workflows/plugin-publish-ai.yml"), "bump"))
-    plan, create = run.index("agent-manifests.py publish-plan"), run.index("gh issue create")
-    assert run.index("gh issue list") < plan < create and run.index("gh pr list") < plan
-    assert '[ "$action" = create ]' in run[:create] and "*)" in run[plan:create]
-    assert "| grep" not in run[:create], "a failed read must not read as 'none open'"
-    # The titles it opens are the ones the plan looks for.
-    issue = mod.PUBLISH_ISSUE.format(name="$name", version="$VERSION")
-    pr = mod.PUBLISH_PR.format(name="$name", version="$VERSION")
-    assert f'--title "{issue}"' in run and f'--title "{pr}"' in run
-    assert 'api-commit.py push "$branch" --onto "origin/$base" --force' in run
+# agent-manifests.py, with its `bump` standing in (it adds the version to
+# the catalog's one file) and its publish-plan the real one.
+MANIFESTS = """import runpy, sys
+if sys.argv[1] == "bump":
+    with open("entry.txt", "a") as f:
+        f.write(sys.argv[2] + "\\n")
+    sys.exit(0)
+sys.argv[0] = {real!r}
+runpy.run_path({real!r}, run_name="__main__")
+"""
+
+# api-commit.py, recording what it pushes.
+PUSH = """import json, os, sys
+with open(os.environ["DX_CALLS"], "a") as f:
+    f.write(json.dumps(["api-commit.py"] + sys.argv[1:]) + "\\n")
+"""
+
+GH = """case "$1 $2" in
+  "issue list") [ -z "${FAIL_LIST:-}" ] || exit 1; cat "$OPEN_ISSUES" ;;
+  "pr list") cat "$OPEN_PRS" ;;
+  "issue create") echo https://github.com/DiluxOne/catalog/issues/31 ;;
+esac"""
+
+
+def publish(tmp_path, issues=(), prs=(), fail_list=False):
+    """The bump job's step, on a catalog checkout whose bump changes a file,
+    with gh listing ISSUES and PRS (number, title) as open."""
+    import json
+    import subprocess
+    run, step = steps_lib.run, steps_lib.step
+
+    real = str(ROOT / "scripts" / "agent-manifests.py")
+    catalog = tmp_path / "work" / "catalog"
+    catalog.mkdir(parents=True)
+    git = lambda *a: subprocess.run(["git", "-C", str(catalog), "-c", "user.name=t", "-c", "user.email=t@t", *a], check=True, capture_output=True)
+    git("init", "-q", "-b", "main")
+    (catalog / "entry.txt").write_text("1.0.0\n")
+    git("add", "entry.txt")
+    git("commit", "-q", "-m", "catalog")
+    for name, items in (("issues", issues), ("prs", prs)):
+        (tmp_path / f"{name}.json").write_text(json.dumps([{"number": n, "title": t} for n, t in items]))
+    files = {".dx-central/scripts/agent-manifests.py": MANIFESTS.format(real=real), ".dx-central/scripts/api-commit.py": PUSH}
+    env = {"PLUGIN": "DiluxOne/daw", "VERSION": "1.3.0", "TAG": "v1.3.0", "CATALOG": "DiluxOne/catalog", "DX_BOT_LOGIN": "dilux-bot[bot]",
+           "RELEASE_URL": "https://github.com/DiluxOne/daw/releases/tag/v1.3.0", "OPEN_ISSUES": str(tmp_path / "issues.json"),
+           "OPEN_PRS": str(tmp_path / "prs.json"), "FAIL_LIST": "1" if fail_list else ""}
+    s = step("plugin-publish-ai.yml", "An issue and a pull request in the catalog", job="bump")
+    return run(s, tmp_path, env=env, files=files, central=False, stubs={"gh": GH})
+
+
+def creates(ran):
+    return [c[:2] + [c[c.index("--title") + 1]] for c in ran.of("gh") if c[1] == "create"]
+
+
+def test_the_publish_opens_the_issue_and_its_pull_request(tmp_path):
+    ran = publish(tmp_path)
+    assert ran.code == 0, ran.stdout + ran.stderr
+    assert creates(ran) == [["issue", "create", "Bring daw to 1.3.0 in the catalog"], ["pr", "create", "chore(catalog): daw 1.3.0"]]
+    pr = next(c for c in ran.of("gh") if c[:2] == ["pr", "create"])
+    assert "Closes #31." in pr[pr.index("--body") + 1] and pr[pr.index("--head") + 1] == "chore/31-daw-1-3-0"
+    # The branch is the run's own, made again from the catalog's main.
+    assert ran.of("api-commit.py") == [["push", "chore/31-daw-1-3-0", "--onto", "origin/main", "--force"]]
+
+
+def test_a_re_run_reuses_the_issue_the_first_run_opened(tmp_path):
+    ran = publish(tmp_path, issues=[(30, "Bring daw to 1.3.0 in the catalog")])
+    assert ran.code == 0, ran.stdout + ran.stderr
+    assert creates(ran) == [["pr", "create", "chore(catalog): daw 1.3.0"]]
+    assert "already open, #30" in ran.stdout
+
+
+def test_a_re_run_with_the_pull_request_open_opens_nothing(tmp_path):
+    ran = publish(tmp_path, issues=[(30, "Bring daw to 1.3.0 in the catalog")], prs=[(32, "chore(catalog): daw 1.3.0")])
+    assert ran.code == 0, ran.stdout + ran.stderr
+    assert creates(ran) == [] and "already open: #32" in ran.stdout
+
+
+def test_a_failed_read_of_the_open_ones_stops_it(tmp_path):
+    ran = publish(tmp_path, fail_list=True)
+    assert ran.code != 0
+    assert creates(ran) == []

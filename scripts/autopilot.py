@@ -728,7 +728,17 @@ def required_of(rules, runs, rows):
     return sorted(names)
 
 
-def criteria_unmet(body, head_files, changed=None, checks=None, required=None, decl=None, pr_type="", head_sha=""):
+def is_fixed(pattern, path):
+    """Whether PATH is a file of the test repository's fixed change (#860):
+    PATTERN, its pack's `fixed-change.file`, with `{n}`, `{id}` and
+    `{scenario}` each one path segment. False for no pattern. Pure."""
+    if not pattern:
+        return False
+    rx = re.sub(r"\\\{(?:n|id|scenario)\\\}", "[^/]+", re.escape(pattern))
+    return re.fullmatch(rx, path or "") is not None
+
+
+def criteria_unmet(body, head_files, changed=None, checks=None, required=None, decl=None, pr_type="", head_sha="", fixed=""):
     """[(id, why)] of the criteria not met (G6). Each criterion's test, named
     in the Spec, must exist at the head and be one of the files the pull
     request adds or changes: a path that was already there and that the
@@ -736,7 +746,10 @@ def criteria_unmet(body, head_files, changed=None, checks=None, required=None, d
     conclusion} at the head) given (#842), the check that runs the test
     (check_of, from DECL and PR_TYPE) must also be one of the base's
     REQUIRED checks and have concluded `success`: pending, skipped,
-    neutral, missing or any other conclusion is not met."""
+    neutral, missing or any other conclusion is not met. A test that is a
+    file of the fixed change (FIXED, the test repository's pattern, #860)
+    is met by being there and changed: it is what the fixed change writes,
+    and no check runs it."""
     ids = schema.check(body)["criteria"]
     sections, _ = schema.parse(body)
     tests = next((t for h, t in sections if h == "Spec: tests"), "")
@@ -749,7 +762,7 @@ def criteria_unmet(body, head_files, changed=None, checks=None, required=None, d
         if not present:
             unmet.append((i, f"no test at the head for {i}"))
             continue
-        if checks is None:
+        if checks is None or any(is_fixed(fixed, p) for p in present):
             continue
         why = []
         for p in present:
@@ -840,6 +853,114 @@ def with_run(state, entry):
     number. Pure."""
     runs = [r for r in _runs(state) if r["n"] != entry["n"]] + [entry]
     return sorted(runs, key=lambda r: r["n"])
+
+
+def free_end(mode, stopped, asked, lost, held_back, refused):
+    """Whether the run that ends is free on the pull request's board: its
+    runner was lost (#479), its `make pre-pr` held `ready` back (#673), or
+    apply-and-end refused its commits because they do not build on the
+    branch as GitHub has it (#856 C1: `refused`, the engine's race, never
+    the agent's fault). Never a fix round (no run on the board) nor a run
+    the agent ended itself with a stop or a question. Pure."""
+    return mode != "fix" and not stopped and not asked and bool(lost or held_back or refused)
+
+
+def freed_runs(state, n, free):
+    """The board's `runs` with run N's entry made free, when `free` and it
+    is there and counts; None when there is nothing to rewrite. Pure."""
+    mine = [r for r in _runs(state) if r["n"] == n]
+    if not free or not mine or mine[0].get("free"):
+        return None
+    return with_run(state, run_entry(n, True))
+
+
+# `/autopilot more` (#856): someone `who-decides` allows gives one pull
+# request, at its cap, more runs, from a comment on its issue whose first
+# line is the command; whatever follows is the next run's hint. Each one is
+# an entry in `extensions` on the pull request's board ({by, at, comment}),
+# and adds the policy's `autopilot-runs` to its cap, at most MAX_EXTENSIONS
+# times. Anyone else gets one reply, under MORE_REFUSED, and nothing else.
+MORE = "/autopilot more"
+MORE_MARK = "<!-- dx-autopilot-more -->"
+MORE_REFUSED = "<!-- dx-autopilot-more-refused -->"
+# Who decides could not be read: said once, until another answer follows it.
+MORE_UNREAD = "<!-- dx-autopilot-more-unread -->"
+MAX_EXTENSIONS = 2
+
+
+def extensions(state):
+    """The extensions on a pull request's board (#856). Pure."""
+    return [e for e in ((state or {}).get("extensions") or []) if isinstance(e, dict)]
+
+
+def runs_cap(policy_cap, state):
+    """The runs cap of one pull request (#856): the policy's
+    `autopilot-runs`, once more for each extension on its board, never past
+    MAX_EXTENSIONS of them. A board edited by hand is read by run_numbers
+    as the cap reached, whatever this says. Pure."""
+    return int(policy_cap) * (1 + min(len(extensions(state)), MAX_EXTENSIONS))
+
+
+def more_hint(body):
+    """The hint of a `/autopilot more` comment (#856): what follows the
+    command, on its first line or below it, "" when nothing does; None when
+    the comment is not the command. Pure."""
+    text = str(body or "").lstrip()
+    first, _, rest = text.partition("\n")
+    head = first.strip()
+    if head != MORE and not (head.startswith(MORE) and head[len(MORE)].isspace()):
+        return None
+    return (head[len(MORE):].strip() + "\n" + rest).strip()
+
+
+def more_plan(allowed, state, intact, policy_cap, at_cap, said_before):
+    """What a `/autopilot more` does (#856): {go, reply, cap}. `go`, the
+    extension is given; `reply`, the kind of dilux-bot's answer on the issue
+    (more_reply), "" for none. Someone `who-decides` does not allow gets no
+    run and one reply ever (`said_before`); a board edited by hand, a pull
+    request below its cap, or one already extended MAX_EXTENSIONS times, a
+    refusal that says why. Pure."""
+    if not allowed:
+        return {"go": False, "reply": "" if said_before else "refused", "cap": None}
+    if not intact:
+        return {"go": False, "reply": "hand", "cap": None}
+    had = extensions(state)
+    if len(had) >= MAX_EXTENSIONS:
+        return {"go": False, "reply": "spent", "cap": runs_cap(policy_cap, state)}
+    if not at_cap:
+        return {"go": False, "reply": "below", "cap": runs_cap(policy_cap, state)}
+    return {"go": True, "reply": "extended", "cap": runs_cap(policy_cap, {"extensions": had + [{}]})}
+
+
+def unread_said(comments):
+    """Whether dilux-bot's last answer to a `/autopilot more` on the issue
+    is the one that who decides could not be read (#856), so it is not said
+    again; any other answer after it says it anew. Pure."""
+    marks = (MORE_MARK, MORE_REFUSED, MORE_UNREAD)
+    mine = [c for c in comments or [] if _login(c) in BOT_LOGINS and str(c.get("body") or "").startswith(marks)]
+    return bool(mine) and str(max(mine, key=_at).get("body") or "").startswith(MORE_UNREAD)
+
+
+def more_reply(kind, issue_url, pr="", cap=0, runs=0, policy_cap=5, n=0, unread=""):
+    """dilux-bot's answer to a `/autopilot more` on the issue (#856). Pure."""
+    claim = (f"Anyone may `/claim` this issue and finish it with their own code (CONTRIBUTING.md), "
+             f"or a maintainer closes the pull request.")
+    texts = {
+        "refused": (f"{MORE_REFUSED}\nThanks. A maintainer decides whether the autopilot gets more runs on this issue "
+                    f"(`who-decides`), and will read this: {issue_url}"),
+        "unread": (f"{MORE_UNREAD}\nThe autopilot gets no more runs for now: who decides could not be read ({unread}). "
+                   f"Comment `{MORE}` again in a while."),
+        "none": f"{MORE_MARK}\nThe autopilot gets no more runs: no open autopilot pull request closes {issue_url}.",
+        "hand": (f"{MORE_MARK}\nThe autopilot gets no more runs on #{pr}: its board's state was edited by hand, so its runs "
+                 f"cannot be counted. A maintainer restores it first."),
+        "spent": (f"{MORE_MARK}\nThe autopilot gets no more runs on #{pr}: it already had its {MAX_EXTENSIONS} extensions "
+                  f"(its cap is {cap}). {claim}"),
+        "below": (f"{MORE_MARK}\nThe autopilot gets no more runs on #{pr}: it is not at its cap (it ran {runs} of {cap} times), "
+                  f"so `{MORE}` waits until it is. A stop is answered on the pull request."),
+        "extended": (f"{MORE_MARK}\nThe autopilot gets {policy_cap} more runs on #{pr}: its cap is now {cap}, extension "
+                     f"{n} of {MAX_EXTENSIONS}. It continues now, with the rest of the comment as its hint."),
+    }
+    return f"{texts[kind]}\n\n{AI_LINE}"
 
 
 def runner_lost(work_result, agent_outcome):
@@ -1581,10 +1702,17 @@ def answers(comments, deciders):
     (review-reply.yml, #561), reaches the prompt too. Anyone else, the
     issue's author included, is not an answer: with none, the run has
     nothing new and the question still waits."""
+    # #856: a cap end is no new start: a hint written before it, which no
+    # run read, reaches the run a `/autopilot more` gives, with the rest of
+    # that comment (none when nothing follows).
     last = max((c.get("createdAt", "") for c in comments if c.get("body", "").startswith((ASK, STOP, SILENT, UNFINISHED))
                 and (c.get("author") or {}).get("login") in BOT_LOGINS), default="")
-    picked = [c for c in comments if c.get("createdAt", "") > last and (c.get("author") or {}).get("login") in deciders]
-    said = "\n\n".join(f"{(c.get('author') or {}).get('login')}: {c.get('body', '').strip()}" for c in sorted(picked, key=lambda c: c.get("createdAt", "")))
+
+    def text(c):
+        hint = more_hint(c.get("body", ""))
+        return c.get("body", "").strip() if hint is None else hint
+    picked = [c for c in comments if c.get("createdAt", "") > last and (c.get("author") or {}).get("login") in deciders and text(c)]
+    said = "\n\n".join(f"{(c.get('author') or {}).get('login')}: {text(c)}" for c in sorted(picked, key=lambda c: c.get("createdAt", "")))
     # An opinion the maintainer took (#287): its summary, as data, never the
     # other person's own words.
     took = adopted(comments, said)
@@ -1601,8 +1729,30 @@ CAP = "<!-- dx-autopilot-cap -->"
 PERSON_ENDS = ((STOP, "stop"), (SILENT, "silent"), (CAP, "cap"))
 
 
-def cap_comment(why):
-    return f"{CAP}\nThe autopilot does not continue: {why.strip()}. A person takes it from here.\n\n{AI_LINE}"
+def cap_way(runs=5, more=True):
+    """The way past the runs cap (#856): while the pull request has
+    extensions left (`more`), a maintainer may give it `runs` (the policy's
+    `autopilot-runs`) more with `/autopilot more`; past the last, only a
+    claim or closing it. Pure."""
+    if more:
+        return (f"A maintainer may give this pull request {runs} more runs with `{MORE} <hint>` on its issue, at most "
+                f"{MAX_EXTENSIONS} times; or anyone may `/claim` the issue and finish it.")
+    return ("Anyone may `/claim` the issue and finish it with their own code (CONTRIBUTING.md), "
+            "or a maintainer closes the pull request.")
+
+
+def cap_comment(why, runs=5, more=True):
+    """The runs cap's comment on the pull request (#696), with the way past
+    it (#856, cap_way). Pure."""
+    return f"{CAP}\nThe autopilot does not continue: {why.strip()}. A person takes it from here. {cap_way(runs, more)}\n\n{AI_LINE}"
+
+
+def open_to_claim(runs=5, more=True):
+    """The runs cap's comment on the issue (#856), the same way past it as
+    the pull request's (cap_way), unmarked: the issue's comments are not
+    the pull request's ends. Pure."""
+    return (f"The autopilot reached its runs cap on this issue, and its pull request waits for a person. {cap_way(runs, more)} "
+            f"It is on the daily list of claims until someone does.\n\n{AI_LINE}")
 
 
 def _login(c):
@@ -2159,7 +2309,7 @@ def g6_verdict(path):
 
 def decide(policy, body, risk, complexity, blocking, description_ok, files, head_files, autopilot_var, author=BOT, lane_name=LANE, repro_sha="",
            surface=(), issue_type="", criteria_verdict=False, issue_labels=(), sensitive=(), repro_outcome=None, widening=("unknown",),
-           head_checks=None, required_checks=None, decl=None, pr_type="", head_sha=""):
+           head_checks=None, required_checks=None, decl=None, pr_type="", head_sha="", fixed=""):
     """Gate G7. lane_name is the lane the issue is worked under (which_lane);
     for a reproduced bug, repro_sha is the SHA-256 of the reproduction test
     as it is at the head: it must be the one the PRD sealed. surface is what
@@ -2181,7 +2331,14 @@ def decide(policy, body, risk, complexity, blocking, description_ok, files, head
     (the `test-first:` declaration), pr_type (the title's type) and
     head_sha (#842): each criterion's test must have been run by a
     required check that concluded success at the head (criteria_unmet);
-    head_checks None (the old callers) asks only that the test be there."""
+    head_checks None (the old callers) asks only that the test be there.
+    fixed (#860): the test repository's fixed-change pattern, whose file
+    is met by being there and changed, with no check asked of it; "" for
+    every other repository. When every changed file (FILES, not empty) is
+    a file of that pattern (#887), the review's description_ok is not
+    asked: the fixed change matches its description by construction; nor
+    is the review's criteria_verdict (#894): its criteria are met by
+    construction, one marker per criterion being what it writes."""
     if author != BOT:
         return False, f"the autopilot's pull requests are opened by {BOT}, not {author or 'unknown'}"
     if (autopilot_var or "").strip().lower() == "off":
@@ -2239,7 +2396,11 @@ def decide(policy, body, risk, complexity, blocking, description_ok, files, head
         return False, f"it adds public surface ({'; '.join(surface)[:200]}), which only a Feature issue carries: a person merges it"
     if blocking != "false":
         return False, "the review is blocking"
-    if description_ok != "true":
+    # #887: a pull request of the test repository's fixed change alone (its
+    # marker files, written with no model) matches its description by
+    # construction; the review's reading of it is not what G7 waits on.
+    by_construction = bool(fixed) and bool(files) and all(is_fixed(fixed, f) for f in files)
+    if description_ok != "true" and not by_construction:
         return False, "the description does not match the code"
     if not within(risk, caps.get("max-risk", "none")):
         return False, f"risk {risk} is above the lane's {caps.get('max-risk', 'none')}"
@@ -2250,20 +2411,35 @@ def decide(policy, body, risk, complexity, blocking, description_ok, files, head
         return False, "the Spec is missing or incomplete (G3)"
     # G6 (#193): an agent that did not write the code, the review, said
     # each criterion is met, at this head.
-    if criteria_verdict is not False:
+    # #894: but the review's verdict does not hold the fixed change alone
+    # (as #887 for its description): its markers, one per criterion, are what it writes, so its
+    # criteria are met by construction (the tests at the head still count).
+    verdict_bypassed = False
+    if criteria_verdict is not False and by_construction:
+        ids = schema.check(body)["criteria"]
+        verdict_bypassed = bool(ids) and any(not (criteria_verdict or {}).get(i) for i in ids)
+    elif criteria_verdict is not False:
         ids = schema.check(body)["criteria"]
         if ids and criteria_verdict is None:
             return False, "the review has not judged the acceptance criteria at this head (G6)"
         unmet = [i for i in ids if not (criteria_verdict or {}).get(i)]
         if unmet:
             return False, f"the review does not find {', '.join(unmet)} met (G6)"
-    unmet = criteria_unmet(body, set(head_files), set(files), head_checks, required_checks, decl, pr_type, head_sha)
+    unmet = criteria_unmet(body, set(head_files), set(files), head_checks, required_checks, decl, pr_type, head_sha, fixed)
     absent = [i for i, why in unmet if why.startswith("no test at the head")]
     if absent:
         return False, "no test at the head for " + ", ".join(absent) + " (G6)"
     if unmet:
         return False, "; ".join(why for _, why in unmet) + " (G6)"
     passed = ", its required check green at the head" if head_checks is not None else ""
+    if head_checks is not None and fixed:
+        tests = next((t for h, t in schema.parse(body)[0] if h == "Spec: tests"), "")
+        if any(is_fixed(fixed, p) for p in re.findall(r"[\w./-]+\.[A-Za-z0-9]+", tests)):
+            passed = ", its required check green at the head or its test the fixed change's own file, which no check runs"
+    if by_construction and description_ok != "true":
+        passed += ", its description matching by construction (the fixed change, written with no model)"
+    if verdict_bypassed:
+        passed += ", its criteria met by construction (the fixed change, written with no model)"
     return True, f"merges by policy: lane {lane_name}, risk {risk}, complexity {complexity}, every criterion with its test{passed}"
 
 
@@ -2283,13 +2459,15 @@ def check_evidence(env, repo):
     branch's rules, one per line), HEAD_RUNS (the head's workflow runs, one
     per line), TEST_FIRST_POLICY (the repository's .github/review-policy.yml
     at the base), TITLE (the pull request's) and HEAD. Always given: what
-    cannot be read counts as no check, so nothing is met."""
+    cannot be read counts as no check, so nothing is met. `fixed` (#860):
+    the fixed change's pattern (fixed_file), in the test repository alone."""
     rows = read_json_lines(env.get("HEAD_CHECKS") or "")
     policy_path = env.get("TEST_FIRST_POLICY") or ""
     policy = (schema.read_yaml(policy_path) if policy_path and os.path.exists(policy_path) and os.path.getsize(policy_path) else None) or {}
     return {"head_checks": head_checks(rows),
             "required_checks": required_of(read_json_lines(env.get("REQUIRED_CHECKS") or ""), read_json_lines(env.get("HEAD_RUNS") or ""), rows),
-            "decl": test_declaration(repo, policy), "pr_type": test_first.pr_type(env.get("TITLE", ""))[0], "head_sha": env.get("HEAD", "")}
+            "decl": test_declaration(repo, policy), "pr_type": test_first.pr_type(env.get("TITLE", ""))[0], "head_sha": env.get("HEAD", ""),
+            "fixed": fixed_file(org.load(), repo)}
 
 
 def fence(prd_text):
@@ -2831,6 +3009,16 @@ A class on html.
     check("#842 C2 criteria evidence: failure, pending, skipped, neutral or no run: not met",
           [ce(c) for c in ("failure", "pending", "skipped", "neutral", None)], [["C1"]] * 5)
     check("#842 C2 criteria evidence: a check that is not required: not met", ce("success", required=("lint",)), ["C1"])
+    fpat = "scenarios/{scenario}/{n}.test.md"
+    fspec = spec.replace("tests/e2e/toggle.spec.ts", "scenarios/s/12.test.md")
+    fhead = {"header.php", "scenarios/s/12.test.md"}
+    check("#860 the fixed change's own file is met with no check; elsewhere, or another test, it needs its check",
+          ([i for i, _ in criteria_unmet(fspec, fhead, fhead, {}, [], tdecl, "fix", "", fpat)],
+           [i for i, _ in criteria_unmet(fspec, fhead, fhead, {}, [], tdecl, "fix", "", "")],
+           [i for i, _ in criteria_unmet(spec, set(head), set(head), {}, [], tdecl, "fix", "", fpat)],
+           [i for i, _ in criteria_unmet(fspec, fhead, {"header.php"}, {}, [], tdecl, "fix", "", fpat)],
+           is_fixed(fpat, "scenarios/a/b/12.test.md")),
+          ([], ["C1"], ["C1"], ["C1"], False))
     unit = spec.replace("tests/e2e/toggle.spec.ts", "tests/unit/toggle.ts")
     check("#842 C2 criteria evidence: an entry with no check is Test first's, for a fix only",
           (ce("success", (TEST_FIRST_CHECK,), unit, "fix", {"header.php", "tests/unit/toggle.ts"}),
@@ -2841,6 +3029,20 @@ A class on html.
     g7 = decide(pol, spec, "medium", "medium", "false", "true", head, head, "", head_checks={"tests / E2E": "pending"},
                 required_checks=["tests / E2E"], decl=tdecl, pr_type="fix", head_sha="abc")
     check("#842 C2 decide: the reason names the criterion and the check", g7, (False, "C1: `tests / E2E` is pending at abc (G6)"))
+    nomatch = "the description does not match the code"
+    d887 = lambda files, pat: decide(pol, fspec, "medium", "medium", "false", "false", files, files, "", fixed=pat)[1]
+    check("#887 the fixed change alone matches its description by construction; another file, repository or no file does not",
+          (d887(["scenarios/s/12.test.md"], fpat) != nomatch, d887(["scenarios/s/12.test.md", "header.php"], fpat),
+           d887(["scenarios/s/12.test.md"], ""), d887([], fpat)), (True, nomatch, nomatch, nomatch))
+    d894 = lambda files, pat, verdict: decide(pol, fspec, "medium", "medium", "false", "true", files, files, "", criteria_verdict=verdict, fixed=pat)[1]
+    unmet894 = "the review does not find C1 met (G6)"
+    check("#894 the fixed change alone has its criteria met by construction; another file, repository or no file needs the review's verdict",
+          ("criteria met by construction" in d894(["scenarios/s/12.test.md"], fpat, {"C1": False}),
+           "criteria met by construction" in d894(["scenarios/s/12.test.md"], fpat, None),
+           "by construction" in d894(["scenarios/s/12.test.md"], fpat, {"C1": True}),
+           d894(["scenarios/s/12.test.md", "header.php"], fpat, {"C1": False}),
+           d894(["scenarios/s/12.test.md"], "", {"C1": False}), d894([], fpat, {"C1": False})),
+          (True, True, False, unmet894, unmet894, unmet894))
     check("#842 C2 the head's checks: the latest run of each name, pending until it completes",
           head_checks([{"name": "a", "status": "completed", "conclusion": "failure", "id": 1}, {"name": "a", "status": "completed", "conclusion": "success", "id": 2},
                        {"name": "b", "status": "queued", "conclusion": None, "id": 3}]), {"a": "success", "b": "pending"})
@@ -3174,6 +3376,49 @@ A class on html.
            end_verdict("continue", "8", True, False, 1, 3, False, 2, 5, lost=True, frees=6), end_verdict("fix", "8", False, False, 1, 3, False, 2, 5, lost=True, frees=1),
            end_verdict("continue", "8", True, True, 1, 3, False, 2, 5, lost=True, frees=1)),
           ("continue", "silent", "silent", "silent", "stopped"))
+    check("#856 C1: a run apply-and-end refused (do not build on) is free, as a lost runner is; never a fix round, a stop or a question",
+          (free_end("continue", False, False, False, False, True), free_end("start", False, False, True, False, False), free_end("continue", False, False, False, False, False),
+           free_end("fix", False, False, False, False, True), free_end("continue", True, False, False, False, True), free_end("continue", False, True, False, False, True)),
+          (True, True, False, False, False, False))
+    check("#856 C1: the refused run's entry becomes free, once, and only its own",
+          (freed_runs({"runs": [{"n": 1, "free": False}, {"n": 2, "free": False}]}, 2, True), freed_runs({"runs": [{"n": 2, "free": True}]}, 2, True),
+           freed_runs({"runs": [{"n": 2, "free": False}]}, 2, False), freed_runs({"runs": [{"n": 1, "free": False}]}, 2, True)),
+          ([{"n": 1, "free": False}, {"n": 2, "free": True}], None, None, None))
+    ext856 = {"by": "boss", "at": "2026-11-19T10:00:00Z", "comment": "https://github.com/o/r/issues/7#issuecomment-1"}
+    check("#856 C2: the cap of one pull request adds the policy's runs for each extension, never past two",
+          (runs_cap(5, {}), runs_cap(5, {"extensions": [ext856]}), runs_cap(5, {"extensions": [ext856] * 2}), runs_cap(3, {"extensions": [ext856]}),
+           runs_cap(5, {"extensions": [ext856] * 3}), runs_cap(5, None)), (5, 10, 15, 6, 15, 5))
+    check("#856 C2: a decider's /autopilot more at the cap is given, its cap 10",
+          more_plan(True, {"runs": [{"n": n, "free": False} for n in range(1, 6)]}, True, 5, True, False), {"go": True, "reply": "extended", "cap": 10})
+    check("#856 C2: the hint is what follows the command; another comment is none",
+          (more_hint("/autopilot more\nTry X."), more_hint("  /autopilot more do Y"), more_hint("/autopilot more"), more_hint("/autopilot moreover"),
+           more_hint("please /autopilot more"), more_hint("/claim")), ("Try X.", "do Y", "", None, None, None))
+    check("#856 C3: someone who-decides does not allow gets no run and one reply, with the issue's link",
+          (more_plan(False, {}, True, 5, True, False)["go"], more_plan(False, {}, True, 5, True, False)["reply"], more_plan(False, {}, True, 5, True, True)["reply"],
+           more_reply("refused", "https://github.com/o/r/issues/7").startswith(MORE_REFUSED), "https://github.com/o/r/issues/7" in more_reply("refused", "https://github.com/o/r/issues/7")),
+          (False, "refused", "", True, True))
+    check("#856 C4: a second extension is given (cap 15); a third is refused, naming /claim and closing; below the cap or edited by hand, none",
+          (more_plan(True, {"extensions": [ext856]}, True, 5, True, False), more_plan(True, {"extensions": [ext856] * 2}, True, 5, True, False)["reply"],
+           "`/claim`" in more_reply("spent", "u", "8", 15) and "closes the pull request" in more_reply("spent", "u", "8", 15),
+           more_plan(True, {}, True, 5, False, False)["reply"], more_plan(True, {}, False, 5, True, False)["reply"]),
+          ({"go": True, "reply": "extended", "cap": 15}, "spent", True, "below", "hand"))
+    check("#856 C5: the cap's comment names /autopilot more while an extension is left, never after",
+          ("`/autopilot more <hint>`" in cap_comment("the cap is 5"), "/autopilot more" in cap_comment("the cap is 15", 5, False),
+           cap_comment("the cap is 5").startswith(CAP)), (True, False, True))
+    cap856 = {"body": cap_comment("the cap is 5"), "createdAt": "2026-11-19T09:00:00Z", "author": {"login": BOT_LOGINS[0]}}
+    check("#856 C2: answers() keeps a hint before a cap end and gives the rest of a /autopilot more as the hint",
+          (answers([{"body": "old", "createdAt": "2026-11-19T08:00:00Z", "author": {"login": "boss"}}, cap856,
+                    {"body": "/autopilot more\nTry X.", "createdAt": "2026-11-19T10:00:00Z", "author": {"login": "boss"}}], {"boss"}),
+           answers([cap856, {"body": "/autopilot more", "createdAt": "2026-11-19T10:00:00Z", "author": {"login": "boss"}}], {"boss"})),
+          ("boss: old\n\nboss: Try X.", ""))
+    check("#856: past the last extension, the pull request and the issue are told only /claim and closing",
+          [("/autopilot more" in t, "`/claim`" in t, "closes the pull request" in t)
+           for t in (cap_comment("the cap is 15", 5, False), open_to_claim(5, False), open_to_claim(5, True))],
+          [(False, True, True), (False, True, True), (True, True, False)])
+    un856 = {"body": more_reply("unread", "u", unread="x"), "createdAt": "2026-11-19T10:00:00Z", "author": {"login": BOT_LOGINS[0]}}
+    check("#856: who decides unread is said once, until another answer follows it",
+          (unread_said([un856]), unread_said([un856, {**un856, "body": more_reply("refused", "u"), "createdAt": "2026-11-19T11:00:00Z"}]), unread_said([])),
+          (True, False, False))
     check("#482 C1: finish ready needs make pre-pr passed at HEAD in this run, where the Makefile has it",
           (pre_pr_refusal(False, None, "abc"), bool(pre_pr_refusal(True, None, "abc")), bool(pre_pr_refusal(True, {"head": "old", "rc": 0}, "abc")),
            bool(pre_pr_refusal(True, {"head": "abc", "rc": 2}, "abc")), pre_pr_refusal(True, {"head": "abc", "rc": 0}, "abc"), bool(pre_pr_refusal(True, "x", "abc"))),
@@ -3539,16 +3784,16 @@ A class on html.
            core_next([], [{"repo": "o/r", "number": 7, "at": None}], t832)),
           ([("o/r", 7, "expired"), ("o/r", 9, "start")], [("o/r", 7, "expired")]))
     # #563: the test repository's fixed change, no model.
-    tpack = {"autopilot": "fixed-change", "fixed-change": {"file": "scenarios/{scenario}/{n}.md"}, "core": ["scenarios/*/**"]}
+    tpack = {"autopilot": "fixed-change", "fixed-change": {"file": "scenarios/{scenario}/{n}.test.md"}, "core": ["scenarios/*/**"]}
     check("#563: the test repository's autopilot has a fixed change; any other repository's calls a model",
           (fixed_file({"org": "Acme"}, "Acme/acme-test", tpack), fixed_file({"org": "Acme"}, "Acme/plugin", tpack),
-           fixed_file({"org": "Acme"}, "Acme/acme-test", dict(tpack, autopilot="model"))), ("scenarios/{scenario}/{n}.md", "", ""))
-    check("#694: the real pack's fixed change, under its scenario's own directory", fixed_file({"org": "Acme"}, "Acme/acme-test"), "scenarios/{scenario}/{n}.md")
-    fspec = fixed_spec("scenarios/{scenario}/{n}.md", 12, ["C1"], scenario_of("<!-- dx-scenario: core-one -->\n### Problem\n"))
+           fixed_file({"org": "Acme"}, "Acme/acme-test", dict(tpack, autopilot="model"))), ("scenarios/{scenario}/{n}.test.md", "", ""))
+    check("#694: the real pack's fixed change, under its scenario's own directory", fixed_file({"org": "Acme"}, "Acme/acme-test"), "scenarios/{scenario}/{n}.test.md")
+    fspec = fixed_spec("scenarios/{scenario}/{n}.test.md", 12, ["C1"], scenario_of("<!-- dx-scenario: core-one -->\n### Problem\n"))
     import deciders as _dec563
     check("#694: the fixed Spec names its file under the scenario of the issue's mark, and the agent's helper takes it",
-          (_dec563.spec_files(fspec), spec_problem(fspec), scenario_of("no mark"), fixed_path("scenarios/{scenario}/{n}.md", 12, "C1")),
-          (["scenarios/core-one/12.md"], "", "", "scenarios/12/12.md"))
+          (_dec563.spec_files(fspec), spec_problem(fspec), scenario_of("no mark"), fixed_path("scenarios/{scenario}/{n}.test.md", 12, "C1")),
+          (["scenarios/core-one/12.test.md"], "", "", "scenarios/12/12.test.md"))
     check("#694: only an open pull request on the same scenario's core is waited for, never another scenario's",
           (core_busy(_dec563.spec_files(fspec), tpack["core"], [{"number": 7, "files": ["scenarios/other/7.md"]}, {"number": 9, "files": ["scenarios/core-one/11.md"]}]),
            core_busy(_dec563.spec_files(fspec), tpack["core"], [{"number": 7, "files": ["scenarios/other/7.md"]}])), (9, 0))
@@ -3560,7 +3805,7 @@ A class on html.
     d694 = draft(12, "Bug", "fix(core): the greeting says helo", prd563)
     check("C7: the draft pull request passes the conventions check a person's does, and closes its issue (engine-post.py)",
           post694.pull(d694["title"], d694["branch"], d694["body"], 12), [])
-    check("#563: the checklist reads the fixed Spec's tests", criteria(prd563)[0][2], "scenarios/core-one/12.md")
+    check("#563: the checklist reads the fixed Spec's tests", criteria(prd563)[0][2], "scenarios/core-one/12.test.md")
     import tempfile as _tf563, contextlib as _cl563, io as _io563
     with _tf563.TemporaryDirectory() as tree, _tf563.TemporaryDirectory() as io563:
         here563, io_env = os.getcwd(), os.environ.pop(IO_ENV, None)
@@ -4004,6 +4249,16 @@ Clamp the value in Sum::add.
           (spec_problem(good_spec), bool(spec_problem("Intro\n" + good_spec)), bool(spec_problem(good_spec + "## Acceptance criteria\n- [x] C1")),
            bool(spec_problem(good_spec + "<!-- dx-prd-seal -->")), bool(spec_problem(""))), ("", True, True, True, True))
     check("#287 spec_of: the Spec sections of a body", (spec_of("## PRD\nx\n\n" + good_spec), spec_of("## PRD\nx")), (good_spec, ""))
+    t0 = datetime.datetime(2026, 11, 20, 5, 22, 52, tzinfo=datetime.timezone.utc)
+    ed = lambda at, who, diff: {"editedAt": at, "editor": {"login": who} if who else None, "diff": diff}
+    w893 = "old\n\n" + good_spec
+    check("#893 overwritten_edit: a person's edit at or after the read, neither what was read nor written; never the bot's, an older one or an unreadable time",
+          (overwritten_edit([ed("2026-11-20T05:22:52Z", "bot", w893), ed("2026-11-20T05:22:52Z", "p", "new"), ed("2026-11-20T05:00:00Z", "p", "old")], "bot", t0, "old", w893),
+           overwritten_edit([ed("2026-11-20T05:22:52Z", "p", "new"), ed("2026-11-20T05:22:53Z", "p", "newer")], "bot", t0, "old", w893),
+           overwritten_edit([ed("2026-11-20T05:22:51Z", "p", "new")], "bot", t0, "old", w893),
+           overwritten_edit([ed("2026-11-20T05:22:53Z", "bot", "new"), ed("2026-11-20T05:22:53Z", "p", "old "), ed("x", "p", "new")], "bot", t0, "old", w893),
+           overwritten_edit([ed("2026-11-20T05:22:53Z", None, "new"), "junk"], "bot", t0, "old", w893), overwritten_edit(None, "bot", t0, "old", w893)),
+          ("new", "newer", "", "", "new", ""))
     check("#287 reply: only to the review's comments on this pull request",
           (reply_target({"pull_request_url": "https://api/repos/o/r/pulls/8", "user": {"login": BOT_LOGINS[1]}}, "8", BOT_LOGINS[1]),
            reply_target({"pull_request_url": "https://api/repos/o/r/pulls/9", "user": {"login": BOT_LOGINS[1]}}, "8", BOT_LOGINS[1]),
@@ -4478,7 +4733,7 @@ Clamp the value in Sum::add.
             open(os.path.join(d, "settled.md"), "w").write(answered)
             saved = {k: globals()[k] for k in ("fixed_file", "fixed_ask")}
             env = {k: os.environ.get(k) for k in ("GITHUB_REPOSITORY", "NUMBER", "BODY", "SETTLED", IO_ENV)}
-            globals().update(fixed_file=lambda *a, **k: "scenarios/{scenario}/{n}.md", fixed_ask=lambda *a, **k: "ask first")
+            globals().update(fixed_file=lambda *a, **k: "scenarios/{scenario}/{n}.test.md", fixed_ask=lambda *a, **k: "ask first")
             os.environ.update({"GITHUB_REPOSITORY": "o/t", "NUMBER": "7", "BODY": os.path.join(d, "body.md"), "SETTLED": os.path.join(d, "settled.md"),
                                IO_ENV: os.path.join(d, "io")})
             try:
@@ -5248,20 +5503,93 @@ def apply_outbox(path, repo, number, pr, kinds=None):
                 print("::warning::The agent's commits could not be pushed.")
 
 
+def _edit_time(at):
+    """An edit's `editedAt` as an aware datetime; None when unreadable. Pure."""
+    try:
+        return datetime.datetime.fromisoformat(str(at).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def overwritten_edit(edits, bot, since, read, written):
+    """The text of a person's edit that the bot's write of WRITTEN overwrote
+    (#893), or "": GitHub has no compare-and-swap on an issue's body, so an
+    edit that lands between the bot's last read (READ, at SINCE) and its
+    write is lost to it. EDITS: the issue's `userContentEdits` nodes
+    (editedAt, editor.login, diff: the revision's text), in any order; the
+    caller has checked that the body is still WRITTEN, so an edit by anyone
+    but the bot made at SINCE or after, whose text is neither READ nor
+    WRITTEN, is one the write overwrote: the newest such one. Pure."""
+    norm = lambda s: (s or "").strip()
+    lost = []
+    for n in edits or ():
+        if not isinstance(n, dict) or (n.get("editor") or {}).get("login") == bot:
+            continue
+        at = _edit_time(n.get("editedAt"))
+        if at is not None and at >= since and norm(n.get("diff")) and norm(n.get("diff")) not in (norm(read), norm(written)):
+            lost.append((at, n.get("diff")))
+    return max(lost, key=lambda x: x[0])[1] if lost else ""
+
+
+EDITS_QUERY = ("query($o:String!,$n:String!,$i:Int!){repository(owner:$o,name:$n){issue(number:$i)"
+               "{userContentEdits(first:100){nodes{editedAt editor{login} diff}}}}}")
+
+
+def append_section(repo, number, text, tries=3):
+    """Appends the Spec TEXT to the issue's body as it is when it writes
+    (#893), never to an older copy: the body is read again right before the
+    write, and a change since the first read starts it over from the body
+    as it is (TRIES times at most, then it refuses). After the write, the
+    issue's edit history says whether a person's edit landed during it; if
+    so, that person's text is written back with only the Spec appended.
+    Only the bot's own section is ever added. True when appended."""
+    view = lambda: json.loads(gh("issue", "view", str(number), "--repo", repo, "--json", "body"))["body"] or ""
+    write = lambda body: gh("issue", "edit", str(number), "--repo", repo, "--body-file", "-", input_text=body)
+    section = text.strip() + "\n"
+    body = view()
+    for _ in range(tries):
+        why = spec_problem(text) or ("the issue already has a Spec" if spec_of(body) else "")
+        if why:
+            print(f"::warning::The Spec is not appended: {why}.")
+            return False
+        since = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+        now = view()
+        if now == body:
+            break
+        print("The issue's body changed since it was read: the Spec goes on the body as it is now.")
+        body = now
+    else:
+        print(f"::warning::The Spec is not appended: the issue's body kept changing ({tries} reads).")
+        return False
+    written = body.rstrip() + "\n\n" + section
+    write(written)
+    print("The Spec is appended to the issue.")
+    owner, _, name = repo.partition("/")
+    try:
+        data = json.loads(gh("api", "graphql", "-f", f"query={EDITS_QUERY}", "-F", f"o={owner}", "-F", f"n={name}", "-F", f"i={number}"))
+        nodes = data["data"]["repository"]["issue"]["userContentEdits"]["nodes"] or []
+        after = view()
+    except (RuntimeError, ValueError, KeyError, TypeError) as err:
+        print(f"::warning::The issue's edit history could not be read ({str(err)[:200]}): the body is left as written.")
+        return True
+    if after.strip() != written.strip():
+        # A person edited it after the write: their text stands.
+        return True
+    lost = overwritten_edit(nodes, org.BOT, since, body, written)
+    if lost:
+        restored = lost if spec_of(lost) else lost.rstrip() + "\n\n" + section
+        write(restored)
+        print("::warning::A person's edit of the issue landed during the Spec's write and was overwritten: it is put back, with the Spec appended.")
+    return True
+
+
 def _apply_intents(intents, repo, number, pr):
     failed = 0
     for it in intents:
         kind, text = it["kind"], scrub(it.get("text", ""))
         print(f"-- {kind}")
         if kind == "spec":
-            body = json.loads(gh("issue", "view", str(number), "--repo", repo, "--json", "body"))["body"] or ""
-            why = spec_problem(text) or ("the issue already has a Spec" if spec_of(body) else "")
-            if why:
-                print(f"::warning::The Spec is not appended: {why}.")
-                failed += 1
-                continue
-            gh("issue", "edit", str(number), "--repo", repo, "--body-file", "-", input_text=body.rstrip() + "\n\n" + text.strip() + "\n")
-            print("The Spec is appended to the issue.")
+            failed += 0 if append_section(repo, number, text) else 1
             continue
         if kind == "reply":
             comment = json.loads(gh("api", f"repos/{repo}/pulls/comments/{it['comment']}"))
@@ -5995,6 +6323,81 @@ def main(argv):
     pol = autonomy.policy_in_force()
     cap = int(pol.get("autopilot-runs", 5))
     runs = int(os.environ.get("RUNS", "0") or 0)
+    if argv[:1] == ["more"]:
+        # #856: a `/autopilot more` on issue NUMBER (issue-claim.yml's
+        # `more` job). LOGIN, who commented; COMMENT, a file with its body;
+        # COMMENT_URL, its link; ALLOWED, `deciders.py may continue LOGIN`'s
+        # exit (0 may, 1 may not, any other could not tell).
+        allowed_rc = (os.environ.get("ALLOWED") or "2").strip()
+        login = os.environ.get("LOGIN", "")
+        body = open(os.environ["COMMENT"], encoding="utf-8").read() if os.environ.get("COMMENT") and os.path.exists(os.environ["COMMENT"]) else ""
+        if more_hint(body) is None:
+            # GitHub's startsWith matched more than the command
+            # (`/autopilot moreover`): nothing to do, nothing said.
+            print(f"Not a `{MORE}` comment: nothing to do.")
+            return 0
+        view = json.loads(gh("issue", "view", str(number), "--repo", repo, "--json", "url,comments,closedByPullRequestsReferences") or "{}")
+        issue_url = view.get("url") or f"https://github.com/{repo}/issues/{number}"
+
+        def reply(kind, **k):
+            gh("issue", "comment", str(number), "--repo", repo, "--body", more_reply(kind, issue_url, policy_cap=cap, **k))
+            print(kind)
+            return 0
+        # Only 0 and 1 are deciders.py's answers; any other exit (a crash,
+        # a signal) is "could not tell", never a no.
+        if allowed_rc not in ("0", "1"):
+            if unread_said(view.get("comments") or []):
+                print("Who decides could not be read, as said before: nothing to do.")
+                return 0
+            return reply("unread", unread="deciders.py could not tell" if allowed_rc == "2" else f"deciders.py exited {allowed_rc}")
+        said_before = any(_login(c) in BOT_LOGINS and str(c.get("body") or "").startswith(MORE_REFUSED) for c in view.get("comments") or [])
+        if allowed_rc == "1":
+            plan = more_plan(False, {}, True, cap, False, said_before)
+            if plan["reply"]:
+                return reply(plan["reply"])
+            print(f"{login} may not give more runs, and was answered before: nothing to do.")
+            return 0
+        target = ""
+        for ref in view.get("closedByPullRequestsReferences") or []:
+            n = ref.get("number")
+            if not isinstance(n, int):
+                continue
+            info = json.loads(gh("pr", "view", str(n), "--repo", repo, "--json", "state,labels,author") or "{}")
+            if info.get("state") == "OPEN" and "autopilot" in [l.get("name") for l in info.get("labels") or []] \
+                    and (info.get("author") or {}).get("login") in BOT_LOGINS:
+                target = str(n)
+                break
+        if not target:
+            return reply("none")
+        st, intact = board_state(repo, target, "pr")
+        counted = run_numbers(st, intact)[1]
+        at_cap = counted is not None and counted >= runs_cap(cap, st)
+        plan = more_plan(True, st, intact, cap, at_cap, said_before)
+        if not plan["go"]:
+            return reply(plan["reply"], pr=target, cap=plan["cap"] or cap, runs=counted or 0)
+        entry = {"by": login, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "comment": os.environ.get("COMMENT_URL", "")}
+        # The board first: a write that fails changes nothing else.
+        set_board(repo, target, "pr", extensions=extensions(st) + [entry])
+        try:
+            gh("pr", "edit", target, "--repo", repo, "--remove-label", "needs-human")
+        except RuntimeError as err:
+            print(f"::warning::needs-human could not come off #{target}: {err}")
+        subprocess.run(["gh", "label", "create", "autopilot:continue", "--repo", repo, "--color", "1D76DB", "--force",
+                        "--description", "On an issue: the autopilot continues its draft pull request"], capture_output=True)
+        # No `answered` on the issue's board: the run counts, against the new cap.
+        try:
+            gh("issue", "edit", str(number), "--repo", repo, "--add-label", "autopilot:continue")
+        except RuntimeError:
+            # Nothing would start the run: undo the extension and put the
+            # stop back, so the same `/autopilot more` again extends it
+            # instead of finding it below its cap.
+            set_board(repo, target, "pr", extensions=extensions(st) or None)
+            try:
+                gh("pr", "edit", target, "--repo", repo, "--add-label", "needs-human")
+            except RuntimeError as err:
+                print(f"::warning::needs-human could not go back on #{target}: {err}")
+            raise
+        return reply("extended", pr=target, cap=plan["cap"], runs=counted, n=len(extensions(st)) + 1)
     if argv[:1] == ["may-continue"]:
         info = pr_json(repo, pr, "body,labels,isDraft,state")
         # A continue that runs a fix round (#504, AS=fix) is on a pull
@@ -6005,7 +6408,9 @@ def main(argv):
         names = [l["name"] for l in info["labels"]]
         # The runs that count (#479), from its board (#802): never the free
         # ones; a board edited by hand reads as the cap reached.
-        ok, why = may_continue(names, info["body"], run_numbers(*board_state(repo, pr, "pr"))[1], cap)
+        # #856: the cap with this pull request's extensions.
+        st, intact = board_state(repo, pr, "pr")
+        ok, why = may_continue(names, info["body"], run_numbers(st, intact)[1], runs_cap(cap, st) if intact else cap)
         print(why)
         return 0 if ok else 1
     if argv[:1] == ["end"]:
@@ -6045,7 +6450,7 @@ def main(argv):
         stopped = stopped_since(comments, started)
         asked = asked_since(comments, started)
         draft_, done, total, pushed = True, 0, 0, False
-        lost, frees, held_back = False, 0, False
+        lost, frees, held_back, free = False, 0, False, False
         prepr_verdict = verdict_of(os.environ.get("PREPR"))
         if pr:
             info = pr_json(repo, pr, "body,isDraft,headRefOid")
@@ -6061,14 +6466,20 @@ def main(argv):
             # #673: its `make pre-pr` did not pass in full after the agent's
             # step, so `apply` kept it a draft: a fix round, free as well.
             held_back = mode != "fix" and not stopped and not asked and bool(prepr_verdict)
+            # #856 C1: apply-and-end refused the agent's commits, which do
+            # not build on the branch as GitHub has it: free, and it stops.
+            refused = bool(os.environ.get("REFUSED"))
+            free = free_end(mode, stopped, asked, lost, held_back, refused)
             st, intact = board_state(repo, pr, "pr")
             if not intact:
                 # Edited by hand: the most restrictive count, no continue.
                 runs, frees = cap, cap + 1
             else:
-                mine = [r for r in st.get("runs") or [] if isinstance(r, dict) and r.get("n") == runs]
-                if (lost or held_back) and mine and not mine[0].get("free"):
-                    st = dict(st, runs=with_run(st, run_entry(runs, True)))
+                # #856: the cap with this pull request's extensions.
+                cap = runs_cap(cap, st)
+                freed = freed_runs(st, runs, free)
+                if freed is not None:
+                    st = dict(st, runs=freed)
                     set_board(repo, pr, "pr", runs=st["runs"])
                 if _runs(st):
                     runs, frees = run_numbers(st)[1], free_runs(st)
@@ -6083,6 +6494,8 @@ def main(argv):
         v = end_verdict(mode, pr, draft_, stopped, done, total, limit, runs, cap, pushed, asked, nudged, lost, frees, held_back, engine, repeated)
         if lost:
             print("Its runner was lost: the run does not count towards the cap (#479).")
+        if pr and free and not lost and not held_back:
+            print("Its commits do not build on the branch as GitHub has it: the run does not count towards the cap (#856).")
         if held_back:
             print(f"`make pre-pr` after the agent's step: {prepr_verdict}. The run does not count towards the cap (#673).")
             if repeated:
@@ -6154,7 +6567,18 @@ def main(argv):
         print(back)
         return 0
     if argv[:1] == ["cap-comment"]:
-        print(cap_comment(" ".join(argv[1:])))
+        # #856: the way past it while the pull request has extensions left;
+        # a board that cannot be read leaves the way in. `--issue`, the
+        # issue's comment (open_to_claim) rather than the pull request's.
+        on_issue = argv[1:2] == ["--issue"]
+        argv = [argv[0]] + argv[1 + on_issue:]
+        more = True
+        if pr:
+            try:
+                more = len(extensions(board_state(repo, pr, "pr")[0])) < MAX_EXTENSIONS
+            except RuntimeError as err:
+                print(f"::warning::{err}", file=sys.stderr)
+        print(open_to_claim(cap, more) if on_issue else cap_comment(" ".join(argv[1:]), cap, more))
         return 0
     if argv[:1] == ["settled"]:
         # #696: COMMENTS, DECIDERS as `answers`; SINCE, the first acceptance.

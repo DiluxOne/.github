@@ -20,7 +20,9 @@ name: Claude review
 #      called at all, unless someone who decides settled one of its findings
 #      since (#699 C5, review-reply.yml's `dx-settled` mark, which also
 #      re-runs the review): then it reviews the head again, the settled
-#      findings in the brief with the settled threads.
+#      findings in the brief with the settled threads. A finding is settled
+#      in its own thread or in the conversation, one with a thread included
+#      (#871: that thread is resolved too).
 #   3. On a new push, Claude gets one brief file with everything: the diff
 #      since the last reviewed commit (or the whole PR the first time, or
 #      after a force-push, a rebase or a merge), the review profiles, the
@@ -95,6 +97,9 @@ on:
       auto-merge:
         description: Whether the policy lets qualifying pull requests merge on their own.
         value: ${{ jobs.review.outputs.auto-merge }}
+      current:
+        description: false when the run's commit is no longer the pull request's head (#888); its review was skipped, and the callers act on no verdict of it.
+        value: ${{ jobs.head.outputs.current }}
     secrets:
       # The maintainer's Claude subscription (`claude setup-token`); the API
       # key is used only when it is missing.
@@ -111,17 +116,90 @@ permissions:
   issues: write
 
 jobs:
+  # Whether this run's commit is still the pull request's head (#888), read
+  # before the review joins its concurrency group. A pull request pushed to
+  # right after it opens gets two runs, one per commit, and the group cancels
+  # by the order their jobs reach it, not by the commit: the older commit's
+  # run, reaching it last, cancelled the head's review and reviewed a commit
+  # nobody merges. Outside the group, this job cancels nothing; a stale run's
+  # review is skipped, so it never joins the group, and the head's is never
+  # cancelled by an older commit. An edit is always current (it keeps its own
+  # group and the #832 wait); a failed read answers current, so a hiccup
+  # never skips the head's review, and so does a failed job: a skipped
+  # review check passes the ruleset, so without an answer the review runs.
+  head:
+    name: Current head
+    runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      !github.event.pull_request.draft
+    outputs:
+      current: ${{ steps.current.outputs.current }}
+    steps:
+      - name: App token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: read
+          permission-pull-requests: read
+        # Without the App's token, the job's own reads the pull request.
+        continue-on-error: true
+
+      - name: Is the commit the pull request's head
+        id: current
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token || github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          ACTION: ${{ github.event.action }}
+        run: |
+          if [ "$ACTION" = edited ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          head=""
+          for attempt in 1 2 3; do
+            if head=$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha); then break; fi
+            head=""
+            [ "$attempt" = 3 ] || sleep 5
+          done
+          if [ -z "$head" ]; then
+            echo "::warning::could not read the head of #$PR: reviewing $SHA"
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          elif [ "$head" != "$SHA" ]; then
+            echo "::notice::$SHA is no longer the head of #$PR ($head is): its run reviews nothing and cancels nothing; the head's run reviews it"
+            echo "current=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          fi
+
   review:
     name: Claude review
+    # order: after the head's read (#888), so a stale run never joins the
+    # group below.
+    needs: head
     runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
     # An edit may wait for its push's review, which itself can take the 30
     # minutes a review job has: an edit's job gets longer to outlast it, and
     # only that wait uses the extra 30 (#832).
     timeout-minutes: ${{ github.event.action == 'edited' && 60 || 30 }}
+    # Skipped only on a `false` answer: a head job that failed gives none,
+    # and the review runs (a skipped check would pass the ruleset).
     if: >-
+      !cancelled() &&
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
-      !github.event.pull_request.draft
+      !github.event.pull_request.draft &&
+      needs.head.outputs.current != 'false'
     # An edit of the title or description and a push can land on the same
     # commit a second apart, and a cancelled run leaves a cancelled check on
     # the commit that blocks the merge even when the other run passed. So an
@@ -131,7 +209,11 @@ jobs:
     # of it is running, then reuses that, and with none running, the push's
     # review skipped or cancelled, it reviews the commit itself, #832). A push
     # still cancels the review of the push before it, whose check sits on an
-    # older commit and blocks nothing.
+    # older commit and blocks nothing; a run of an older commit that starts
+    # after the head's never gets here (the `head` job above, #888), so it
+    # cannot cancel the head's review. Left: an older run that read the head
+    # in the instant before the push landed, which then starts first, and is
+    # cancelled by the newer run as before.
     concurrency:
       group: claude-review-${{ github.repository }}-${{ github.event.pull_request.number }}-${{ github.event.action == 'edited' && github.run_id || 'code' }}
       cancel-in-progress: ${{ github.event.action != 'edited' }}
@@ -713,7 +795,10 @@ jobs:
           # The type of the change is the review's, read from the diff, unless a
           # person set a type:* label by hand: then theirs stands
           # (scripts/review-type.sh). The review's docs is bounded by the docs
-          # paths the conventions check holds a docs title to (#720). The bot
+          # paths the conventions check holds a docs title to (#720). In a kind
+          # whose pack says `autopilot: fixed-change` (in the test repository,
+          # found by autopilot.py fixed), a pull request made only of the
+          # fixed change's files keeps the title's type (#895). The bot
           # only ever replaces a type:* label it set itself.
           gh api "repos/$GITHUB_REPOSITORY/issues/$PR/timeline" --paginate > "$RUNNER_TEMP/timeline.json"
           current=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(startswith("type:"))] | join(",")')
@@ -721,9 +806,19 @@ jobs:
           # refs: --diff only when the central review-type.sh knows it.
           bound=()
           if grep -q -- '--diff' .dx-central/scripts/review-type.sh; then bound=(--diff "$KIND" "$BASE" "$SHA"); fi
+          # --title only when it knows that too (#895).
+          if [ ${#bound[@]} -gt 0 ] && grep -q -- '--title' .dx-central/scripts/review-type.sh; then
+            bound+=(--title "$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json title --jq .title)")
+            # The fixed change found as G7 finds it, by this repository being
+            # org.yml's test repository: the test repository declares no
+            # kind, so KIND is empty there (#895). --fixed only when known.
+            if grep -q -- '--fixed' .dx-central/scripts/review-type.sh; then
+              bound+=(--fixed "$(python3 .dx-central/scripts/autopilot.py fixed 2>/dev/null || true)")
+            fi
+          fi
           type=$(bash .dx-central/scripts/review-type.sh "$type" "$BOT" "$RUNNER_TEMP/timeline.json" "$current" "${bound[@]}")
           if [ "$type" != "$(jq -r '.type // "chore"' <<<"$OUT")" ]; then
-            echo "The type applied is $type (a person's type:* label, or the review's docs on files that are not documentation); the review's reading ($(jq -r .type <<<"$OUT")) is recorded."
+            echo "The type applied is $type (a person's type:* label, the review's docs on files that are not documentation, or the title's type for a fixed change, #895); the review's reading ($(jq -r .type <<<"$OUT")) is recorded."
           fi
           { echo "risk=$risk"; echo "complexity=$complexity"; echo "blocking=$blocking"; echo "type=$type"; echo "description_ok=$dmatch"; } >> "$GITHUB_OUTPUT"
 
@@ -858,7 +953,8 @@ jobs:
         # (scripts/conventions.sh, which lets it through for this step to fix).
         # The labels are read again here: a person's type:* label, added since
         # the verdict or over a reused one, wins (scripts/review-type.sh),
-        # and the review's docs is bounded by the docs paths (#720).
+        # and the review's docs is bounded by the docs paths (#720); a fixed
+        # change's files keep the title's type (#895).
         if: ${{ !cancelled() && steps.resolver.outcome == 'success' && steps.verdict.outputs.type != '' }}
         env:
           GH_TOKEN: ${{ steps.resolver.outputs.token }}
@@ -876,11 +972,20 @@ jobs:
           set -euo pipefail
           GH_TOKEN=$TIMELINE_TOKEN gh api "repos/$GITHUB_REPOSITORY/issues/$PR/timeline" --paginate > "$RUNNER_TEMP/timeline.json"
           labels=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(startswith("type:"))] | join(",")')
-          # --diff only when the central review-type.sh knows it (another ref).
+          current=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json title --jq .title)
+          # --diff only when the central review-type.sh knows it (another ref),
+          # and --title (the fixed change keeps the title's type, #895) too.
           bound=()
           if grep -q -- '--diff' .dx-central/scripts/review-type.sh; then bound=(--diff "$KIND" "$BASE" "$SHA"); fi
+          if [ ${#bound[@]} -gt 0 ] && grep -q -- '--title' .dx-central/scripts/review-type.sh; then
+            bound+=(--title "$current")
+            # The fixed change as G7 finds it (autopilot.py fixed): KIND is
+            # empty in the test repository, which declares none (#895).
+            if grep -q -- '--fixed' .dx-central/scripts/review-type.sh; then
+              bound+=(--fixed "$(python3 .dx-central/scripts/autopilot.py fixed 2>/dev/null || true)")
+            fi
+          fi
           TYPE=$(bash .dx-central/scripts/review-type.sh "$REVIEW_TYPE" "$BOT" "$RUNNER_TEMP/timeline.json" "$labels" "${bound[@]}")
-          current=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json title --jq .title)
           title=$current
           if [ "$AUTHOR_TYPE" = Bot ] && [[ "$BRANCH" == dependabot/* ]]; then
             title=$(bash .dx-central/scripts/conventions.sh --dependabot-title "$title")

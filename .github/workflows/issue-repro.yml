@@ -11,7 +11,9 @@ name: Issue reproduction
 # under tests/Unit/Repro/ (`unit`, WordPress plugins), a Playwright test on
 # wp-env under tests/e2e/repro/ (`browser`, WordPress plugins), or any
 # command that writes a JUnit report (DiluxOne/.github's own: a pytest test
-# of a script, or one that reads a workflow's file, #376). No stack is
+# of a script, #376, or one that runs a workflow's step, its `run:` or the
+# script it calls, with stubs on PATH, #841: a test that runs no step's
+# command is broken, "the test runs no step"). No stack is
 # assumed: a layer with no way declared, or a way whose `needs` are missing,
 # builds nothing, before any model runs: the issue gets `needs-human`, its
 # board says `no-way` and why, and the comment says how to declare a way, with
@@ -1124,7 +1126,9 @@ jobs:
             fi
             gh label create "repro:broken" --repo "$GITHUB_REPOSITORY" --color FBCA04 --force --description "The reproduction test did not run (not a verdict); repro:again tries once more" >/dev/null 2>&1 || true
             gh issue edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --add-label repro:broken >/dev/null
-            repro_state broken "the test did not run cleanly twice (written wrong, not a verdict)"
+            # The way's gate's reason, when it decided (#841, "the test runs no step").
+            reason=$(head -c 600 "$RUNNER_TEMP/output/reason.txt" 2>/dev/null | tr -d '`' || true)
+            repro_state broken "the test did not run cleanly twice (written wrong, not a verdict)${reason:+: $reason}"
             gh issue comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$(printf 'I wrote a %s for this but it did not run cleanly twice (the test was written wrong, not a verdict), so it proves nothing yet and the report stays unconfirmed. %s\n\n%s' "$noun" "$SUMMARY" "$sign")" >/dev/null
             echo "Broken test."; exit 0
           fi

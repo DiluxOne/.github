@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 import yaml
+from steps import numbered
 
 ROOT = Path(__file__).resolve().parents[2]
 CREDITS = 'body=$(python3 "$RUNNER_TEMP/central/scripts/credits.py" body "$GITHUB_REPOSITORY" "$PR")'
@@ -116,7 +117,9 @@ def test_every_repository_reads_the_same_who_signs_what():
     sync = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(sync)
     block = (ROOT / "agents-block.md").read_text(encoding="utf-8")
-    rule = " ".join(block.split("**Who signs what.**", 1)[1].split("<!-- dx:org:end -->", 1)[0].split())
+    rules = [item for item in numbered(block) if item.startswith("**Who signs what.**")]
+    assert len(rules) == 1, "the block has one numbered rule `Who signs what`"
+    rule = " ".join(rules[0].split())
     for said in ("A model is never a co-author", "`Assisted-by: <model> (<maker>)`", "`Assisted-by: Claude Opus 5.5 (Anthropic)`",
                  "Co-authored-by: Name <id+login@users.noreply.github.com>", "never a private e-mail", "`Suggested-by:`", "`Reported-by:`",
                  "Never a co-author: the maintainer who accepts or merges, dilux-bot, Dependabot, any bot, a model", "`/coauthor @login`"):

@@ -4,6 +4,8 @@ from pathlib import Path
 
 import yaml
 
+import steps
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -11,19 +13,48 @@ def workflow(name):
     return yaml.safe_load((ROOT / ".github/workflows" / name).read_text(encoding="utf-8"))
 
 
-def test_accepted_is_guarded_before_the_check_the_assignee_and_the_seal():
-    steps = workflow("issue-accepted.yml")["jobs"]["ready"]["steps"]
-    names = [s.get("id") or s.get("name", "") for s in steps]
+def run_guard(tmp_path, rc):
+    """The guard step, run with deciders.py answering exit RC and gh stubbed."""
+    s = steps.step("issue-accepted.yml", "guard", job="ready")
+    decider = f"import sys\nprint('not a decider: ' + ' '.join(sys.argv[1:]))\nsys.exit({rc})\n"
+    return steps.run(s, tmp_path, central=False, stubs={"gh": ""},
+                     files={".dx-central/scripts/deciders.py": decider},
+                     exprs={"inputs.label": "accepted", "github.event.issue.number": "7", "github.event.sender.login": "eve"})
+
+
+def test_accepted_is_guarded_before_the_check_the_assignee_and_the_seal(tmp_path, monkeypatch):
+    ready = steps.workflow("issue-accepted.yml")["jobs"]["ready"]["steps"]
+    names = [s.get("id") or s.get("name", "") for s in ready]
     guard = names.index("guard")
-    assert "deciders.py may accepted" in steps[guard]["run"]
-    assert '--remove-label "$LABEL"' in steps[guard]["run"] and "gh issue comment" in steps[guard]["run"]
     # Nothing but the scripts and the token comes before it.
+    assert [n for i, n in enumerate(names) if i < guard] == ["central", "bot"]
     assert guard < names.index("check") and guard < names.index("Assign it to whoever accepted it")
-    for s in steps[guard + 1:]:
+    # A decider passes: nothing is written, and the steps after it run.
+    ok = run_guard(tmp_path / "ok", 0)
+    assert ok.code == 0 and ok.output == {} and ok.calls == []
+    # It asks deciders.py whether the sender may accept.
+    assert "not a decider: may accepted eve" in ok.stdout
+    # Anyone else (1), or a decider that could not be told (2): refused, the
+    # label comes off and the issue says why.
+    for rc in (1, 2):
+        no = run_guard(tmp_path / f"no{rc}", rc)
+        assert no.code == 0 and no.output == {"refused": "true"}
+        edit, comment = no.of("gh")
+        assert edit == ["issue", "edit", "7", "--repo", "o/r", "--remove-label", "accepted"]
+        assert comment[:4] == ["issue", "comment", "7", "--repo"] and "`accepted` was taken off" in comment[-1]
+        # Anyone else hears deciders.py's reason; "could not tell" never passes as it.
+        assert ("not a decider: may accepted eve" in comment[-1]) == (rc == 1)
+    # The check and the assignee run only when the guard did not refuse.
+    monkeypatch.setitem(steps.FUNCS, "hashFiles", lambda *paths: "abc")
+    event = {"github.event.action": "labeled", "steps.bot.outputs.token": "t"}
+    for s in ready:
         if s.get("id") == "check" or s.get("name", "").startswith("Assign it"):
-            assert "steps.guard.outputs.refused != 'true'" in s["if"], s.get("name")
-    seal = next(s for s in steps if s.get("name", "").startswith("Seal the PRD"))
-    assert "steps.check.outputs.ready == 'true'" in seal["if"]
+            assert steps.evaluate(s["if"], dict(event, **{"steps.guard.outputs.refused": ""})) is True, s.get("name")
+            assert steps.evaluate(s["if"], dict(event, **{"steps.guard.outputs.refused": "true"})) is False, s.get("name")
+    seal = next(s for s in ready if s.get("name", "").startswith("Seal the PRD"))
+    assert names.index(seal["name"]) > names.index("check")
+    assert steps.evaluate(seal["if"], dict(event, **{"steps.check.outputs.ready": "true"})) is True
+    assert steps.evaluate(seal["if"], dict(event, **{"steps.check.outputs.ready": ""})) is False
 
 
 def test_continue_is_guarded_before_the_autopilot_starts():

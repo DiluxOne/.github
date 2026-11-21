@@ -1,9 +1,18 @@
 """A person claims an issue (#488): issue-claim.yml, its callers, and the
 autopilot's gate, wired as the decisions in scripts/claim.py and
 scripts/autopilot.py need them."""
+import subprocess
 from pathlib import Path
+from unittest import mock
 
+import pytest
 import yaml
+
+try:
+    import steps  # tests/workflows/steps.py: it runs a workflow's step with stubs
+except ModuleNotFoundError:  # Test first's base has no steps.py (#845): there each call to it fails an assertion
+    steps = mock.Mock(**{f"{n}.side_effect": AssertionError("tests/workflows/steps.py is missing") for n in ("evaluate", "run", "step", "workflow")})
+run, step = steps.run, steps.step
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -76,22 +85,103 @@ def test_yield_is_a_maintainers_and_may_cancel_the_autopilots_run():
     assert r'may it run · #" + str(number)' in src
 
 
-def test_the_autopilot_asks_who_holds_the_issue_before_it_starts_opens_or_pushes():
+# The engine's scripts the autopilot's steps call, as stand-ins: each
+# records its argv and answers from FAKE_<SCRIPT>_<SUBCOMMAND> (stdout) and
+# FAKE_<SCRIPT>_<SUBCOMMAND>_RC (exit code). api-commit.py also records the
+# branch and the parent of the commit it is asked to push.
+FAKE = """import json, os, subprocess, sys
+name, args = os.path.basename(sys.argv[0]), sys.argv[1:]
+rec = [name] + args
+if name == "api-commit.py":
+    rec += [[subprocess.run(["git", "rev-parse", *a], capture_output=True, text=True).stdout.strip()
+             for a in (["--abbrev-ref", "HEAD"], ["HEAD~1"])]]
+with open(os.environ["DX_CALLS"], "a") as f:
+    f.write(json.dumps(rec) + "\\n")
+key = "FAKE_" + "".join(c if c.isalnum() else "_" for c in name[:-3] + "_" + (args[0] if args else "")).upper()
+sys.stdout.write(os.environ.get(key, ""))
+sys.exit(int(os.environ.get(key + "_RC", "0")))
+"""
+CENTRAL = {f".dx-central/scripts/{n}": FAKE for n in ("autopilot.py", "api-commit.py", "issue-schema.py", "receipts.py")}
+# What each gated step must not reach for a held issue: the apply step
+# neither applies the outbox (`autopilot.py apply`) nor pushes.
+GATED = {"may": [["autopilot.py", "may-start"]], "draft": [["api-commit.py", "push"]],
+         "applied": [["autopilot.py", "apply"], ["autopilot.py", "push"]]}
+
+
+@pytest.mark.parametrize("rc", [1, 2], ids=["held", "unread"])
+@pytest.mark.parametrize("job,sid", [("prep", "may"), ("draft", "draft"), ("apply", "applied")])
+def test_the_autopilot_asks_who_holds_the_issue_before_it_starts_opens_or_pushes(tmp_path, job, sid, rc):
+    """Held (1) or unread (2, it fails closed): the step ends, and starts,
+    opens or pushes nothing."""
+    work = tmp_path / "work"
+    work.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=work, check=True)
+    env = {"ISSUE": "7", "NUMBER": "7", "PR": "8", "BRANCH": "fix/7-a", "DEFAULT": "main", "MODE": "start",
+           "DX_BOT_LOGIN": "dilux-bot[bot]", "DX_BOT_ID": "1", "DX_BOT_APP": "dilux-bot",
+           "FAKE_AUTOPILOT_HOLDER": "@ana claimed it", "FAKE_AUTOPILOT_HOLDER_RC": str(rc)}
+    ran = run(step("autopilot.yml", sid, job=job), tmp_path, env=env, files=CENTRAL, central=False, stubs={"gh": "echo 0"})
+    assert ran.code == 0, ran.stdout + ran.stderr
+    names = [c[:2] for c in ran.calls]
+    assert ["autopilot.py", "holder"] in names
+    assert not any(c[:2] in GATED[sid] for c in ran.calls), ran.calls
+    assert not ran.of("api-commit.py")
+    if sid == "may":
+        assert ran.output["go"] == "false"
+    else:
+        assert ran.output["held"] == "@ana claimed it"
+
+
+def test_the_run_that_steps_aside_says_so():
     wf = workflow("autopilot.yml")
-    may = run_of(wf, "prep", "may")
-    draft = run_of(wf, "draft", "draft")
-    applied = run_of(wf, "apply", "applied")
-    for where, text, before in (("prep", may, "autopilot.py may-start"), ("draft", draft, "api-commit.py push"), ("apply", applied, "autopilot.py push")):
-        gate = text.index("autopilot.py holder")
-        assert gate < text.index(before), f"{where}: the gate comes before {before}"
-        # Any exit but 0 stops it (held, or unread: it fails closed).
-        assert '|| rc=$?' in text[gate:gate + 80] and 'if [ "$rc" -ne 0 ]' in text[gate:], where
-    assert 'echo "go=false" >> "$GITHUB_OUTPUT"; exit 0' in may[may.index("autopilot.py holder"):may.index("Who accepted it")]
-    assert applied.index("autopilot.py holder") < applied.index("autopilot.py apply .dx-out/outbox.jsonl")
-    # The run that steps aside says so, and is no silent end.
     assert wf["jobs"]["draft"]["outputs"]["held"] == "${{ steps.draft.outputs.held }}"
     end = next(s for s in steps(wf, "apply") if s.get("id") == "end")
     assert end["env"]["HELD"] == "${{ needs.draft.outputs.held || steps.applied.outputs.held }}"
+
+
+def adopted_draft(tmp_path, at_head=True):
+    """The draft step on an issue whose pull request a maintainer adopted:
+    (ran, the adopted commit)."""
+    origin, work = tmp_path / "origin.git", tmp_path / "work"
+    ident = ["-c", "user.name=a", "-c", "user.email=a@b", "-c", "commit.gpgsign=false"]
+    git = lambda cwd, *a: subprocess.run(["git", *ident, *a], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+    git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    git(tmp_path, "clone", "-q", str(origin), str(work))
+    git(work, "commit", "-q", "--allow-empty", "-m", "chore: base")
+    main = git(work, "rev-parse", "HEAD")
+    git(work, "push", "-q", "origin", "main")
+    git(work, "checkout", "-q", "-b", "adopted/41")
+    git(work, "commit", "-q", "--allow-empty", "-m", "feat: ana's work")
+    head = git(work, "rev-parse", "HEAD")
+    git(work, "push", "-q", "origin", "adopted/41")
+    git(work, "checkout", "-q", "main")
+    for key in ("user.name", "user.email"):
+        git(work, "config", key, "a")
+    sha = head if at_head else main
+    gh = """case "$*" in
+  *"--json comments"*) echo 0 ;;
+  *"--json title"*) echo "A thing" ;;
+  "api repos/o/r/issues/7 "*) echo Feature ;;
+  *) echo "### Spec" ;;
+esac"""
+    env = {"NUMBER": "7", "DEFAULT": "main", "LANE": "", "STARTED": "2026-11-01T00:00:00Z", "DX_BOT_APP": "dilux-bot",
+           "FAKE_AUTOPILOT_DRAFT": '{"branch": "feat/7-a-thing", "body": "b", "title": "feat: a thing"}',
+           "FAKE_AUTOPILOT_ADOPTED": f'{{"sha": "{sha}", "branch": "adopted/41", "pr": 41, "trailer": "Co-authored-by: ana <77+ana@users.noreply.github.com>"}}',
+           "FAKE_API_COMMIT_PUSH_RC": "1"}
+    ran = run(step("autopilot.yml", "draft", job="draft"), tmp_path, env=env, files=CENTRAL, central=False, stubs={"gh": gh})
+    return ran, sha
+
+
+def test_the_draft_of_an_adopted_pull_request_starts_at_the_head_the_maintainer_read(tmp_path):
+    ran, sha = adopted_draft(tmp_path)
+    pushes = ran.of("api-commit.py")
+    assert pushes == [["push", "feat/7-a-thing", "--onto", sha, ["feat/7-a-thing", sha]]], ran.stdout + ran.stderr
+
+
+def test_an_adopted_branch_that_moved_opens_no_draft(tmp_path):
+    ran, _ = adopted_draft(tmp_path, at_head=False)
+    assert ran.code == 0, ran.stdout + ran.stderr
+    assert "is not at the commit the maintainer read" in ran.output["why"]
+    assert not ran.of("api-commit.py")
 
 
 def test_adopt_records_the_head_the_maintainer_read_and_the_draft_starts_there():
@@ -109,9 +199,6 @@ def test_adopt_records_the_head_the_maintainer_read_and_the_draft_starts_there()
     spec.loader.exec_module(ap)
     assert ap.adopted_record([{"user": {"login": ap.BOT_LOGINS[1]}, "body": note}]) == rec, "what claim.py records is what the autopilot reads"
     assert acts[-1] == ("start", 7)
-    draft = run_of(workflow("autopilot.yml"), "draft", "draft")
-    adopted = draft[draft.index("autopilot.py adopted"):draft.index("api-commit.py push")]
-    assert '[ "$(git rev-parse FETCH_HEAD)" != "$sha" ]' in adopted and 'git checkout -q -b "$branch" "$sha"' in adopted and "onto=$sha" in adopted
     # Its commits are pushed by autopilot.py push, which adds the trailer.
     assert "python3 .dx-central/scripts/autopilot.py push" in run_of(workflow("autopilot.yml"), "apply", "applied")
 
@@ -120,4 +207,8 @@ def test_at_its_cap_the_autopilot_says_anyone_may_claim_the_issue():
     may = next(s for s in steps(workflow("autopilot.yml"), "prep") if s.get("id") == "may")
     assert "anyone may `/claim` this issue" in may["env"]["OPEN_TO_CLAIM"]
     # Both caps: the runs (a continue) and the review rounds (a fix).
-    assert may["run"].count('--body "${OPEN_TO_CLAIM:-}"') == 2
+    # The runs cap's from autopilot.py cap-comment --issue (#856), with
+    # OPEN_TO_CLAIM when the script is older than it.
+    assert may["run"].count('--body "${OPEN_TO_CLAIM:-}"') == 1
+    assert 'cap-comment --issue "$why"' in may["run"] and '|| claim="${OPEN_TO_CLAIM:-}"' in may["run"]
+    assert '--body "$claim"' in may["run"]

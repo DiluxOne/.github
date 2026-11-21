@@ -7,6 +7,8 @@ acceptance after a stop must take `needs-human` off, the Spec must read what
 those who decide settled, and a release scenario must play the path whole.
 """
 import importlib.util
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -108,13 +110,55 @@ def test_a_new_acceptance_reaches_the_autopilots_own_stopped_draft():
     assert run.index("autopilot.py taken") < run.index("autopilot.py reaccepted") < run.index("closedByPullRequestsReferences | length")
 
 
-def test_a_runs_cap_end_is_written_by_cap_comment_and_no_failed_read_widens_settled():
+# A stub logs its name and arguments: a call ends with \x1e, its fields with \x1f.
+LOG = 'printf \'%s\\x1f\' "$(basename "$0")" "$@" >> "$CALLS"; printf \'\\x1e\' >> "$CALLS"\n'
+
+
+def run_with_stubs(tmp_path, script, stubs, env):
+    """SCRIPT in bash from a work directory whose .dx-central is this
+    repository, with STUBS ({command: bash body}) on PATH logging their
+    calls: (the run, its calls, the lines of $GITHUB_OUTPUT)."""
+    bin_dir, work, temp = tmp_path / "bin", tmp_path / "work", tmp_path / "temp"
+    for d in (bin_dir, work, temp):
+        d.mkdir(parents=True)
+    (work / ".dx-central").symlink_to(ROOT)
+    for name, body in stubs.items():
+        (bin_dir / name).write_text("#!/usr/bin/env bash\n" + LOG + body + "\n", encoding="utf-8")
+        (bin_dir / name).chmod(0o755)
+    full = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "CALLS": str(tmp_path / "calls"), "GITHUB_REPOSITORY": "o/r",
+            "GITHUB_OUTPUT": str(tmp_path / "out"), "RUNNER_TEMP": str(temp), "GITHUB_WORKSPACE": str(work), **env}
+    done = subprocess.run(["bash", "-c", script], env=full, cwd=work, capture_output=True, text=True)
+    calls = [c.split("\x1f")[:-1] for c in (tmp_path / "calls").read_text(encoding="utf-8").split("\x1e")[:-1]]
+    out = (tmp_path / "out").read_text(encoding="utf-8").splitlines() if (tmp_path / "out").exists() else []
+    return done, calls, out
+
+
+def test_a_runs_cap_end_is_written_by_cap_comment_and_no_failed_read_widens_settled(tmp_path):
     # The review of #831: the runs cap's comment was inlined next to an
     # unused `cap_comment`, and a failed read of the first `accepted` handed
     # `settled` every comment, from before the acceptance too.
-    run = step_run("autopilot.yml", "prep", "may")
-    assert "autopilot.py cap-comment" in run, "the runs cap's comment does not come from cap_comment"
     wf = yaml.safe_load((ROOT / ".github/workflows/autopilot.yml").read_text(encoding="utf-8"))
-    settle = next(s["run"] for job in wf["jobs"].values() for s in job.get("steps", []) if "autopilot.py settled" in s.get("run", ""))
-    body = settle[settle.index("settle() {"):]
-    assert '[ -n "$since" ] || return 0' in body[:body.index("autopilot.py settled")], "with no first `accepted`, settled reads every comment"
+    may = next(s for s in wf["jobs"]["prep"]["steps"] if s.get("id") == "may")
+    done, calls, out = run_with_stubs(tmp_path / "cap", may["run"], {
+        "gh": 'case "$*" in *"--json labels"*) echo false ;; esac',
+        "python3": """case "$*" in
+  *"autopilot.py lane"*) echo human-issue ;;
+  *"receipts.py verify-prd"*) echo match ;;
+  *"autopilot.py may-continue"*) echo "the runs cap is 3"; exit 1 ;;
+  *"autopilot.py cap-comment --issue"*) echo "The autopilot reached its cap." ;;
+  *"autopilot.py cap-comment"*) printf '<!-- dx-autopilot-cap -->\\nThe cap.\\n' ;;
+esac""",
+        "sleep": ""}, {"MODE": "continue", "AS": "continue", "ISSUE": "7", "PR": "9", "OPEN_TO_CLAIM": "claim it"})
+    assert done.returncode == 0, done.stderr
+    assert any(c[0] == "python3" and "cap-comment" in c for c in calls), "the runs cap's comment does not come from cap_comment"
+    bodies = [c[c.index("--body") + 1] for c in calls if c[:3] == ["gh", "pr", "comment"]]
+    assert bodies == ["<!-- dx-autopilot-cap -->\nThe cap."], "the runs cap's comment is not cap_comment's"
+    assert "go=false" in out
+    task = next(s for s in wf["jobs"]["prep"]["steps"] if "autopilot.py settled" in s.get("run", ""))
+    # The events read finds no `accepted` (an empty first one): settle reads no comment.
+    done, calls, out = run_with_stubs(tmp_path / "settle", task["run"], {
+        "gh": 'case "$*" in *"--json comments"*) echo \'[{"body": "Option 2.", "createdAt": "2026-11-08T12:00:00Z", "author": {"login": "boss"}}]\' ;; esac',
+        "python3": 'case "$*" in *"deciders.py list"*) echo boss ;; esac'}, {"MODE": "start", "NUMBER": "7", "LANE": "human-issue"})
+    assert done.returncode == 0, done.stderr
+    assert not any(c[0] == "python3" and "settled" in c for c in calls), "with no first `accepted`, settled reads every comment"
+    assert any(c[0] == "python3" and "prompt" in c and "spec" in c for c in calls)
