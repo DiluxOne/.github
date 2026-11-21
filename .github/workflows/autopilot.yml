@@ -2106,6 +2106,7 @@ jobs:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
           repositories: ${{ github.event.repository.name }}
+          permission-contents: read # the board's seal row (receipts branch)
           permission-issues: write
 
       # GitHub's API rate limit (#925): gh waits for its reset, within this

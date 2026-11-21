@@ -229,3 +229,28 @@ def test_the_board_is_written_after_the_reset_by_its_own_job():
         assert f"needs.{j}.outputs.rate-limited" in steps[until]["env"]["RESETS"], j
         assert f"needs.{j}.outputs.rate-limited" in rl["if"], j
     assert "rate_limited=$AT" in steps[write]["run"]
+
+
+def test_every_token_that_writes_a_board_can_read_the_receipts_branch():
+    """#926's review: `receipts.py state set` reads the receipts branch
+    (contents API) before it writes the board, so a token minted for it with
+    `permission-*` inputs and no `permission-contents` gets a 403 on a private
+    repository and the board is never written."""
+    checked = 0
+    for path in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
+        wf = yaml.safe_load(path.read_text())
+        for name, job in (wf.get("jobs") or {}).items():
+            steps = job.get("steps") or []
+            tokens = {s["id"]: s for s in steps if s.get("id") and "create-github-app-token" in str(s.get("uses"))}
+            for s in steps:
+                if "receipts.py state set" not in str(s.get("run") or ""):
+                    continue
+                m = re.search(r"steps\.([\w-]+)\.outputs\.token", str((s.get("env") or {}).get("GH_TOKEN")))
+                if not m or m.group(1) not in tokens:
+                    continue
+                inputs = tokens[m.group(1)].get("with") or {}
+                if not any(k.startswith("permission-") for k in inputs):
+                    continue  # the App's whole installation
+                checked += 1
+                assert inputs.get("permission-contents") in ("read", "write"), f"{path.name}:{name}: {s.get('name')}"
+    assert checked
