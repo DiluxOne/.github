@@ -465,3 +465,46 @@ def test_c2_the_runner_counts_for_every_step(path):
     wf = yaml.safe_load((need(".github/workflows/evals.yml")).read_text(encoding="utf-8"))
     on = wf.get("on") or wf.get(True)
     assert path in on["pull_request"]["paths"]
+
+
+# Each spec and autopilot case pins its issue: the replay never reads it live.
+
+@pytest.mark.parametrize("step", ("spec", "autopilot"))
+def test_c1_every_committed_case_pins_its_issue(step):
+    cases = json.loads(need(f"evals/{step}/cases.json").read_text(encoding="utf-8"))
+    for c in cases:
+        for field in ("title", "body"):
+            assert isinstance(c.get(field), str) and c[field].strip(), f"{c['id']}: no pinned issue {field}"
+
+
+def test_c2_the_replay_reads_the_issue_from_the_case_never_from_gh(tmp_path, monkeypatch):
+    ev = evals()
+
+    def no_gh(*args):
+        raise AssertionError(f"the replay called gh {args}")
+    monkeypatch.setattr(ev, "gh", no_gh)
+    monkeypatch.setattr(ev, "checkout", lambda case, work: (str(tmp_path),))
+    monkeypatch.setattr(ev, "preload", lambda: None)
+    prompts = []
+    monkeypatch.setattr(ev, "ask", lambda prompt, args, cwd, step, root=None: prompts.append(prompt) or None)
+    body = "## PRD\n\n### Problem\n\nThe pinned text.\n"
+    case = {"id": "DiluxOne/.github#1:spec", "repo": "DiluxOne/.github", "issue": 1, "base": "b", "type": "Task",
+            "files": ["a.md"], "expect": "named", "title": "chore: pinned", "body": body}
+    assert ev.issue_of(case) == {"title": "chore: pinned", "body": body}
+    ev.replay_spec(case, str(tmp_path))
+    assert len(prompts) == 1
+    # A case without its text is refused by name, never fetched.
+    bare = {k: v for k, v in case.items() if k not in ("title", "body")}
+    assert ev.issue_of(bare) is None
+    assert ev.run("spec", [bare], str(tmp_path)) == [{"id": bare["id"], "expect": "named", "ok": None}]
+
+
+def test_c1_collect_pins_the_issue_of_each_spec_and_autopilot_case(monkeypatch):
+    ev = evals()
+    monkeypatch.setattr(ev, "git_commits", lambda root: COMMITS)
+    calls = []
+    monkeypatch.setattr(ev, "gh", lambda *a: calls.append(a) or json.dumps({"title": "feat: b", "body": "the text"}))
+    for step in ("spec", "autopilot"):
+        got = ev.collect(step, 6)
+        assert [(c["title"], c["body"]) for c in got] == [("feat: b", "the text")]
+    assert ev.collect("repro", 6) and len(calls) == 2

@@ -210,9 +210,9 @@ STEPS = {
     "repro": {"paths": (".github/workflows/issue-repro.yml", "scripts/repro-ways.py"),
               "fields": ("issue", "base", "test"), "judge": False, "grade": grade_repro, "minutes": 15},
     "spec": {"paths": (".github/workflows/autopilot.yml", "scripts/autopilot.py"),
-             "fields": ("issue", "base", "type", "files"), "judge": False, "grade": grade_spec, "minutes": 15},
+             "fields": ("issue", "title", "body", "base", "type", "files"), "judge": False, "grade": grade_spec, "minutes": 15},
     "autopilot": {"paths": (".github/workflows/autopilot.yml", "scripts/autopilot.py"),
-                  "fields": ("issue", "base", "merge", "tests"), "judge": False, "grade": grade_autopilot, "minutes": 50},
+                  "fields": ("issue", "title", "body", "base", "merge", "tests"), "judge": False, "grade": grade_autopilot, "minutes": 50},
     "review": {"paths": REVIEW_PATHS, "fields": ("pr", "title", "base", "head"), "judge": False, "grade": verdict, "minutes": 15},
     "reply": {"paths": (".github/workflows/review-reply.yml",),
               "fields": ("pr", "thread", "rubric"), "judge": True, "grade": grade_reply, "minutes": 10},
@@ -511,11 +511,22 @@ def fingerprint(root=ROOT):
 
 
 def issue_of(case):
-    """The case's issue, {title, body}, read from GitHub (public)."""
-    try:
-        return json.loads(gh("issue", "view", str(case["issue"]), "--repo", case["repo"], "--json", "title,body"))
-    except (subprocess.CalledProcessError, ValueError):
+    """The case's issue, {title, body}, as pinned in the case when it was
+    collected; never read from GitHub at replay, where an edit to an old
+    issue would change the case and its score. A case without them is
+    refused by name (it is then not replayed)."""
+    title, body = case.get("title"), case.get("body")
+    if not (isinstance(title, str) and title.strip() and isinstance(body, str) and body.strip()):
+        print(f"  {case.get('id')}: no pinned issue title and body, not replayed", file=sys.stderr)
         return None
+    return {"title": title, "body": body}
+
+
+def pin_issue(case):
+    """CASE with its issue's title and body, read once from GitHub when the
+    case is collected; the replay reads them from the case alone."""
+    got = json.loads(gh("issue", "view", str(case["issue"]), "--repo", case["repo"], "--json", "title,body"))
+    return {**case, "title": got.get("title") or "", "body": got.get("body") or ""}
 
 
 def workflow_step(workflow, job, step_id):
@@ -757,7 +768,8 @@ def collect(step, n, root=ROOT):
     if step not in ("repro", "spec", "autopilot"):
         raise SystemExit(f"evals.py: {step}'s cases come from GitHub, which `collect` does not read yet; add them to evals/{step}/cases.json by hand")
     # This checkout is the organisation's public .github repository.
-    return cases_from_commits(step, f"{org.ORG}/.github", git_commits(root), n)
+    cases = cases_from_commits(step, f"{org.ORG}/.github", git_commits(root), n)
+    return cases if step == "repro" else [pin_issue(c) for c in cases]
 
 
 def write_json(path, data):
