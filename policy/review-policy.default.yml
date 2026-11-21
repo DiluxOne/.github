@@ -95,6 +95,14 @@ review:
 # The most one review run may spend, in USD. A repository can lower or raise it.
 budget-usd: 3
 
+# The review's evaluation (review-eval.yml, scripts/review-eval.py, #930):
+# the share of its flag cases, known bugs the review found and that were
+# fixed, it must find again, rounded up and never fewer than one, whatever
+# evals/review/baseline.json says. A review that finds none always fails.
+# The engine's alone: no repository sets it.
+review-eval:
+  found-floor: 0.3
+
 # Whether a pull request that meets every condition (low floor, low risk, low
 # complexity, not blocking, trusted author, all checks green) merges on its
 # own. false here stops it everywhere; a repository can turn it off for

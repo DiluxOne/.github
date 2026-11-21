@@ -4,6 +4,7 @@ that runs the set of a step a pull request changes, and the docs that say
 how."""
 import importlib.util
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -408,11 +409,14 @@ def test_c2_an_empty_file_list_fails_steps_not_selects_nothing():
 
 
 # C3: the review's gate is review-eval.yml's, exactly: a slack of one case
-# on each count, whatever the baseline (a baseline of found <= 1 keeps it).
+# on each count, and the found floor whatever the baseline (#930).
 
 def old_review_worse(now, base):
     """review-eval.py's worse() as review-eval.yml ran it before #735."""
     why = []
+    # And, since #930, the found floor whatever the baseline: 3 of 10.
+    if now["found"] < max(1, math.ceil(round(0.3 * now["flag"], 9))):
+        why.append("floor")
     if base.get("flag") and now["found"] < base["found"] - 1:
         why.append("found")
     if now["blocked"] > base.get("blocked", 0) + 1:

@@ -34,7 +34,11 @@ unreviewed). The set holds at least MIN_CASES (10) cases of each kind, or
 it is neither run nor scored (#844). The score is the share of `flag` cases
 found and of `clean` cases blocked; review-eval.yml fails a change to the
 review whose score is worse than evals/review/baseline.json by more than
-one case on either side.
+one case on either side, or that finds fewer flag cases than the floor,
+whatever the baseline (#930): `review-eval.found-floor` of
+policy/review-policy.default.yml, a share of them rounded up and never
+fewer than one, so a review that finds none always fails. No baseline is
+written below the floor.
 
   review-eval.py collect [N]   write evals/review/cases.json: N cases of each
                                kind (default 10), from the review's threads
@@ -57,6 +61,7 @@ one case on either side.
 """
 import importlib.util
 import json
+import math
 import os
 import re
 import shlex
@@ -71,6 +76,8 @@ import org  # noqa: E402  the organisation, from org.yml (#191)
 
 CASES = os.path.join(ROOT, "evals", "review", "cases.json")
 BASELINE = os.path.join(ROOT, "evals", "review", "baseline.json")
+POLICY = os.path.join(ROOT, "policy", "review-policy.default.yml")
+POLICY_NAME = "policy/review-policy.default.yml"
 SLACK = 1
 # A set of at least MIN_CASES of each kind, each case reviewed PLAYS times
 # and scored on its median (C3, #844): one odd answer moves no case.
@@ -623,9 +630,37 @@ def score(results):
             "unreviewed": sum(1 for _, m in ok if m is None), "plays": PLAYS}
 
 
-def worse(now, base):
-    """Why the score is worse than the baseline by more than SLACK, or ''."""
-    why = []
+def found_share(path=None):
+    """The policy's `review-eval.found-floor`, the share of the flag cases
+    the review must find whatever the baseline (#930 C2); 0 when it is
+    missing or not a share, which still leaves the floor at one case."""
+    import yaml
+    try:
+        with open(path or POLICY, encoding="utf-8") as fh:
+            got = ((yaml.safe_load(fh) or {}).get("review-eval") or {}).get("found-floor")
+    except (OSError, ValueError, AttributeError, yaml.YAMLError):
+        return 0
+    return got if isinstance(got, (int, float)) and not isinstance(got, bool) and 0 <= got <= 1 else 0
+
+
+def found_floor(flag, share):
+    """The fewest flag cases of FLAG the review must find: SHARE of them,
+    rounded up, never fewer than one, so a review that finds none fails."""
+    return max(1, math.ceil(round(share * flag, 9)))
+
+
+def below_floor(now, share=None):
+    """Why the score finds fewer flag cases than the floor, or ''."""
+    need = found_floor(now["flag"], found_share() if share is None else share)
+    if now["found"] < need:
+        return f"it found {now['found']} of {now['flag']} known bugs, below the floor of {need} (review-eval.found-floor, {POLICY_NAME})"
+    return ""
+
+
+def worse(now, base, share=None):
+    """Why the score is worse than the baseline by more than SLACK, or below
+    the found floor whatever the baseline, or ''."""
+    why = [w for w in [below_floor(now, share)] if w]
     if base.get("flag") and now["found"] < base["found"] - SLACK:
         why.append(f"it found {now['found']} of {now['flag']} known bugs, the baseline {base['found']} of {base['flag']}")
     if now["blocked"] > base.get("blocked", 0) + SLACK:
@@ -701,6 +736,9 @@ def self_test():
     check("merge: the plays of each run, case by case", merge([[{"id": "1", "expect": "flag", "plays": [True]}], [{"id": "1", "expect": "flag", "plays": [False]}]]), [{"id": "1", "expect": "flag", "plays": [True, False]}])
     check("short: fewer than MIN_CASES of a kind", (short(res), short([{"expect": k} for k in ("flag", "clean") for _ in range(MIN_CASES)])), (f"2 flag cases, fewer than {MIN_CASES}; 2 clean cases, fewer than {MIN_CASES}", ""))
     check("unplayed: a case not played PLAYS times", unplayed(res + [{"id": "5", "expect": "flag", "plays": [True]}]), ["5"])
+    check("found_floor: a share of the flag cases, rounded up, never below one", [found_floor(f, sh) for f, sh in ((10, 0.3), (10, 0), (11, 0.3), (0, 0.3))], [3, 1, 4, 1])
+    check("worse: below the floor whatever the baseline", ("below the floor of 3" in worse({**now, "found": 2, "flag": 10}, {"found": 0, "flag": 10, "blocked": 0}, 0.3), bool(worse({**now, "found": 0, "flag": 10}, {"found": 0, "flag": 10, "blocked": 0}, 0))), (True, True))
+    check("worse: at the floor and the baseline is not worse", worse({**now, "found": 3, "flag": 10}, {"found": 3, "flag": 10, "blocked": 0}, 0.3), "")
     check("worse: within one case of the baseline is not worse", worse(now, {"found": 2, "flag": 2, "blocked": 0}), "")
     check("worse: two fewer bugs found is", worse({**now, "found": 0}, {"found": 2, "flag": 2, "blocked": 0}).startswith("it found 0 of 2"), True)
     check("worse: two more clean ones blocked is", "it blocked 2" in worse({**now, "blocked": 2}, {"found": 1, "flag": 2, "blocked": 0}), True)
@@ -771,6 +809,11 @@ def main(argv):
         if argv[0] == "baseline":
             if now["unreviewed"]:
                 print(f"review-eval.py: {now['unreviewed']} cases were not reviewed; a baseline is written only from a whole run", file=sys.stderr)
+                return 1
+            # A baseline below the floor would gate nothing (#930 C2).
+            low = below_floor(now)
+            if low:
+                print(f"review-eval.py: {low}; no baseline is written below it", file=sys.stderr)
                 return 1
             with open(BASELINE, "w", encoding="utf-8") as fh:
                 json.dump(now, fh, indent=2)

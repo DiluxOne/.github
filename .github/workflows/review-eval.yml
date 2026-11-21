@@ -9,9 +9,13 @@ name: Review evaluation
 # (#930): the brief for its pull request in full mode, claude-review.yml's
 # own review and verify steps (their prompts and args, read from it), and
 # the verified output (scripts/review-eval.py run). The play's read-only
-# token reads each case's closing issue for its criteria. It is scored against evals/review/baseline.json
+# token reads each case's closing issue for its criteria. It is scored
+# against evals/review/baseline.json
 # (scripts/review-eval.py). Worse by more than one case on either side
-# fails this check, and the table says which cases. It is the review step
+# fails this check, and so does finding fewer known bugs than the floor,
+# policy/review-policy.default.yml's `review-eval.found-floor` (a share of
+# them, never fewer than one), whatever the baseline (#930); the table
+# says which cases. It is the review step
 # of every AI step's evaluation (#735, scripts/evals.py, which runs
 # review-eval.py's commands for the review and maps the review's paths,
 # these, policy/autonomy.yml among them); evals.yml runs the other steps.

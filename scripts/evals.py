@@ -42,7 +42,9 @@ shrinks is compared fairly. A case left not replayed is the runner's failure,
 never the step's score: it fails the check with the case's name. The
 slack is none when the baseline itself is not above it (1 of 6 still fails
 at 0), for every step but the review, whose gate is review-eval.yml's
-exactly (a slack of one case on each count).
+exactly (a slack of one case on each count, and the found floor of
+policy/review-policy.default.yml's `review-eval.found-floor` whatever its
+baseline, #930).
 A step never baselined (not in BASELINED) whose baseline is missing or
 pending passes with a warning and prints the whole run's results, what
 `baseline` reads, between the lines `--- baseline STEP ---` and
@@ -1023,8 +1025,8 @@ def self_test():
     now = score("review", plays)
     check("review score and table: review-eval.py's, on its plays' median", (now, table("review", plays, now, {})), (re_.score(plays), re_.table(plays, now, {})))
     rbase = {"found": 1, "flag": 6, "blocked": 0, "clean": 6, "unreviewed": 0, "plays": re_.PLAYS}
-    check("review worse: review-eval.py's gate, a baseline of one bug found keeps its slack of one",
-          (worse("review", {**rbase, "found": 0}, rbase), worse("review", {**rbase, "found": 0}, {**rbase, "found": 2}) == re_.worse({**rbase, "found": 0}, {**rbase, "found": 2})), ("", True))
+    check("review worse: review-eval.py's gate, its found floor whatever the baseline (#930)",
+          ("below the floor" in worse("review", {**rbase, "found": 0}, rbase), worse("review", {**rbase, "found": 0}, {**rbase, "found": 2}) == re_.worse({**rbase, "found": 0}, {**rbase, "found": 2})), (True, True))
     check("review: run elsewhere (review-eval.yml), never by evals.yml", (steps_here(["review-profiles/general.md"]), steps_of(["review-profiles/general.md"], with_set=True), unreplayed("review", [{"id": "r", "ok": None}])),
           ([], ["review"], []))
     check("review: the runner's own files count for the steps evals.yml runs, not the review's", (steps_of(["scripts/evals.py"]), steps_of(["policy/autonomy.yml"])),
