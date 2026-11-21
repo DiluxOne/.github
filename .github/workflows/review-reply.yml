@@ -571,7 +571,8 @@ jobs:
         run: |
           set -euo pipefail
           issue=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // empty' || true)
-          if NUMBER="${issue:-$PR}" PR="$PR" python3 .dx-central/scripts/deciders.py may answer "$LOGIN"; then
+          number=${issue:-$PR}
+          if NUMBER="$number" python3 .dx-central/scripts/deciders.py may answer "$LOGIN"; then
             echo "decides=true" >> "$GITHUB_OUTPUT"
           else
             echo "decides=false" >> "$GITHUB_OUTPUT"
@@ -708,7 +709,7 @@ jobs:
             fi
           fi
           if [ -n "$by_decider" ]; then
-            body="$body"$'\n\n'"@$LOGIN decides here (\`who-decides\`): their decision settles “$by_decider”."
+            body="$body"$'\n\n'"@$LOGIN decides here (\`who-decides\`): their decision settles: $by_decider."
           fi
           # A settled finding (#699 C5): the bot's thread it resolves, or a
           # finding a conversation comment settles, with a thread of its own
