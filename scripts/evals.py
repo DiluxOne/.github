@@ -19,22 +19,28 @@ deterministically wherever a grade exists:
              changed
   autopilot  the merged pull request's tests pass on the tree the step
              leaves (the same sandboxes)
-  review     flag or clean, as #234 has it: a known bug is found on its
-             file again, a clean pull request is not blocked
+  review     flag or clean, as #234 and #847 have it: a known bug is
+             found again inside the lines its fix changed, a clean pull
+             request is not blocked, each case played 3 times and scored
+             on its median. The review is run by its own workflow,
+             review-eval.yml, through scripts/review-eval.py, whose
+             commands evals.py runs for it (collect, run, score,
+             baseline): its set, grade, plays and gate are that script's,
+             exactly, and evals.yml never runs it
   reply      a model judges, with the case's rubric (the outcome is words):
              the thread is resolved, and no further change is asked
 
 A step's score is the share of cases that pass (the review's: bugs found
-and clean pull requests blocked). evals.yml replays each case in a job of
+and clean pull requests blocked, review-eval.py's). evals.yml replays each case in a job of
 its own (`matrix`, `run STEP CASE`), so every case gets its job's whole
 time, and merges a step's results (`merge`). It fails a change whose score
 is worse than the step's baseline by more than one case (a model does not
 answer the same twice), by rate (passed / cases), so a set that grows or
 shrinks is compared fairly. A case left not replayed is the runner's failure,
-never the step's score: it fails the check with the case's name (the
-review keeps its slack of one, as review-eval.yml had it). The slack is
-none when the baseline itself is not above it (1 of 6 still fails at 0),
-for every step but the review, whose gate is review-eval.yml's exactly.
+never the step's score: it fails the check with the case's name. The
+slack is none when the baseline itself is not above it (1 of 6 still fails
+at 0), for every step but the review, whose gate is review-eval.yml's
+exactly (a slack of one case on each count).
 A step never baselined (not in BASELINED) whose baseline is missing or
 pending passes with a warning and prints the whole run's results, what
 `baseline` reads, between the lines `--- baseline STEP ---` and
@@ -43,25 +49,31 @@ pending baseline, or any unreadable, invalid or wrongly shaped one, fails
 the check: it could not tell.
 
   evals.py steps FILE...       the steps whose paths the files touch, one per
-                               line (only those with a set); no file at all
-                               fails (the list could not be read)
+                               line (only those with a set that evals.yml
+                               runs: never the review, which review-eval.yml
+                               runs); no file at all fails (the list could
+                               not be read)
   evals.py collect STEP [N]    write evals/STEP/cases.json: N cases (default
                                6; the review's, N of each kind). repro, spec
                                and autopilot from this checkout's git history
                                (the reproduced bugs; the accepted issues whose
-                               merged pull request changed tests); review
-                               from its threads on GitHub (GH_TOKEN, read)
+                               merged pull request changed tests); review:
+                               `review-eval.py collect N`, from its threads
+                               on GitHub (GH_TOKEN, read)
   evals.py run STEP [CASE]     replay every case, or the one whose id is
                                CASE; results on stdout (JSON) (the Claude
-                               Code CLI, git, gh, the checkout)
+                               Code CLI, git, the checkout); review:
+                               `review-eval.py run [--play N]`
   evals.py matrix [STEP...]    the replay jobs of the steps (args or stdin):
                                [{step, case, n, minutes}] on stdout (JSON)
   evals.py merge STEP FILE...  the step's results from its jobs' FILEs, in
                                the cases' order; a case none has, not
                                replayed
   evals.py score STEP FILE     the results in FILE against the baseline: a
-                               table on stdout, exit 1 when worse
+                               table on stdout, exit 1 when worse (review:
+                               `review-eval.py score FILE...`, one per play)
   evals.py baseline STEP FILE  write the results in FILE as the baseline
+                               (review: `review-eval.py baseline FILE...`)
   evals.py --test              self-test (offline)
 """
 import fnmatch
@@ -91,9 +103,14 @@ RECALL = 0.5
 # A smaller change is a fairer case: no more files than this.
 MAX_FILES = 20
 # What counts for every step: its model and AI settings.
-# The runner and its workflow count for every step: a change to them is
-# scored too.
-COMMON = ("policy/autonomy.yml", "scripts/evals.py", ".github/workflows/evals.yml")
+COMMON = ("policy/autonomy.yml",)
+# The runner and its workflow count for every step evals.yml runs: a change
+# to them is scored too.
+RUNNER = ("scripts/evals.py", ".github/workflows/evals.yml")
+# The steps another workflow runs, with its runner: the review's is
+# review-eval.yml, through review-eval.py (#234, #847), which evals.py
+# runs for it and evals.yml never does.
+ELSEWHERE = {"review": (".github/workflows/review-eval.yml", "review-eval.py")}
 REVIEW_PATHS = (
     "review-profiles/**",
     "kinds/*/review-profile.md",
@@ -181,16 +198,14 @@ def grade_autopilot(case, got):
     return all(got.get(t) == "passed" for t in case["tests"])
 
 
+def review_eval():
+    """scripts/review-eval.py, the review's runner: its grade, score and gate."""
+    return _load("review_eval", ELSEWHERE["review"][1])
+
+
 def verdict(case, review):
-    """Whether the review did what the case expects. review is
-    local-review.sh's last.json, or None when it gave none."""
-    if not isinstance(review, dict):
-        return None
-    serious = [f for f in review.get("findings") or [] if isinstance(f, dict)
-               and f.get("severity") in ("blocker", "major") and not f.get("pre_existing")]
-    if case["expect"] == "flag":
-        return any(f.get("file") == case["path"] for f in serious)
-    return not serious
+    """The review's grade, review-eval.py's: True, False, or None."""
+    return review_eval().verdict(case, review)
 
 
 def grade_reply(case, got):
@@ -227,13 +242,14 @@ def matches(path, pattern):
 
 
 def paths_of(step):
-    return list(STEPS[step]["paths"]) + list(COMMON) + [f"evals/{step}/**"]
+    return list(STEPS[step]["paths"]) + list(COMMON) + ([] if step in ELSEWHERE else list(RUNNER)) + [f"evals/{step}/**"]
 
 
-def all_paths():
-    """Every path that counts for a step, once: evals.yml's `paths:`."""
+def all_paths(steps=None):
+    """Every path that counts for STEPS (default: those evals.yml runs,
+    every step but ELSEWHERE's), once: evals.yml's `paths:`."""
     out = []
-    for step in STEPS:
+    for step in steps or [s for s in STEPS if s not in ELSEWHERE]:
         out += [p for p in paths_of(step) if p not in out]
     return out
 
@@ -248,13 +264,14 @@ def steps_of(files, with_set=False, root=ROOT):
     return [s for s in STEPS if any(matches(f, p) for f in files for p in paths_of(s)) and (not with_set or has_set(s, root))]
 
 
+def steps_here(files, root=ROOT):
+    """The steps evals.yml runs for FILES: those with a set, but ELSEWHERE's."""
+    return [s for s in steps_of(files, with_set=True, root=root) if s not in ELSEWHERE]
+
+
 def score(step, results):
     if step == "review":
-        flag = [r for r in results if r["expect"] == "flag" and r["ok"] is not None]
-        clean = [r for r in results if r["expect"] == "clean" and r["ok"] is not None]
-        return {"found": sum(1 for r in flag if r["ok"]), "flag": len(flag),
-                "blocked": sum(1 for r in clean if not r["ok"]), "clean": len(clean),
-                "unreviewed": sum(1 for r in results if r["ok"] is None)}
+        return review_eval().score(results)
     run = [r for r in results if r["ok"] is not None]
     return {"passed": sum(1 for r in run if r["ok"]), "cases": len(run), "unrun": len(results) - len(run)}
 
@@ -269,15 +286,9 @@ def worse(step, now, base):
     """Why the score is worse than the baseline by more than its slack, or ''."""
     why = []
     if step == "review":
-        # review-eval.yml's gate, exactly: a slack of one case on each count,
-        # whatever the baseline (#735 keeps it; the scaling is the others').
-        if base.get("flag") and now["found"] < base["found"] - SLACK:
-            why.append(f"it found {now['found']} of {now['flag']} known bugs, the baseline {base['found']} of {base['flag']}")
-        if now["blocked"] > base.get("blocked", 0) + SLACK:
-            why.append(f"it blocked {now['blocked']} of {now['clean']} clean pull requests, the baseline {base.get('blocked', 0)}")
-        if now["unreviewed"] > SLACK:
-            why.append(f"{now['unreviewed']} cases could not be reviewed")
-        return "; ".join(why)
+        # review-eval.yml's gate, exactly: review-eval.py's (a slack of one
+        # case on each count, whatever the baseline; the scaling is the others').
+        return review_eval().worse(now, base)
     # By rate (passed / cases), so a change that adds or removes cases is
     # compared fairly: below (baseline passed - slack) / baseline cases, the
     # slack still one case of the baseline's set (none below one case).
@@ -309,9 +320,9 @@ def read_baseline(step, path, now):
 
 
 def unreplayed(step, results):
-    """The cases the runner left not replayed, by name, when that fails the
-    runner (every step's but the review's, which keeps its slack)."""
-    return [] if step == "review" else [r["id"] for r in results if r["ok"] is None]
+    """The cases the runner left not replayed, by name: that fails the
+    runner (the review's are review-eval.py's to judge)."""
+    return [] if step in ELSEWHERE else [r["id"] for r in results if r["ok"] is None]
 
 
 # A replay job's time: the step's limit for its one case, and the job's own
@@ -340,97 +351,18 @@ def merge(cases, parts):
 
 def table(step, results, now, base):
     out = ["| Case | Expects | Result |", "| --- | --- | --- |"]
-    for r in results:
-        if step == "review":
-            res = "could not review" if r["ok"] is None else ("as expected" if r["ok"] else "**missed**" if r["expect"] == "flag" else "**blocked**")
-        else:
-            res = "could not replay" if r["ok"] is None else ("as expected" if r["ok"] else "**failed**")
-        out.append(f"| {r['id']} | {r['expect']} | {res} |")
     if step == "review":
-        out += ["", f"Found {now['found']} of {now['flag']} known bugs (baseline {base.get('found', '?')} of {base.get('flag', '?')}); "
-                f"blocked {now['blocked']} of {now['clean']} clean pull requests (baseline {base.get('blocked', '?')}); {now['unreviewed']} not reviewed."]
-    else:
-        out += ["", f"{step}: {now['passed']} of {now['cases']} cases passed (baseline {base.get('passed', '?')} of {base.get('cases', '?')}); "
-                f"{now['unrun']} not replayed."]
+        return review_eval().table(results, now, base)
+    for r in results:
+        res = "could not replay" if r["ok"] is None else ("as expected" if r["ok"] else "**failed**")
+        out.append(f"| {r['id']} | {r['expect']} | {res} |")
+    out += ["", f"{step}: {now['passed']} of {now['cases']} cases passed (baseline {base.get('passed', '?')} of {base.get('cases', '?')}); "
+            f"{now['unrun']} not replayed."]
     return "\n".join(out)
-
-
-# The review's cases from GitHub (#234): its threads on the public
-# repositories' merged pull requests.
-QUERY = """
-query($q: String!) {
-  search(query: $q, type: ISSUE, first: 50) {
-    nodes { ... on PullRequest {
-      number title baseRefOid headRefOid isCrossRepository
-      reviewThreads(first: 50) { nodes {
-        isResolved isOutdated path resolvedBy { login }
-        comments(first: 1) { nodes { author { login } body originalCommit { oid } } }
-      } }
-    } }
-  }
-}
-"""
-
-
-def is_review(t):
-    c = ((t.get("comments") or {}).get("nodes") or [{}])[0] or {}
-    return (c.get("author") or {}).get("login") == org.APP and "AI review" in (c.get("body") or "")
-
-
-def cases_from(repo, prs, n):
-    """Up to n `flag` and n `clean` cases from one repository's pull requests."""
-    flag, clean = [], []
-    for pr in prs:
-        # Only a branch of the repository itself: a fork's code never runs
-        # where the review's key is (#234).
-        if pr.get("isCrossRepository") is not False:
-            continue
-        threads = [t for t in ((pr.get("reviewThreads") or {}).get("nodes") or [])]
-        fixed = [t for t in threads if is_review(t) and (((t.get("resolvedBy") or {}).get("login") == org.APP) or t.get("isOutdated"))]
-        if fixed:
-            t = fixed[0]
-            head = (((t.get("comments") or {}).get("nodes") or [{}])[0].get("originalCommit") or {}).get("oid")
-            if head and len(flag) < n:
-                flag.append({"id": f"{repo}#{pr['number']}:flag", "repo": repo, "pr": pr["number"], "title": pr.get("title") or "",
-                             "base": pr.get("baseRefOid"), "head": head, "expect": "flag", "path": t.get("path")})
-        elif not any(is_review(t) for t in threads) and len(clean) < n:
-            clean.append({"id": f"{repo}#{pr['number']}:clean", "repo": repo, "pr": pr["number"], "title": pr.get("title") or "",
-                          "base": pr.get("baseRefOid"), "head": pr.get("headRefOid"), "expect": "clean"})
-    return flag, clean
-
-
-def pick(per_repo, n):
-    """n of each kind, taken round the repositories so no one dominates."""
-    out = {"flag": [], "clean": []}
-    for kind, i in (("flag", 0), ("clean", 1)):
-        pools = [list(v[i]) for v in per_repo.values()]
-        while len(out[kind]) < n and any(pools):
-            for p in pools:
-                if p and len(out[kind]) < n:
-                    out[kind].append(p.pop(0))
-    return sorted(out["flag"] + out["clean"], key=lambda c: c["id"])
 
 
 def gh(*args):
     return subprocess.run(["gh", *args], check=True, capture_output=True, text=True).stdout
-
-
-def public_repos():
-    import yaml
-    with open(os.path.join(ROOT, "repos.yml"), encoding="utf-8") as fh:
-        names = sorted(((yaml.safe_load(fh) or {}).get("repos") or {}).keys())
-    listed = {r["name"]: r for r in json.loads(gh("repo", "list", org.ORG, "--limit", "500", "--json", "name,visibility,isArchived"))}
-    return [n for n in names if (listed.get(n) or {}).get("visibility") == "PUBLIC" and not listed[n].get("isArchived")]
-
-
-def collect_review(n):
-    per_repo = {}
-    for name in public_repos():
-        full = f"{org.ORG}/{name}"
-        out = gh("api", "graphql", "-f", f"query={QUERY}", "-f", f"q=repo:{full} is:pr is:merged commenter:app/{org.APP}")
-        prs = json.loads(out)["data"]["search"]["nodes"]
-        per_repo[full] = cases_from(full, prs, n)
-    return pick(per_repo, n)
 
 
 # Replaying a case: a checkout of its repository at its base, the step's
@@ -661,37 +593,10 @@ def merged_tests(tree, case, clone, head, out):
     return {t: run_test(tree, case, case["base"], t, head, case["merge"], os.path.join(out, str(i)), "feat: replay") for i, t in enumerate(case["tests"])}
 
 
-def replay_review(case, work):
-    """The review again (local-review.sh, the same brief, profiles and
-    model as the pull request's): its last.json, or None."""
-    repo_dir = os.path.join(work, case["repo"].replace("/", "_") + "-review")
-    if not os.path.isdir(repo_dir):
-        if subprocess.run(["git", "clone", "-q", f"https://github.com/{case['repo']}", repo_dir]).returncode != 0:
-            return None
-    git(repo_dir, "fetch", "-q", "origin", f"refs/pull/{case['pr']}/head", case["base"])
-    if git(repo_dir, "cat-file", "-e", case["head"] + "^{commit}").returncode != 0:
-        git(repo_dir, "fetch", "-q", "origin", case["head"])
-    if git(repo_dir, "checkout", "-q", "-B", f"eval/{case['pr']}", case["head"]).returncode != 0:
-        return None
-    state = os.path.join(repo_dir, ".git", "dx-review", "last.json")
-    if os.path.exists(state):
-        os.remove(state)
-    try:
-        # One case never holds the run: 15 minutes, then it is unreviewed.
-        subprocess.run(["bash", os.path.join(HERE, "local-review.sh"), "--base", case["base"], "--full", "--title", case["title"]],
-                       cwd=repo_dir, capture_output=True, text=True, timeout=STEPS["review"]["minutes"] * 60)
-    except subprocess.TimeoutExpired:
-        return None
-    try:
-        with open(state, encoding="utf-8") as fh:
-            return json.load(fh)
-    except (OSError, ValueError):
-        return None
-
-
 # Triage's and reply's replays come with their sets (from GitHub), and
 # repro's with its set, in their own issue (#735's follow-up).
-REPLAYS = {"spec": replay_spec, "autopilot": replay_autopilot, "review": replay_review}
+# The review's is review-eval.py's (ELSEWHERE).
+REPLAYS = {"spec": replay_spec, "autopilot": replay_autopilot}
 
 
 def run(step, cases, work):
@@ -763,8 +668,6 @@ def git_commits(root, limit=400):
 
 
 def collect(step, n, root=ROOT):
-    if step == "review":
-        return collect_review(n)
     if step not in ("repro", "spec", "autopilot"):
         raise SystemExit(f"evals.py: {step}'s cases come from GitHub, which `collect` does not read yet; add them to evals/{step}/cases.json by hand")
     # This checkout is the organisation's public .github repository.
@@ -806,41 +709,31 @@ def self_test():
     check("steps: a set counts for its step alone", (steps_of(["evals/review/cases.json"]), steps_of(["evals/spec/baseline.json"])), (["review"], ["spec"]))
     check("steps: an unrelated path runs nothing", steps_of(["README.md", "scripts/sync-repos.py", "evals/README.md", "kinds/x/pack.yml"]), [])
     check("steps: a glob's * stays in one folder", (matches("kinds/a/b/rules.yml", "kinds/*/rules.yml"), matches("review-profiles/a/b.md", "review-profiles/**")), (False, True))
-    check("steps: every path once in the union", len(all_paths()) == len(set(all_paths())) and set(all_paths()) >= set(REVIEW_PATHS), True)
+    check("steps: every path once in the union, the review's not in it", (len(all_paths()) == len(set(all_paths())), set(all_paths()) & set(REVIEW_PATHS)), (True, set()))
 
-    # The review (#234), as review-eval.py had it, on its own fixtures.
-    bot = {"login": org.APP}
-    first = lambda oid: {"nodes": [{"author": bot, "body": "x\n<sub>🤖 AI review · m (Anthropic)</sub>", "originalCommit": {"oid": oid}}]}
-    prs = [{"number": 1, "title": "fix: a", "baseRefOid": "b1", "headRefOid": "h1", "isCrossRepository": False, "reviewThreads": {"nodes": [{"isOutdated": True, "path": "a.php", "resolvedBy": None, "comments": first("c1")}]}},
-           {"number": 2, "title": "feat: b", "baseRefOid": "b2", "headRefOid": "h2", "isCrossRepository": False, "reviewThreads": {"nodes": []}},
-           {"number": 3, "title": "fix: c", "baseRefOid": "b3", "headRefOid": "h3", "isCrossRepository": False, "reviewThreads": {"nodes": [{"isOutdated": False, "path": "c.php", "resolvedBy": {"login": "me"}, "comments": first("c3")}]}}]
-    flag, clean = cases_from("o/r", prs, 5)
-    check("review cases: a fixed finding is a flag case at the commit it was raised on", [(c["pr"], c["head"], c["path"]) for c in flag], [(1, "c1", "a.php")])
-    check("review cases: a pull request with no thread is clean at its last commit; a dismissed one is neither", [(c["pr"], c["head"]) for c in clean], [(2, "h2")])
-    fork = [{"number": 9, "title": "x", "baseRefOid": "b", "headRefOid": "h", "isCrossRepository": True, "reviewThreads": {"nodes": []}},
-            {"number": 8, "title": "y", "baseRefOid": "b", "headRefOid": "h", "reviewThreads": {"nodes": []}}]
-    check("review cases: never a fork's pull request, nor one that does not say", cases_from("o/r", fork, 5), ([], []))
-    picked = pick({"o/a": ([{"id": "a1"}, {"id": "a2"}], []), "o/b": ([{"id": "b1"}], [])}, 2)
-    check("review pick: round the repositories", [c["id"] for c in picked], ["a1", "b1"])
-    case_f = {"expect": "flag", "path": "a.php"}
-    check("review verdict: flag found on its file", verdict(case_f, {"findings": [{"severity": "major", "file": "a.php"}]}), True)
-    check("review verdict: flag missed (a minor, another file, a pre-existing one)", verdict(case_f, {"findings": [{"severity": "minor", "file": "a.php"}, {"severity": "major", "file": "b.php"}, {"severity": "blocker", "file": "a.php", "pre_existing": True}]}), False)
-    check("review verdict: clean kept clean; clean blocked", (verdict({"expect": "clean"}, {"findings": [{"severity": "minor"}]}), verdict({"expect": "clean"}, {"findings": [{"severity": "major"}]})), (True, False))
-    check("review verdict: no review is unknown", verdict(case_f, None), None)
-    res = [{"id": "1", "expect": "flag", "ok": True}, {"id": "2", "expect": "flag", "ok": False}, {"id": "3", "expect": "clean", "ok": False}, {"id": "4", "expect": "clean", "ok": None}]
-    now = score("review", res)
-    check("review score: found, blocked, unreviewed", now, {"found": 1, "flag": 2, "blocked": 1, "clean": 1, "unreviewed": 1})
-    check("review worse: within one case of the baseline is not worse", worse("review", now, {"found": 2, "flag": 2, "blocked": 0}), "")
-    check("review worse: two fewer bugs found is", worse("review", {**now, "found": 0}, {"found": 2, "flag": 2, "blocked": 0}).startswith("it found 0 of 2"), True)
-    check("review worse: two more clean ones blocked is", "it blocked 2" in worse("review", {**now, "blocked": 2}, {"found": 1, "flag": 2, "blocked": 0}), True)
-    check("review worse: more than one case unreviewed is", ("could not be reviewed" in worse("review", {"found": 1, "flag": 1, "blocked": 0, "clean": 8, "unreviewed": 2}, {"found": 1, "flag": 1}),
-                                                             worse("review", {"found": 1, "flag": 1, "blocked": 0, "clean": 9, "unreviewed": 1}, {"found": 1, "flag": 1})), (True, ""))
-    check("review worse: a baseline of one bug found keeps its slack of one, as review-eval.yml had it",
-          (worse("review", {"found": 0, "flag": 6, "blocked": 0, "clean": 6, "unreviewed": 0}, {"found": 1, "flag": 6, "blocked": 0}),
-           bool(worse("review", {"found": 0, "flag": 6, "blocked": 0, "clean": 6, "unreviewed": 0}, {"found": 2, "flag": 6, "blocked": 0}))), ("", True))
-    check("review table: says what was missed", "**missed**" in table("review", res, now, {}), True)
-    with open(os.path.join(EVALS, "review", "baseline.json"), encoding="utf-8") as fh:
-        check("review: its baseline has the score's shape, unchanged", set(json.load(fh)) == set(now), True)
+    # The review (#234, #847): review-eval.py's grade, score and gate, run
+    # through it, never a copy of them.
+    re_ = review_eval()
+    case_f = {"expect": "flag", "path": "a.php", "line": 10, "fixed": [[9, 11]]}
+    found = {"findings": [{"severity": "major", "file": "a.php", "line": 10}]}
+    elsewhere = {"findings": [{"severity": "major", "file": "a.php", "line": 40}]}
+    check("review verdict: review-eval.py's (inside the lines the fix changed, not just its file)",
+          (verdict(case_f, found), verdict(case_f, elsewhere), verdict({"expect": "clean"}, found), verdict(case_f, None)),
+          (re_.verdict(case_f, found), re_.verdict(case_f, elsewhere), re_.verdict({"expect": "clean"}, found), None))
+    check("review verdict: another line of the file is a miss", verdict(case_f, elsewhere), False)
+    plays = [{"id": "1", "expect": "flag", "plays": [True, True, False]}, {"id": "2", "expect": "clean", "plays": [False, False, True]}]
+    now = score("review", plays)
+    check("review score and table: review-eval.py's, on its plays' median", (now, table("review", plays, now, {})), (re_.score(plays), re_.table(plays, now, {})))
+    rbase = {"found": 1, "flag": 6, "blocked": 0, "clean": 6, "unreviewed": 0, "plays": re_.PLAYS}
+    check("review worse: review-eval.py's gate, a baseline of one bug found keeps its slack of one",
+          (worse("review", {**rbase, "found": 0}, rbase), worse("review", {**rbase, "found": 0}, {**rbase, "found": 2}) == re_.worse({**rbase, "found": 0}, {**rbase, "found": 2})), ("", True))
+    check("review: run elsewhere (review-eval.yml), never by evals.yml", (steps_here(["review-profiles/general.md"]), steps_of(["review-profiles/general.md"], with_set=True), unreplayed("review", [{"id": "r", "ok": None}])),
+          ([], ["review"], []))
+    check("review: the runner's own files count for the steps evals.yml runs, not the review's", (steps_of(["scripts/evals.py"]), steps_of(["policy/autonomy.yml"])),
+          ([s for s in STEPS if s not in ELSEWHERE], list(STEPS)))
+    check("review: the commands go to review-eval.py", (review_args(["collect", "review", "10"]), review_args(["run", "review", "--play", "2"]),
+          review_args(["score", "review", "a", "b"]), review_args(["baseline", "review", "a"]), review_args(["matrix", "review"]), review_args(["run", "spec"])),
+          (["collect", "10"], ["run", "--play", "2"], ["score", "a", "b"], ["baseline", "a"], None, None))
 
     # Every other step's grade.
     t = {"expect": {"category": "duplicate", "duplicate_of": 12, "exists_in_pro": False}}
@@ -899,10 +792,9 @@ def self_test():
           (({"passed": 1, "cases": 2, "unrun": 0}, False), (None, False), (None, False)))
     check("baseline: corrupt, wrong keys, or a baselined step's missing or pending, cannot tell (fails)",
           [base_of(s, t)[1] for s, t in (("repro", "{not json"), ("repro", '{"found": 1}'), ("repro", "[1]"),
-                                         ("review", None), ("autopilot", '{"pending": "x"}'), ("spec", None))], [True] * 6)
+                                         ("autopilot", '{"pending": "x"}'), ("spec", None))], [True] * 5)
     shutil.rmtree(d, ignore_errors=True)
-    check("unreplayed: a case not replayed fails the runner by its name; the review keeps its slack",
-          (unreplayed("spec", res), unreplayed("review", [{"id": "r", "expect": "flag", "ok": None}])), (["3"], []))
+    check("unreplayed: a case not replayed fails the runner by its name", unreplayed("spec", res), ["3"])
     check("merge: the cases' order, a case no job gave not replayed",
           merge([{"id": "1", "expect": "passed"}, {"id": "2", "expect": {"category": "bug"}}, {"id": "3", "expect": "passed"}], [[res[2]], [res[0]]]),
           [res[0], {"id": "2", "expect": "record", "ok": None}, res[2]])
@@ -980,9 +872,23 @@ def self_test():
     return 1 if failed else 0
 
 
+def review_args(argv):
+    """review-eval.py's arguments for a review command of evals.py, or None
+    (not the review's, or a command review-eval.py has no counterpart of)."""
+    if len(argv) < 2 or argv[1] not in ELSEWHERE or argv[0] not in ("collect", "run", "score", "baseline"):
+        return None
+    return [argv[0], *argv[2:]]
+
+
 def main(argv):
     if argv == ["--test"]:
         return self_test()
+    if len(argv) >= 2 and argv[1] in ELSEWHERE and argv[0] in ("collect", "run", "matrix", "merge", "score", "baseline"):
+        args = review_args(argv)
+        if args is None:
+            print(f"evals.py: {argv[1]} is run by {ELSEWHERE[argv[1]][0]}, one job per play; it has no `{argv[0]}` here", file=sys.stderr)
+            return 1
+        return subprocess.run([sys.executable, os.path.join(HERE, ELSEWHERE[argv[1]][1]), *args]).returncode
     if argv[:1] == ["steps"]:
         files = argv[1:] or [line.strip() for line in sys.stdin if line.strip()]
         if not files:
@@ -991,7 +897,7 @@ def main(argv):
             # file is "could not tell", never "no step touched".
             print("::error::evals.py steps: no changed files, could not tell which steps to evaluate", file=sys.stderr)
             return 1
-        print("\n".join(steps_of(files, with_set=True)))
+        print("\n".join(steps_here(files)))
         return 0
     if argv[:1] == ["collect"] and len(argv) in (2, 3) and argv[1] in STEPS:
         cases = collect(argv[1], int(argv[2]) if len(argv) == 3 else 6)
@@ -1011,7 +917,7 @@ def main(argv):
         return 0
     if argv[:1] == ["matrix"]:
         steps = argv[1:] or [line.strip() for line in sys.stdin if line.strip()]
-        if any(s not in STEPS or not has_set(s) for s in steps):
+        if any(s not in STEPS or s in ELSEWHERE or not has_set(s) for s in steps):
             print(f"evals.py: not a step with a set: {steps}", file=sys.stderr)
             return 1
         print(json.dumps(matrix(steps)))

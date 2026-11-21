@@ -15,6 +15,9 @@ SIX = ("triage", "repro", "spec", "autopilot", "review", "reply")
 # GitHub, and repro's with its replay's fix, in their own issue (the
 # maintainer's answers on #735).
 WITH_SETS = ("spec", "autopilot", "review")
+# The review's set is run by review-eval.yml (scripts/review-eval.py, #847),
+# the others' by evals.yml.
+HERE = ("spec", "autopilot")
 
 
 def need(rel):
@@ -78,9 +81,16 @@ def test_c1_each_set_has_its_baseline(step):
         assert set(base) == set(mod.score(step, []))
 
 
-def test_c1_the_review_set_is_unchanged():
+def review_eval():
+    spec = importlib.util.spec_from_file_location("review_eval", ROOT / "scripts" / "review-eval.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_c1_the_review_set_is_review_eval_pys():
     cases = json.loads((ROOT / "evals" / "review" / "cases.json").read_text(encoding="utf-8"))
-    assert len(cases) == 12 and {c["expect"] for c in cases} == {"flag", "clean"}
+    assert {c["expect"] for c in cases} == {"flag", "clean"} and not review_eval().short(cases)
 
 
 COMMITS = [
@@ -127,6 +137,7 @@ def test_c1_collect_takes_spec_and_autopilot_cases_from_accepted_issues_with_tes
     ("evals/spec/cases.json", ["spec"]),
     ("evals/review/baseline.json", ["review"]),
     ("policy/autonomy.yml", list(SIX)),
+    ("scripts/evals.py", [s for s in SIX if s != "review"]),
     ("README.md", []),
     ("scripts/sync-repos.py", []),
     ("evals/README.md", []),
@@ -139,6 +150,9 @@ def test_c2_the_steps_listed_are_those_with_a_set():
     mod = evals()
     assert mod.steps_of(["policy/autonomy.yml"], with_set=True) == list(WITH_SETS)
     assert mod.steps_of([".github/workflows/issue-triage.yml"], with_set=True) == []
+    # evals.yml runs every one of them but the review, which review-eval.yml runs.
+    assert mod.steps_here(["policy/autonomy.yml"]) == list(HERE)
+    assert mod.steps_here(["review-profiles/general.md"]) == []
 
 
 def test_c2_evals_yml_runs_on_the_union_of_the_paths():
@@ -146,8 +160,11 @@ def test_c2_evals_yml_runs_on_the_union_of_the_paths():
     wf = yaml.safe_load((need(".github/workflows/evals.yml")).read_text(encoding="utf-8"))
     on = wf.get("on") or wf.get(True)
     assert sorted(on["pull_request"]["paths"]) == sorted(mod.all_paths())
-    assert "step" in on["workflow_dispatch"]["inputs"]
-    assert not (ROOT / ".github" / "workflows" / "review-eval.yml").exists(), "evals.yml replaces review-eval.yml"
+    assert "review" not in on["workflow_dispatch"]["inputs"]["step"]["options"]
+    # The review's paths are review-eval.yml's, policy/autonomy.yml among them.
+    review = yaml.safe_load((ROOT / ".github" / "workflows" / "review-eval.yml").read_text(encoding="utf-8"))
+    assert sorted((review.get("on") or review.get(True))["pull_request"]["paths"]) == sorted(mod.paths_of("review"))
+    assert "policy/autonomy.yml" in mod.paths_of("review")
 
 
 def test_c2_evals_yml_runs_the_listed_steps_with_the_runner():
@@ -169,7 +186,7 @@ def run_score(tmp_path, step, results, base):
     import tempfile
     root = Path(tempfile.mkdtemp(dir=tmp_path))
     (root / "scripts").mkdir(parents=True)
-    for f in ("evals.py", "org.py", "issue-schema.py"):
+    for f in ("evals.py", "org.py", "issue-schema.py", "review-eval.py"):
         shutil.copy(need(f"scripts/{f}"), root / "scripts" / f)
     shutil.copy(ROOT / "org.yml", root / "org.yml")
     (root / "policy").mkdir()
@@ -222,14 +239,13 @@ def test_c2_no_baseline_passes_with_a_warning_and_proposes_one(tmp_path, base):
 
 
 @pytest.mark.parametrize("step,base", [
-    ("review", None), ("spec", None), ("autopilot", {"pending": "again"}),
-    ("repro", "{not json"), ("repro", {"found": 1, "flag": 2}), ("review", {"passed": 1, "cases": 6, "unrun": 0}),
+    ("spec", None), ("autopilot", {"pending": "again"}),
+    ("repro", "{not json"), ("repro", {"found": 1, "flag": 2}), ("spec", {"found": 1, "flag": 6, "blocked": 0, "clean": 6, "unreviewed": 0}),
 ])
 def test_c2_a_baseline_that_cannot_be_read_fails_closed(tmp_path, step, base):
     # A baselined step's missing or pending file, a corrupt one, or one of
     # the wrong shape: the check could not tell, so it fails, never passes quietly.
-    res = ([{"id": f"f{i}", "expect": "flag", "ok": True} for i in range(3)] if step == "review" else results(5, 1))
-    got = run_score(tmp_path, step, res, base)
+    got = run_score(tmp_path, step, results(5, 1), base)
     assert got.returncode == 1, got.stdout + got.stderr
     assert "could not be read" in got.stdout and "--- baseline" not in got.stdout
 
@@ -275,12 +291,13 @@ def test_c2_each_case_is_replayed_in_a_job_of_its_own(tmp_path):
     assert replay and "matrix.minutes" in str(replay[0]["timeout-minutes"])
 
 
-def test_c2_the_review_scores_as_before(tmp_path):
-    base = {"found": 3, "flag": 6, "blocked": 0, "clean": 6, "unreviewed": 0}
-    res = ([{"id": f"f{i}", "expect": "flag", "ok": i < 1} for i in range(6)]
-           + [{"id": f"c{i}", "expect": "clean", "ok": True} for i in range(6)])
-    got = run_score(tmp_path, "review", res, base)
-    assert got.returncode == 1 and "it found 1 of 6 known bugs, the baseline 3 of 6" in got.stdout
+def test_c2_the_review_scores_as_review_eval_py_does(tmp_path):
+    base = {"found": 3, "flag": 10, "blocked": 0, "clean": 10, "unreviewed": 0, "plays": 3}
+    got = run_score(tmp_path, "review", review_results(1, 10, 0, 10), base)
+    assert got.returncode == 1 and "it found 1 of 10 known bugs, the baseline 3 of 10" in got.stdout
+    # Its baseline fails closed, as review-eval.py's does.
+    missing = run_score(tmp_path, "review", review_results(3, 10, 0, 10), None)
+    assert missing.returncode == 1 and "No baseline" in missing.stdout and "--- baseline" not in missing.stdout
 
 
 # C4: the docs say how the AI is measured, which paths run which set, and
@@ -314,9 +331,9 @@ def test_c4_testing_and_quality_says_which_paths_run_which_set_and_how_a_case_is
     assert "evals.py collect" in section and "evals.py baseline" in section
 
 
-def test_c4_no_page_links_the_removed_review_eval_yml():
-    for path in [*ROOT.glob("*.md"), *ROOT.glob("docs/**/*.md"), *ROOT.glob("kinds/**/*.md")]:
-        assert "workflows/review-eval.yml" not in path.read_text(encoding="utf-8"), path
+def test_c4_the_docs_say_review_eval_yml_runs_the_review():
+    for doc in ("docs/testing-and-quality.md", "docs/workflows.md"):
+        assert "review-eval.yml" in (ROOT / doc).read_text(encoding="utf-8"), doc
 
 
 # The autopilot's replay against real git trees: the agent's tree is one
@@ -406,14 +423,15 @@ def old_review_worse(now, base):
 
 
 def review_results(found, flag, blocked, clean, unreviewed=0):
-    return ([{"id": f"f{i}", "expect": "flag", "ok": i < found} for i in range(flag)]
-            + [{"id": f"c{i}", "expect": "clean", "ok": i >= blocked} for i in range(clean)]
-            + [{"id": f"u{i}", "expect": "flag", "ok": None} for i in range(unreviewed)])
+    """Results of review-eval.py's shape: each case's 3 plays, all alike."""
+    return ([{"id": f"f{i}", "expect": "flag", "plays": [i < found] * 3} for i in range(flag)]
+            + [{"id": f"c{i}", "expect": "clean", "plays": [i >= blocked] * 3} for i in range(clean)]
+            + [{"id": f"u{i}", "expect": "flag", "plays": [None] * 3} for i in range(unreviewed)])
 
 
 REVIEW_BASES = [json.loads((ROOT / "evals" / "review" / "baseline.json").read_text(encoding="utf-8")),
-                {"found": 1, "flag": 6, "blocked": 0, "clean": 6, "unreviewed": 0},
-                {"found": 0, "flag": 6, "blocked": 1, "clean": 6, "unreviewed": 0}]
+                {"found": 1, "flag": 10, "blocked": 0, "clean": 10, "unreviewed": 0, "plays": 3},
+                {"found": 0, "flag": 10, "blocked": 1, "clean": 10, "unreviewed": 0, "plays": 3}]
 
 
 @pytest.mark.parametrize("base", REVIEW_BASES)
@@ -460,8 +478,9 @@ def test_c2_worse_compares_by_rate_across_set_sizes(now, base, is_worse):
 
 @pytest.mark.parametrize("path", ["scripts/evals.py", ".github/workflows/evals.yml"])
 def test_c2_the_runner_counts_for_every_step(path):
+    # Every step evals.yml runs; the review's runner is review-eval.py.
     mod = evals()
-    assert mod.steps_of([path]) == list(SIX)
+    assert mod.steps_of([path]) == [s for s in SIX if s != "review"]
     wf = yaml.safe_load((need(".github/workflows/evals.yml")).read_text(encoding="utf-8"))
     on = wf.get("on") or wf.get(True)
     assert path in on["pull_request"]["paths"]

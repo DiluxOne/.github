@@ -8,7 +8,10 @@ name: Review evaluation
 # the rules of this pull request (scripts/local-review.sh, the same brief
 # the review reads) and scored against evals/review/baseline.json
 # (scripts/review-eval.py). Worse by more than one case on either side
-# fails this check, and the table says which cases.
+# fails this check, and the table says which cases. It is the review step
+# of every AI step's evaluation (#735, scripts/evals.py, which runs
+# review-eval.py's commands for the review and maps the review's paths,
+# these, policy/autonomy.yml among them); evals.yml runs the other steps.
 #
 # The set is checked first, before any paid review: every flag case's
 # review thread's hunk was changed by the commit that fixed it, and that
@@ -44,6 +47,7 @@ on:
       - scripts/review-verify.py
       - scripts/review-count.py
       - .github/workflows/claude-review.yml
+      - policy/autonomy.yml
       - evals/review/**
   workflow_dispatch:
     inputs:

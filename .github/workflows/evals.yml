@@ -15,9 +15,10 @@ name: AI evaluation
 # evals/<step>/baseline.json (`evals.py score`): worse by more than one case
 # (by rate, passed / cases, so a set of another size compares fairly) fails the check "AI evaluation (<step>)", and the table says which cases.
 # A case left not replayed (its job ran out of time or failed) fails the
-# check by its name, as the runner's failure, never the step's score. It
-# replaces review-eval.yml: the review is one of the steps, its set,
-# baseline and slack unchanged.
+# check by its name, as the runner's failure, never the step's score. The
+# review is one of the steps, but its set is run by its own workflow,
+# review-eval.yml (scripts/review-eval.py, 3 plays per case, #847), whose
+# `paths:` are the review's; this one never runs it.
 #
 # Paid: each case is one model run (the autopilot's, a whole work round).
 # It runs only on a pull request from a branch of this repository (a fork's
@@ -25,10 +26,10 @@ name: AI evaluation
 # lists the steps with no secret; private repositories are never cases.
 #
 # The slack is none when the baseline is not above it (autopilot's 1 of 6
-# fails at 0), for every step but the review, which keeps review-eval.yml's
-# slack of one on each count, whatever its baseline. A baseline that cannot be read, is not JSON or has the
+# fails at 0). A baseline that cannot be read, is not JSON or has the
 # wrong shape fails the check, and so does a missing or pending one for a
-# step in evals.py's BASELINED (review, spec, autopilot). Only a step never
+# step in evals.py's BASELINED (spec, autopilot; and the review's, in
+# review-eval.yml). Only a step never
 # baselined with no baseline (missing, or pending) passes with a warning, and
 # its summary and log carry the whole run's results between the lines
 # `--- baseline <step> ---` and `--- end ---`: saved as FILE,
@@ -52,16 +53,6 @@ on:
       - scripts/autopilot.py
       - evals/spec/**
       - evals/autopilot/**
-      - review-profiles/**
-      - kinds/*/review-profile.md
-      - kinds/*/rules.yml
-      - policy/review-policy.default.yml
-      - scripts/review-brief.sh
-      - scripts/local-review.sh
-      - scripts/review-verify.py
-      - scripts/review-count.py
-      - .github/workflows/claude-review.yml
-      - evals/review/**
       - .github/workflows/review-reply.yml
       - evals/reply/**
   workflow_dispatch:
@@ -75,7 +66,6 @@ on:
           - repro
           - spec
           - autopilot
-          - review
           - reply
 
 permissions:
