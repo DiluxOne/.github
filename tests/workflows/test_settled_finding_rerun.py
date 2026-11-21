@@ -86,11 +86,8 @@ def order(ran):
 def test_waits_for_the_run_to_complete_before_the_rerun(tmp_path):
     ran = play(tmp_path, checks=[check("completed")], runs=["in_progress", "completed"])
     seen = order(ran)
-    assert seen.count("rerun") == 1, seen
-    assert "sleep" in seen[:seen.index("rerun")], seen
-    # The last status read before the POST is the one that said completed.
-    statuses = [c for c in seen[:seen.index("rerun")] if c == "run-status"]
-    assert len(statuses) == 2, seen
+    # Read in progress, waited, read completed, and only then the POST.
+    assert seen == ["check", "run-status", "sleep", "check", "run-status", "rerun"], seen
     assert "runs again (run 55)" in ran.stdout
 
 
