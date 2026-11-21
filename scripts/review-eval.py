@@ -68,6 +68,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
@@ -486,12 +487,21 @@ def claude_bin():
     return os.environ.get("DX_EVAL_CLAUDE") or "claude"
 
 
-def ask(prompt, args, cwd):
+# One case never holds the run: its review and verification have CASE_SECONDS
+# (15 minutes) between them, so a play of 20 cases fits the job's 350.
+CASE_SECONDS = 900
+
+
+def ask(prompt, args, cwd, timeout):
     """One `claude -p` with production's args; its structured output, or None."""
+    if timeout <= 0:
+        return None
     try:
-        # One call never holds the run: 25 minutes, the review step's limit.
-        out = subprocess.run([claude_bin(), "-p", prompt, *shlex.split(args), "--output-format", "json"], cwd=cwd,
-                             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=1500)
+        # The model gets its key, never the GitHub token the play reads the
+        # criteria with.
+        env = {k: v for k, v in os.environ.items() if k not in ("GH_TOKEN", "GITHUB_TOKEN")}
+        out = subprocess.run([claude_bin(), "-p", prompt, *shlex.split(args), "--output-format", "json"], cwd=cwd, env=env,
+                             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout)
         got = json.loads(out.stdout or "null")
     except (OSError, ValueError, subprocess.TimeoutExpired):
         return None
@@ -529,7 +539,7 @@ def pr_text(repo, pr):
 def policy_of(case, repo_dir, work):
     """policy.py's outputs for the case, as claude-review.yml's policy step
     computes them: the repository's policy from the base, the files the
-    pull request changes."""
+    pull request changes; None when policy.py fails."""
     git = lambda *a: subprocess.run(["git", "-C", repo_dir, *a], capture_output=True, text=True)
     repo_policy = os.path.join(work, "repo-policy.yml")
     shown = git("show", f"{case['base']}:.github/review-policy.yml")
@@ -541,7 +551,10 @@ def policy_of(case, repo_dir, work):
     open(out, "w").close()
     env = {**os.environ, "DEFAULT_POLICY": os.path.join(ROOT, "policy", "review-policy.default.yml"), "REPO_POLICY": repo_policy,
            "CHANGED_FILES": changed, "GITHUB_OUTPUT": out, "GITHUB_REPOSITORY": case["repo"], "PR": str(case["pr"])}
-    subprocess.run(["python3", os.path.join(HERE, "policy.py")], cwd=repo_dir, env=env, capture_output=True, text=True)
+    # A policy that cannot be computed reviews nothing, as production's
+    # policy step fails its job: never a review on a guessed floor.
+    if subprocess.run(["python3", os.path.join(HERE, "policy.py")], cwd=repo_dir, env=env, capture_output=True, text=True).returncode != 0:
+        return None
     got = {}
     with open(out, encoding="utf-8") as fh:
         for line in fh:
@@ -557,7 +570,10 @@ def play_review(case, repo_dir, work, steps):
     (scripts/review-verify.py prompt and apply). The verified output, or
     None when the review gave none. No earlier threads or verdict (they
     would hand the answer over), and nothing is posted."""
+    deadline = time.monotonic() + CASE_SECONDS
     pol = policy_of(case, repo_dir, work)
+    if pol is None:
+        return None
     model = pol.get("model") or "claude-sonnet-5-5"
     effort = pol.get("effort") or "medium"
     body, criteria = pr_text(case["repo"], case["pr"])
@@ -576,14 +592,15 @@ def play_review(case, repo_dir, work, steps):
         return None
     values = {"github.repository": case["repo"], "github.event.pull_request.number": case["pr"], "steps.scope.outputs.model": model,
               "steps.scope.outputs.effort": effort, "steps.policy.outputs.budget || '3'": pol.get("budget") or "3"}
-    review = ask(fill(steps["review"]["prompt"], values), fill(steps["review"]["args"], values), repo_dir)
+    review = ask(fill(steps["review"]["prompt"], values), fill(steps["review"]["args"], values), repo_dir, deadline - time.monotonic())
     if review is None:
         return None
     verify = subprocess.run(["python3", os.path.join(HERE, "review-verify.py"), "prompt"], input=json.dumps(review), capture_output=True, text=True)
     verdicts = None
     if verify.returncode == 0 and verify.stdout.strip():
         values["steps.verify-task.outputs.prompt"] = verify.stdout
-        verdicts = ask(fill(steps["verify"]["prompt"], values), fill(steps["verify"]["args"], values), repo_dir)
+        # Out of time, no answer: it rejects nothing, as in production.
+        verdicts = ask(fill(steps["verify"]["prompt"], values), fill(steps["verify"]["args"], values), repo_dir, deadline - time.monotonic())
     return verify_apply(review, verdicts)
 
 

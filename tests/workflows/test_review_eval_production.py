@@ -21,7 +21,7 @@ log = os.environ["FAKE_LOG"]
 n = len([f for f in os.listdir(log) if f.startswith("call-")])
 args = sys.argv[1:]
 with open(os.path.join(log, f"call-{n}.json"), "w") as fh:
-    json.dump({"args": args, "cwd": os.getcwd()}, fh)
+    json.dump({"args": args, "cwd": os.getcwd(), "gh_token": "GH_TOKEN" in os.environ}, fh)
 if os.path.exists(".dx-central/brief.md"):
     shutil.copy(".dx-central/brief.md", os.path.join(log, f"brief-{n}.md"))
 diffs = []
@@ -132,7 +132,17 @@ def test_a_case_is_played_with_production_review_then_verified(scratch):
     assert flag(verify, "--max-budget-usd") == "2"
     assert flag(verify, "--allowedTools") == "Read,Glob,Grep"
     assert '"verdicts"' in flag(verify, "--json-schema")
+    # The model never gets the GitHub token.
+    assert not got[0]["gh_token"] and not got[1]["gh_token"]
     assert ok is True
+
+
+def test_a_policy_that_fails_reviews_nothing(scratch, monkeypatch):
+    case, log, tmp = scratch
+    m = mod()
+    monkeypatch.setattr(m, "policy_of", lambda *a: None)
+    assert m.run_case(case, str(ROOT), str(tmp / "work")) is None
+    assert calls(log) == []
 
 
 def test_the_verified_output_is_scored(scratch, monkeypatch):
@@ -165,3 +175,14 @@ def test_run_refuses_a_workflow_with_an_unknown_expression(tmp_path):
     out = subprocess.run(["python3", str(ROOT / "scripts" / "review-eval.py"), "run", "--play", "1"], capture_output=True, text=True, env=env)
     assert out.returncode == 1
     assert "secrets.SOMETHING" in out.stderr
+
+
+def test_a_case_out_of_time_is_not_reviewed(scratch, monkeypatch):
+    case, log, tmp = scratch
+    m = mod()
+    # A play of 20 cases fits the job's 350 minutes: a case has 15 between
+    # its review and its verification, and none left reviews nothing.
+    assert m.CASE_SECONDS == 900
+    monkeypatch.setattr(m, "CASE_SECONDS", 0)
+    assert m.run_case(case, str(ROOT), str(tmp / "work")) is None
+    assert calls(log) == []
