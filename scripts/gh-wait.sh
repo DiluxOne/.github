@@ -61,10 +61,15 @@ reads_stdin() {
 
 iso() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ; }
 
-# "primary", "secondary" or nothing, from a failed call's output.
+# "primary", "secondary" or nothing, from a failed call's stderr and stdout:
+# on stdout only GitHub's own answer counts (its JSON `message`), never an
+# issue's text that a failed call happened to print.
 limit_of() {
-  if grep -qiE 'API rate limit (already )?exceeded' "$@" 2>/dev/null; then echo primary
-  elif grep -qiE 'secondary rate limit|abuse detection|HTTP 429|rate limit exceeded' "$@" 2>/dev/null; then echo secondary
+  local err=$1 out=$2
+  if grep -qiE 'API rate limit (already )?exceeded' "$err" 2>/dev/null \
+    || grep -qiE '"message": *"API rate limit (already )?exceeded' "$out" 2>/dev/null; then echo primary
+  elif grep -qiE 'secondary rate limit|abuse detection|HTTP 429|rate limit exceeded' "$err" 2>/dev/null \
+    || grep -qiE '"message": *"[^"]*(secondary rate limit|abuse detection)' "$out" 2>/dev/null; then echo secondary
   fi
 }
 
@@ -124,7 +129,7 @@ run() {
       reset=$((now + wait))
     fi
     [ $((now + wait)) -le "$deadline" ] || give_up "$reset"
-    echo "gh: GitHub's API rate limit ($kind) is spent: it waits ${wait} s, until $(iso $((now + wait))), and runs \`gh $1 ${2:-}…\` again." >&2
+    echo "gh: GitHub's API rate limit ($kind) is spent: it waits ${wait} s, until $(iso $((now + wait))), and runs \`gh ${1:-} ${2:-}…\` again." >&2
     sleep "$wait"
   done
 }
@@ -179,6 +184,10 @@ FAKE
   rm -f "$t/n"
   rc=0; out=$("${base[@]}" RESET=0 FAILS=0 bash "$SELF" issue list 2>/dev/null) || rc=$?
   check "$rc $out $(cat "$t/n")" "0 ok 1" "no limit: one call"
+  printf 'title: API rate limit exceeded again\n' > "$t/o"; printf 'gh: Not Found (HTTP 404)\n' > "$t/e"
+  check "$(limit_of "$t/e" "$t/o")" "" "an issue's text on stdout is not GitHub's answer"
+  printf '{"message": "API rate limit already exceeded for installation ID 1."}\n' > "$t/o"
+  check "$(limit_of "$t/e" "$t/o")" "primary" "GitHub's JSON answer on stdout is"
   check "$(PATH="$t/bin:$PATH" real_gh)" "$t/bin/gh" "the real gh is the next one on PATH"
   mkdir -p "$t/wrap" && cp "$SELF" "$t/wrap/gh"
   check "$(PATH="$t/wrap:$t/bin:$PATH" real_gh)" "$t/bin/gh" "never this wrapper"
