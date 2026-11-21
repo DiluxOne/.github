@@ -1430,9 +1430,9 @@ jobs:
           # The agent's step's deadline (#673): its start plus its limit
           # (timeout-minutes of "Claude works") less a margin of 10 minutes,
           # for the credits and the finish. `check` stops `make pre-pr` there.
-          echo "deadline=$(( $(date +%s) + (75 - 10) * 60 ))" >> "$GITHUB_OUTPUT"
-          # #924 C2: a short pointer to .dx-io/prompt.md, never its text.
-          echo "prompt=Your task is in the file $GITHUB_WORKSPACE/.dx-io/prompt.md: read it whole, every line, before anything else, and follow it." >> "$GITHUB_OUTPUT"
+          # #924 C2: with it, a short pointer to .dx-io/prompt.md, never its text.
+          { echo "deadline=$(( $(date +%s) + (75 - 10) * 60 ))"
+            echo "prompt=Your task is in the file $GITHUB_WORKSPACE/.dx-io/prompt.md: read it whole, every line, before anything else, and follow it."; } >> "$GITHUB_OUTPUT"
 
       # The test repository's fixed change (#563): each unticked criterion's
       # file, committed and ticked, then ready, through the agent's own
