@@ -162,7 +162,7 @@ def test_the_scripts_job_runs_its_own_test():
 
 def test_the_sweep_continues_an_issue_left_to_the_rate_limit_once_it_reset():
     """The run that could not wait wrote `rate_limited` on its issue's
-    board: the hourly sweep asks the continue once the reset passed."""
+    board (its `rate-limited` job, after the reset): the hourly sweep asks the continue once the reset passed."""
     def sweep(board, labels=""):
         ran = subprocess.run([sys.executable, str(ROOT / "scripts" / "autopilot.py"), "sweep", "rate-limited"], input=json.dumps(board),
                              capture_output=True, text=True, env={**os.environ, "LABELS": labels}, timeout=30)
@@ -175,3 +175,57 @@ def test_the_sweep_continues_an_issue_left_to_the_rate_limit_once_it_reset():
     assert sweep({}) != "continue"
     text = (ROOT / ".github" / "workflows" / "autopilot-sweep.yml").read_text()
     assert "autopilot.py sweep rate-limited" in text
+
+
+def test_giving_up_notes_the_reset_with_no_api_call(tmp_path):
+    """The limit is spent when it gives up, so a board write then would fail
+    with the same answer: it notes the reset in DX_RATE_NOTE, a file, and
+    makes no call but the one that failed (no receipts.py, no gh)."""
+    reset = int(time.time()) + 1800
+    note = tmp_path / "rate-limited"
+    env = env_for(tmp_path, tmp_path, RESET=reset, FAILS=99, DX_RATE_DEADLINE=int(time.time()) + 60, DX_RATE_NOTE=note)
+    ran = subprocess.run(["bash", str(WRAPPER), "issue", "view", "9"], capture_output=True, text=True, env=env, timeout=30)
+    assert ran.returncode == 1
+    assert note.read_text().strip() == str(reset)
+    assert len(calls(tmp_path)) == 1, "only the call that met the limit: nothing tries to write while it is spent"
+
+
+def test_until_sleeps_to_the_reset_at_most_its_bound(tmp_path):
+    env = {**os.environ, "DX_RATE_SLACK": "0"}
+    started = time.time()
+    ran = subprocess.run(["bash", str(WRAPPER), "--until", str(int(time.time()) + 2)], capture_output=True, text=True, env=env, timeout=30)
+    assert ran.returncode == 0 and time.time() - started >= 1
+    ran = subprocess.run(["bash", str(WRAPPER), "--until", str(int(time.time()) + 3600)], capture_output=True, text=True,
+                         env={**env, "DX_RATE_UNTIL_MAX": "1"}, timeout=30)
+    assert ran.returncode == 0 and "waits 1 s" in ran.stdout
+
+
+def test_the_board_is_written_after_the_reset_by_its_own_job():
+    """#925 C1's recovery: every autopilot job reads the note into its
+    `rate-limited` output, even when it failed; the `rate-limited` job needs
+    them all, sleeps until the latest reset before any API call (its token
+    too), and only then writes `rate_limited` on the issue's board."""
+    wf = yaml.safe_load((ROOT / ".github" / "workflows" / "autopilot.yml").read_text())
+    jobs = wf["jobs"]
+    noting = [j for j, job in jobs.items() if j != "rate-limited" and any(install_step(s) for s in job.get("steps") or []) and j != "where"]
+    assert set(noting) == {"prep", "spec", "draft", "work", "verify", "apply"}
+    for j in noting:
+        steps = jobs[j]["steps"]
+        rate = [s for s in steps if s.get("id") == "rate"]
+        assert rate and rate[0].get("if") == "always()" and steps[-1] is rate[0], f"{j}: its note is read last, always"
+        assert "DX_RATE_NOTE" in rate[0]["run"]
+        assert jobs[j]["outputs"]["rate-limited"] == "${{ steps.rate.outputs.reset }}", j
+    rl = jobs["rate-limited"]
+    assert set(rl["needs"]) == set(noting)
+    assert rl["if"].startswith("${{ always()")
+    steps = rl["steps"]
+    names = [s.get("id") or s.get("name") for s in steps]
+    until = next(i for i, s in enumerate(steps) if "gh-wait.sh --until" in str(s.get("run")))
+    token = next(i for i, s in enumerate(steps) if "create-github-app-token" in str(s.get("uses")))
+    write = next(i for i, s in enumerate(steps) if "receipts.py state set" in str(s.get("run")))
+    assert until < token < write, names
+    assert not any(CALLS_GH.search(str(s.get("run") or "")) for s in steps[:until + 1]), "no API call before the reset"
+    for j in noting:
+        assert f"needs.{j}.outputs.rate-limited" in steps[until]["env"]["RESETS"], j
+        assert f"needs.{j}.outputs.rate-limited" in rl["if"], j
+    assert "rate_limited=$AT" in steps[write]["run"]

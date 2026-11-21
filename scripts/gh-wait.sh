@@ -23,15 +23,21 @@
 #       end less 3 minutes, written by --install; an hour from the first
 #       limit when unset): a reset after it is not waited for: it prints
 #       `::error::GitHub's API rate limit for the App resets at <time>,
-#       after this job's time: left for the next run`, writes
-#       `rate_limited=<reset>` on the board of DX_RATE_NUMBER (ITEM
-#       DX_RATE_ITEM) when the job named one (receipts.py, best effort: the
-#       hourly sweep continues an issue whose reset passed), and exits 1.
+#       after this job's time: left for the next run`, writes the reset
+#       (epoch seconds, the latest one) to DX_RATE_NOTE, and exits 1. It
+#       calls no API to note it: the limit is spent then. The job reads the
+#       note into its outputs, and a later job writes `rate_limited=<reset>`
+#       on the issue's board once the reset passed (autopilot.yml
+#       `rate-limited`, `--until`), so the hourly sweep continues the issue.
+#   gh-wait.sh --until RESET      sleeps until RESET (epoch seconds) plus
+#       DX_RATE_SLACK, at most DX_RATE_UNTIL_MAX seconds (4500): the job
+#       that writes the board waits there for a fresh limit. A RESET that is
+#       not a number is an error.
 #   gh-wait.sh --install MINUTES  copies itself to $RUNNER_TEMP/dx-gh/gh
 #       (outside the workspace, so a later checkout cannot remove it), puts
 #       that directory on $GITHUB_PATH and writes DX_RATE_DEADLINE (now +
-#       MINUTES less 3 minutes) and DX_RATE_CENTRAL (its scripts) to
-#       $GITHUB_ENV, with DX_RATE_NUMBER and DX_RATE_ITEM when set.
+#       MINUTES less 3 minutes) and DX_RATE_NOTE ($RUNNER_TEMP/dx-gh/
+#       rate-limited) to $GITHUB_ENV.
 #   gh-wait.sh --test             its own checks, with a fake gh.
 set -uo pipefail
 
@@ -87,20 +93,31 @@ if out:
 }
 
 give_up() {
-  local at=$1
+  local at=$1 was
   echo "::error::GitHub's API rate limit for the App resets at $(iso "$at"), after this job's time: left for the next run" >&2
-  if [ -n "${DX_RATE_NUMBER:-}" ] && [ -f "${DX_RATE_CENTRAL:-}/receipts.py" ] && [ -z "${DX_RATE_GAVE_UP:-}" ]; then
-    DX_RATE_GAVE_UP=1 ITEM="${DX_RATE_ITEM:-issue}" NUMBER="$DX_RATE_NUMBER" timeout 60 python3 "$DX_RATE_CENTRAL/receipts.py" state set "rate_limited=$at" >/dev/null 2>&1 \
-      || echo "::warning::#$DX_RATE_NUMBER's board could not be written: the rate limit is not noted on it." >&2
+  if [ -n "${DX_RATE_NOTE:-}" ]; then
+    was=$(cat "$DX_RATE_NOTE" 2>/dev/null || echo 0)
+    case $was in ''|*[!0-9]*) was=0 ;; esac
+    [ "$was" -ge "$at" ] || echo "$at" > "$DX_RATE_NOTE" 2>/dev/null || true
   fi
   exit 1
+}
+
+until_reset() {
+  local at=${1:-} now wait max=${DX_RATE_UNTIL_MAX:-4500}
+  case $at in ''|*[!0-9]*) echo "gh-wait.sh --until needs the reset, in epoch seconds (got [$at])." >&2; exit 64 ;; esac
+  now=$(date +%s)
+  wait=$((at - now + ${DX_RATE_SLACK:-5}))
+  [ "$wait" -le "$max" ] || wait=$max
+  if [ "$wait" -gt 0 ]; then
+    echo "GitHub's API rate limit for the App resets at $(iso "$at"): it waits ${wait} s."
+    sleep "$wait"
+  fi
 }
 
 run() {
   local gh rc kind reset wait now deadline tries=0
   gh=$(real_gh) || { echo "gh-wait.sh: no gh on PATH but this wrapper." >&2; exit 127; }
-  # A board write from give_up: one try, no wait (the limit is spent).
-  [ -z "${DX_RATE_GAVE_UP:-}" ] || exec "$gh" "$@"
   TMP_DIR=$(mktemp -d)
   trap 'rm -rf "$TMP_DIR"' EXIT
   local tmp=$TMP_DIR
@@ -135,18 +152,15 @@ run() {
 }
 
 install() {
-  local minutes=${1:-} dir central
+  local minutes=${1:-} dir
   case $minutes in ''|*[!0-9]*) echo "gh-wait.sh --install needs the job's timeout-minutes." >&2; exit 64 ;; esac
   : "${GITHUB_PATH:?gh-wait.sh --install runs in a job (GITHUB_PATH)}" "${GITHUB_ENV:?}" "${RUNNER_TEMP:?}"
   dir="$RUNNER_TEMP/dx-gh"
-  central=$(cd "$(dirname "$SELF")" && pwd)
   mkdir -p "$dir" && cp "$SELF" "$dir/gh" && chmod 755 "$dir/gh"
   echo "$dir" >> "$GITHUB_PATH"
   {
     echo "DX_RATE_DEADLINE=$(( $(date +%s) + minutes * 60 - 180 ))"
-    echo "DX_RATE_CENTRAL=$central"
-    [ -z "${DX_RATE_NUMBER:-}" ] || echo "DX_RATE_NUMBER=$DX_RATE_NUMBER"
-    [ -z "${DX_RATE_ITEM:-}" ] || echo "DX_RATE_ITEM=$DX_RATE_ITEM"
+    echo "DX_RATE_NOTE=$dir/rate-limited"
   } >> "$GITHUB_ENV"
   echo "gh waits on the API's rate limit in this job, until $(iso $(( $(date +%s) + minutes * 60 - 180 )))."
 }
@@ -179,6 +193,19 @@ FAKE
   check "$rc $(cat "$t/n")" "1 1" "a reset after the deadline: fails at once"
   case $out in *"::error::GitHub's API rate limit for the App resets at "*", after this job's time: left for the next run"*) check y y "it names the reset" ;; *) check "$out" "the ::error:: line" "it names the reset" ;; esac
   rm -f "$t/n"
+  local at=$(( $(date +%s) + 900 ))
+  rc=0; "${base[@]}" RESET=$at DX_RATE_DEADLINE=$(( $(date +%s) + 10 )) DX_RATE_NOTE="$t/note" bash "$SELF" pr view 1 >/dev/null 2>&1 || rc=$?
+  check "$rc $(cat "$t/n") $(cat "$t/note" 2>/dev/null)" "1 1 $at" "giving up: the reset noted in DX_RATE_NOTE, with no other call"
+  rm -f "$t/n"
+  rc=0; "${base[@]}" RESET=$((at - 100)) DX_RATE_DEADLINE=$(( $(date +%s) + 10 )) DX_RATE_NOTE="$t/note" bash "$SELF" pr view 1 >/dev/null 2>&1 || rc=$?
+  check "$(cat "$t/note")" "$at" "an earlier reset leaves the later one noted"
+  rm -f "$t/n"
+  rc=0; out=$(DX_RATE_SLACK=0 bash "$SELF" --until $(( $(date +%s) - 10 ))) || rc=$?
+  check "$rc $out" "0 " "--until a reset passed: no wait"
+  rc=0; out=$(DX_RATE_SLACK=0 DX_RATE_UNTIL_MAX=1 bash "$SELF" --until $(( $(date +%s) + 900 ))) || rc=$?
+  case $out in *"it waits 1 s."*) check "$rc" 0 "--until: at most DX_RATE_UNTIL_MAX" ;; *) check "$rc $out" "0 …it waits 1 s." "--until: at most DX_RATE_UNTIL_MAX" ;; esac
+  rc=0; bash "$SELF" --until soon >/dev/null 2>&1 || rc=$?
+  check "$rc" 64 "--until with no number: an error"
   rc=0; out=$("${base[@]}" RESET=0 DX_RATE_BACKOFF=1 DX_RATE_DEADLINE=$(( $(date +%s) + 60 )) LIMIT="You have exceeded a secondary rate limit" bash "$SELF" issue list 2>/dev/null) || rc=$?
   check "$rc $out" "0 ok" "a secondary limit: backs off and runs it again"
   rm -f "$t/n"
@@ -199,6 +226,7 @@ FAKE
 
 case "${1:-}" in
   --install) shift; install "$@" ;;
+  --until) shift; until_reset "$@" ;;
   --test) self_test ;;
   *) run "$@"; exit $? ;;
 esac

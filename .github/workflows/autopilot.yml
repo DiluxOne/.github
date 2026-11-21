@@ -225,9 +225,11 @@ name: Autopilot
 # its PATH as `gh` (`--install` with the job's timeout-minutes), so a call
 # that finds the App's calls spent waits for the reset, within the job's
 # time less 3 minutes (DX_RATE_DEADLINE), and runs again instead of failing.
-# A reset past the job's time ends the run, with `rate_limited` on the
-# issue's board: the hourly sweep (autopilot-sweep.yml) continues it once
-# the limit reset, and the run it starts clears the key.
+# A reset past the job's time ends the job, the reset noted with no API
+# call (the limit is spent) in the job's `rate-limited` output; the
+# `rate-limited` job sleeps until it, then writes `rate_limited` on the
+# issue's board with a fresh limit: the hourly sweep (autopilot-sweep.yml)
+# continues the issue, and the run it starts clears the key.
 
 on:
   workflow_call:
@@ -337,6 +339,7 @@ jobs:
     timeout-minutes: 15
     permissions: {}
     outputs:
+      rate-limited: ${{ steps.rate.outputs.reset }}
       go: ${{ steps.may.outputs.go || 'false' }}
       # What it runs (#504): the mode it was called with, but `fix` for a
       # continue on a ready pull request whose review blocks.
@@ -398,7 +401,6 @@ jobs:
       - name: The waiting gh (#925)
         env:
           TIMEOUT: 15
-          DX_RATE_NUMBER: ${{ inputs.issue }}
         run: test ! -f .dx-central/scripts/gh-wait.sh || bash .dx-central/scripts/gh-wait.sh --install "$TIMEOUT"
 
       - name: What to work on
@@ -1005,6 +1007,16 @@ jobs:
           overwrite: true
           retention-days: 3
 
+      # GitHub's API rate limit (#925): a reset past this job's time, noted
+      # by scripts/gh-wait.sh with no API call (the limit is spent then),
+      # for the `rate-limited` job.
+      - name: The rate limit's reset (#925)
+        id: rate
+        if: always()
+        run: |
+          f="${DX_RATE_NOTE:-}"
+          if [ -n "$f" ] && [ -s "$f" ]; then echo "reset=$(tr -dc 0-9 < "$f")" >> "$GITHUB_OUTPUT"; fi
+
   # --- start: the Spec, by the agent, with no key ---------------------------
   spec:
     name: Autopilot · the Spec
@@ -1015,6 +1027,7 @@ jobs:
     permissions:
       contents: read
     outputs:
+      rate-limited: ${{ steps.rate.outputs.reset }}
       # The fixed change's Spec was queued by prep (#563): no model ran.
       outcome: ${{ needs.prep.outputs.fixed == 'true' && 'success' || steps.spec.outcome }}
     steps:
@@ -1057,7 +1070,6 @@ jobs:
       - name: The waiting gh (#925)
         env:
           TIMEOUT: 30
-          DX_RATE_NUMBER: ${{ needs.prep.outputs.issue }}
         run: test ! -f .dx-central/scripts/gh-wait.sh || bash .dx-central/scripts/gh-wait.sh --install "$TIMEOUT"
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -1135,6 +1147,16 @@ jobs:
           overwrite: true
           retention-days: 30
 
+      # GitHub's API rate limit (#925): a reset past this job's time, noted
+      # by scripts/gh-wait.sh with no API call (the limit is spent then),
+      # for the `rate-limited` job.
+      - name: The rate limit's reset (#925)
+        id: rate
+        if: always()
+        run: |
+          f="${DX_RATE_NOTE:-}"
+          if [ -n "$f" ] && [ -s "$f" ]; then echo "reset=$(tr -dc 0-9 < "$f")" >> "$GITHUB_OUTPUT"; fi
+
   # --- start: the Spec on the issue, and the draft, with the key ------------
   draft:
     name: Autopilot · the draft
@@ -1144,6 +1166,7 @@ jobs:
     timeout-minutes: 15
     permissions: {}
     outputs:
+      rate-limited: ${{ steps.rate.outputs.reset }}
       pr: ${{ steps.draft.outputs.pr }}
       branch: ${{ steps.draft.outputs.branch }}
       why: ${{ steps.draft.outputs.why }}
@@ -1185,7 +1208,6 @@ jobs:
       - name: The waiting gh (#925)
         env:
           TIMEOUT: 15
-          DX_RATE_NUMBER: ${{ needs.prep.outputs.issue }}
         run: test ! -f .dx-central/scripts/gh-wait.sh || bash .dx-central/scripts/gh-wait.sh --install "$TIMEOUT"
 
       - name: The repository's own policy
@@ -1354,6 +1376,16 @@ jobs:
           overwrite: true
           retention-days: 3
 
+      # GitHub's API rate limit (#925): a reset past this job's time, noted
+      # by scripts/gh-wait.sh with no API call (the limit is spent then),
+      # for the `rate-limited` job.
+      - name: The rate limit's reset (#925)
+        id: rate
+        if: always()
+        run: |
+          f="${DX_RATE_NOTE:-}"
+          if [ -n "$f" ] && [ -s "$f" ]; then echo "reset=$(tr -dc 0-9 < "$f")" >> "$GITHUB_OUTPUT"; fi
+
   # --- the work, by the agent, with no key ----------------------------------
   work:
     name: Autopilot (${{ inputs.mode }}) · the work
@@ -1367,6 +1399,7 @@ jobs:
     permissions:
       contents: read
     outputs:
+      rate-limited: ${{ steps.rate.outputs.reset }}
       outcome: ${{ needs.prep.outputs.fixed == 'true' && steps.fixed.outcome || steps.work.outcome }}
       # #673: whether `verify` runs `make pre-pr` in full after the agent's
       # step, at the head the agent left (its commits' bundle).
@@ -1413,7 +1446,6 @@ jobs:
       - name: The waiting gh (#925)
         env:
           TIMEOUT: 90
-          DX_RATE_NUMBER: ${{ needs.prep.outputs.issue }}
         run: test ! -f .dx-central/scripts/gh-wait.sh || bash .dx-central/scripts/gh-wait.sh --install "$TIMEOUT"
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -1602,6 +1634,16 @@ jobs:
           overwrite: true
           retention-days: 30
 
+      # GitHub's API rate limit (#925): a reset past this job's time, noted
+      # by scripts/gh-wait.sh with no API call (the limit is spent then),
+      # for the `rate-limited` job.
+      - name: The rate limit's reset (#925)
+        id: rate
+        if: always()
+        run: |
+          f="${DX_RATE_NOTE:-}"
+          if [ -n "$f" ] && [ -s "$f" ]; then echo "reset=$(tr -dc 0-9 < "$f")" >> "$GITHUB_OUTPUT"; fi
+
   # --- after the work: `make pre-pr` in full, with no key (#673) ------------
   # A repository whose `make pre-pr` outlasts the agent's step: `check` stops
   # it at the step's deadline and `finish ready` is deferred to this job,
@@ -1618,6 +1660,7 @@ jobs:
     permissions:
       contents: read
     outputs:
+      rate-limited: ${{ steps.rate.outputs.reset }}
       verdict: ${{ steps.result.outputs.verdict }}
     steps:
       # The working tree as the work had it: a reproduced bug's test stays
@@ -1656,7 +1699,6 @@ jobs:
       - name: The waiting gh (#925)
         env:
           TIMEOUT: 360
-          DX_RATE_NUMBER: ${{ needs.prep.outputs.issue }}
         run: test ! -f .dx-central/scripts/gh-wait.sh || bash .dx-central/scripts/gh-wait.sh --install "$TIMEOUT"
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -1732,6 +1774,16 @@ jobs:
           overwrite: true
           retention-days: 30
 
+      # GitHub's API rate limit (#925): a reset past this job's time, noted
+      # by scripts/gh-wait.sh with no API call (the limit is spent then),
+      # for the `rate-limited` job.
+      - name: The rate limit's reset (#925)
+        id: rate
+        if: always()
+        run: |
+          f="${DX_RATE_NOTE:-}"
+          if [ -n "$f" ] && [ -s "$f" ]; then echo "reset=$(tr -dc 0-9 < "$f")" >> "$GITHUB_OUTPUT"; fi
+
   # --- every mode: the agent's work on GitHub, and the verdict --------------
   apply:
     name: Autopilot (${{ inputs.mode }}) · apply and end
@@ -1740,6 +1792,8 @@ jobs:
     runs-on: ubuntu-latest # fresh: it holds the key beside an agent's work (#287)
     timeout-minutes: 30
     permissions: {}
+    outputs:
+      rate-limited: ${{ steps.rate.outputs.reset }}
     steps:
       - name: App token
         id: bot
@@ -1781,7 +1835,6 @@ jobs:
       - name: The waiting gh (#925)
         env:
           TIMEOUT: 30
-          DX_RATE_NUMBER: ${{ needs.prep.outputs.issue }}
         run: test ! -f .dx-central/scripts/gh-wait.sh || bash .dx-central/scripts/gh-wait.sh --install "$TIMEOUT"
 
       - name: The repository's own policy
@@ -1998,3 +2051,73 @@ jobs:
             done
             python3 .dx-central/scripts/model-cache.py summary --title "The autopilot's cost" --started "$STARTED" "${args[@]}" >> "$GITHUB_STEP_SUMMARY" || true
           fi
+
+      # GitHub's API rate limit (#925): a reset past this job's time, noted
+      # by scripts/gh-wait.sh with no API call (the limit is spent then),
+      # for the `rate-limited` job.
+      - name: The rate limit's reset (#925)
+        id: rate
+        if: always()
+        run: |
+          f="${DX_RATE_NOTE:-}"
+          if [ -n "$f" ] && [ -s "$f" ]; then echo "reset=$(tr -dc 0-9 < "$f")" >> "$GITHUB_OUTPUT"; fi
+
+  # --- GitHub's API rate limit: the board, once the limit reset (#925) ------
+  # A job of this run gave up on a reset past its own time: scripts/gh-wait.sh
+  # noted the reset with no API call (the App's calls were spent, so a board
+  # write then would fail too). This job sleeps until that reset, then, with
+  # a fresh limit and a fresh token, writes `rate_limited=<reset>` on the
+  # issue's board: the hourly sweep (autopilot-sweep.yml) continues the
+  # issue. While it sleeps (75 minutes at most) a new run of the issue waits
+  # behind it (the workflow's concurrency), as it would wait on the limit.
+  rate-limited:
+    name: "Autopilot · left to the rate limit · #${{ needs.prep.outputs.issue || inputs.issue }}"
+    needs: [prep, spec, draft, work, verify, apply]
+    if: ${{ always() && (needs.prep.outputs.issue || inputs.issue) != '' && format('{0}{1}{2}{3}{4}{5}', needs.prep.outputs.rate-limited, needs.spec.outputs.rate-limited, needs.draft.outputs.rate-limited, needs.work.outputs.rate-limited, needs.verify.outputs.rate-limited, needs.apply.outputs.rate-limited) != '' }}
+    runs-on: ubuntu-latest # fresh: it holds the key, and sleeps on no shared runner (#287)
+    timeout-minutes: 80
+    permissions: {}
+    steps:
+      - name: The organisation's scripts
+        env:
+          REF: ${{ inputs.central-ref || job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          git clone -q --depth 1 --branch "$REF" https://github.com/DiluxOne/.github .dx-central 2>/dev/null \
+            || { git clone -q https://github.com/DiluxOne/.github .dx-central && git -C .dx-central checkout -q "$REF"; }
+          test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+
+      # No API call before the reset: the latest one the jobs noted.
+      - name: Until the limit resets
+        id: reset
+        env:
+          RESETS: ${{ needs.prep.outputs.rate-limited }} ${{ needs.spec.outputs.rate-limited }} ${{ needs.draft.outputs.rate-limited }} ${{ needs.work.outputs.rate-limited }} ${{ needs.verify.outputs.rate-limited }} ${{ needs.apply.outputs.rate-limited }}
+        run: |
+          set -euo pipefail
+          at=0
+          for r in $RESETS; do case $r in *[!0-9]*) ;; *) [ "$r" -le "$at" ] || at=$r ;; esac; done
+          echo "at=$at" >> "$GITHUB_OUTPUT"
+          bash .dx-central/scripts/gh-wait.sh --until "$at"
+
+      - name: App token
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-issues: write
+
+      # GitHub's API rate limit (#925): gh waits for its reset, within this
+      # job's time (scripts/gh-wait.sh), before the job's first gh.
+      - name: The waiting gh (#925)
+        env:
+          TIMEOUT: 80
+        run: bash .dx-central/scripts/gh-wait.sh --install "$TIMEOUT"
+
+      - name: The issue's board
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          NUMBER: ${{ needs.prep.outputs.issue || inputs.issue }}
+          AT: ${{ steps.reset.outputs.at }}
+        run: python3 .dx-central/scripts/receipts.py state set "rate_limited=$AT"

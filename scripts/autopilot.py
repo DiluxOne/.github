@@ -1602,8 +1602,9 @@ def sweep_step(pr, issue_labels=(), runs=0, cap=5):
 def rate_limit_step(board, labels=(), now=None):
     """What the hourly sweep does for an accepted issue a run left to the
     next because GitHub's API rate limit reset after its job's time (#925,
-    scripts/gh-wait.sh writes `rate_limited=<reset, epoch seconds>` on its
-    board): `continue` (dilux-bot adds `autopilot:continue`) once the reset
+    the run's `rate-limited` job writes `rate_limited=<reset, epoch
+    seconds>` on its board once that reset passed, scripts/gh-wait.sh
+    having noted it with no API call): `continue` (dilux-bot adds `autopilot:continue`) once the reset
     passed, "" otherwise. The run it starts clears the key. Pure but for the
     clock. Returns (what, why)."""
     board = board if isinstance(board, dict) else {}
@@ -4339,7 +4340,7 @@ Clamp the value in Sum::add.
                agent_env.get("DX_PULLS")],
               [True, True, "${{ github.workspace }}/.dx-io/pulls.json"])
         check("#287: the jobs with the key run no agent, on GitHub's fresh runners",
-              (sorted(keyed), {jobs[j]["runs-on"] for j in keyed if j != "where"}), (["apply", "draft", "prep", "where"], {"ubuntu-latest"}))
+              (sorted(keyed), {jobs[j]["runs-on"] for j in keyed if j != "where"}), (["apply", "draft", "prep", "rate-limited", "where"], {"ubuntu-latest"}))
         steps = lambda job: jobs[job]["steps"]
         sid = lambda job, key: next(i for i, st in enumerate(steps(job)) if st.get("id") == key)
         tree = lambda job: next(st for st in steps(job) if st.get("name") == "The working tree")["run"]

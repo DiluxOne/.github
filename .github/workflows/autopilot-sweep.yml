@@ -24,7 +24,8 @@ name: Autopilot in step with main
 # be counted, those read are started and the step fails (#811). An accepted
 # issue whose run GitHub's API rate limit left to the next (#925:
 # scripts/gh-wait.sh waited within its job's time, and the reset fell after
-# it, so it wrote `rate_limited` on the issue's board) gets its
+# it, so the run's `rate-limited` job wrote `rate_limited` on the
+# issue's board once the limit reset) gets its
 # `autopilot:continue` once that reset passed (scripts/autopilot.py sweep
 # rate-limited); the run it starts clears the key.
 #
