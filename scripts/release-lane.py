@@ -296,6 +296,10 @@ def release(p, repo, run=sh, sleep=time.sleep, minutes=60, root="."):
     pr = release_pull(p)
     engine_post().refuse("pull", pr["title"], pr["branch"], pr["body"])
     branch = pr["branch"]
+    # An earlier lane's release pull request of this version, still open
+    # (#925): its own is reused (the push below replaces its commit); one
+    # someone else opened stops the lane before anything is pushed.
+    stale = own_open_pull(repo, branch, run)
     run("git", "-C", root, "checkout", "-B", branch, planned)
     log = run("python3", os.path.join(HERE, "changelog.py"), "build", "--next", version, "--head", planned)
     with open(os.path.join(root, "CHANGELOG.md"), "w", encoding="utf-8") as fh:
@@ -306,8 +310,12 @@ def release(p, repo, run=sh, sleep=time.sleep, minutes=60, root="."):
     # commit.py), which GitHub signs, onto the planned commit, which is main
     # on GitHub. It runs from the checkout, as candidate() does.
     run(sys.executable, os.path.join(HERE, "api-commit.py"), "push", branch, "--onto", "HEAD~1", "--force")
-    url = run("gh", "pr", "create", "--repo", repo, "--base", "main", "--head", branch, "--title", pr["title"], "--body", pr["body"]).strip()
-    number = url.rstrip("/").rsplit("/", 1)[-1]
+    if stale:
+        number = str(stale)
+        run("gh", "pr", "edit", number, "--repo", repo, "--title", pr["title"], "--body", pr["body"])
+    else:
+        url = run("gh", "pr", "create", "--repo", repo, "--base", "main", "--head", branch, "--title", pr["title"], "--body", pr["body"]).strip()
+        number = url.rstrip("/").rsplit("/", 1)[-1]
     sha = merge_when_checked(repo, number, run, sleep, minutes)
     run("git", "-C", root, "fetch", "-q", "origin", sha)
     parent = run("git", "-C", root, "rev-parse", f"{sha}^").strip()
@@ -324,6 +332,29 @@ def release(p, repo, run=sh, sleep=time.sleep, minutes=60, root="."):
     except RuntimeError as err:
         out["error"] = f"{major} moved to {version}, but its Release could not be published: {err}"
     return out
+
+
+def lane_logins():
+    """The logins the App opens pull requests as (scripts/org.py)."""
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    import org
+    return {org.APP, f"app/{org.APP}", org.BOT}
+
+
+def own_open_pull(repo, branch, run=sh):
+    """The number of the lane's own open release pull request of BRANCH
+    (#925: one an earlier lane left, with the lane's MARK, opened by the
+    App), or None when none is open. Raises, closing nothing, on one open
+    there that is not the lane's."""
+    pulls = json.loads(run("gh", "pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "number,body,author") or "[]")
+    mine = lane_logins()
+    for pull in pulls:
+        author = pull.get("author") or {}
+        login = author.get("login", "") if isinstance(author, dict) else str(author)
+        if MARK not in str(pull.get("body") or "") or login not in mine:
+            raise RuntimeError(f"#{pull.get('number')} is open on {branch} and is not the release lane's: nothing pushed, closed or tagged; close it or let it merge, then dispatch the lane")
+    return pulls[0]["number"] if pulls else None
 
 
 DONE = ("COMPLETED", "SUCCESS", "FAILURE", "ERROR")
@@ -1004,6 +1035,13 @@ def self_test():
         d = act(p, passed, "O/.github", run=fake, sleep=lambda s: None, root=root)
         check("#800: a rollup that grows between polls is not settled: merged only once it stays the same",
               (d["do"], len(rollups)), ("release", 4))
+        bot = sorted(lane_logins())[0]
+        check("#925: the lane's own open release pull request is reused; none open, none",
+              (own_open_pull("O/.github", "chore/release-v7.10.1", Fake({"gh pr list": json.dumps([{"number": 690, "body": MARK, "author": {"login": bot}}])})),
+               own_open_pull("O/.github", "chore/release-v7.10.1", Fake({"gh pr list": "[]"}))), (690, None))
+        check("#925: one open without the mark, or opened by a person, stops the lane, naming it",
+              ["#691" in str(_raises(lambda: own_open_pull("O/.github", "b", Fake({"gh pr list": json.dumps([{"number": 691, "body": body, "author": {"login": who}}])}))))
+               for body, who in (("notes", bot), (MARK, "ana"))], [True, True])
         fake = Fake()
         check("a plan with no commit releases nothing", ("no commit" in str(_raises(lambda: release(dict(p, sha=""), "O/.github", run=fake, root=root))), fake.calls), (True, []))
         # engine-release.yml made the Release first.
