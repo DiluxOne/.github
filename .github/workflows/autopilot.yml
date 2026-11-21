@@ -2108,6 +2108,7 @@ jobs:
           repositories: ${{ github.event.repository.name }}
           permission-contents: read # the board's seal row (receipts branch)
           permission-issues: write
+          permission-pull-requests: read # the board's row of the autopilot's pull request
 
       # GitHub's API rate limit (#925): gh waits for its reset, within this
       # job's time (scripts/gh-wait.sh), before the job's first gh.

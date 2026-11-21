@@ -229,6 +229,9 @@ def test_the_board_is_written_after_the_reset_by_its_own_job():
         assert f"needs.{j}.outputs.rate-limited" in steps[until]["env"]["RESETS"], j
         assert f"needs.{j}.outputs.rate-limited" in rl["if"], j
     assert "rate_limited=$AT" in steps[write]["run"]
+    perms = steps[token]["with"]
+    assert perms.get("permission-contents") == "read", "state set reads the receipts branch"
+    assert perms.get("permission-pull-requests") == "read", "the board keeps the autopilot's pull request row"
 
 
 def test_every_token_that_writes_a_board_can_read_the_receipts_branch():
