@@ -523,6 +523,9 @@ def test_c1_collect_pins_the_issue_of_each_spec_and_autopilot_case(monkeypatch):
     monkeypatch.setattr(ev, "git_commits", lambda root: COMMITS)
     calls = []
     monkeypatch.setattr(ev, "gh", lambda *a: calls.append(a) or json.dumps({"title": "feat: b", "body": "the text"}))
+    # Each candidate valid (#840: collect keeps only those; tests/workflows/test_evals_validate.py).
+    monkeypatch.setattr(ev, "facts_of", lambda step, case, work: {})
+    monkeypatch.setattr(ev, "rewritten", lambda step, case, facts: case)
     for step in ("spec", "autopilot"):
         got = ev.collect(step, 6)
         assert [(c["title"], c["body"]) for c in got] == [("feat: b", "the text")]

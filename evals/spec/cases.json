@@ -5,6 +5,7 @@
     "issue": 688,
     "pr": 829,
     "base": "a539dce055e59884429f6470fe6b0826453f3428",
+    "merge": "735f1d138328edbe64d24cfd66a05d3ca16bd51d",
     "type": "Task",
     "files": [
       "docs/adopting.md",
@@ -23,6 +24,7 @@
     "issue": 805,
     "pr": 826,
     "base": "68f0b0eee3c1618b4d26a676541f210c1aed0342",
+    "merge": "54a8377c9f12dcaa16b7459b7787c85f43be4216",
     "type": "Feature",
     "files": [
       ".github/workflows/autopilot-sweep.yml",
@@ -49,6 +51,7 @@
     "issue": 820,
     "pr": 821,
     "base": "1fe64bd742a63d2d59a72dd90f8a0329ff0e7973",
+    "merge": "8953903118886bad464cf3841806c48828662ab9",
     "type": "Bug",
     "files": [
       ".github/workflows/autopilot.yml",
@@ -68,6 +71,7 @@
     "issue": 801,
     "pr": 813,
     "base": "2d66d19e5a96180f7e9f24afd6e7eada1ec07f69",
+    "merge": "996754b454e9c32598b43aa9267cae518a464469",
     "type": "Feature",
     "files": [
       ".github/workflows/issue-repro.yml",
@@ -95,6 +99,7 @@
     "issue": 803,
     "pr": 812,
     "base": "395fb239eb1c0a8238c8fcce711eb20e5fabd1bf",
+    "merge": "2d66d19e5a96180f7e9f24afd6e7eada1ec07f69",
     "type": "Feature",
     "files": [
       ".github/ISSUE_TEMPLATE/bug_report.yml",
@@ -124,6 +129,7 @@
     "issue": 807,
     "pr": 809,
     "base": "19ef799dc1b7ad54d70cf399ec4cd8c135345b16",
+    "merge": "a7e0075a58083ef96e57bdc919492f8107f8e995",
     "type": "Bug",
     "files": [
       ".github/workflows/autopilot.yml",

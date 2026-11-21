@@ -57,9 +57,6 @@
     "merge": "996754b454e9c32598b43aa9267cae518a464469",
     "tests": [
       "tests/repro/test_issue_496.py",
-      "tests/workflows/test_confirmed_bug_no_acceptance.py",
-      "tests/workflows/test_maintainer_bug_wiring.py",
-      "tests/workflows/test_repro_board_state.py",
       "tests/workflows/test_reproduction_wiring.py"
     ],
     "expect": "passed",
@@ -74,7 +71,6 @@
     "base": "395fb239eb1c0a8238c8fcce711eb20e5fabd1bf",
     "merge": "2d66d19e5a96180f7e9f24afd6e7eada1ec07f69",
     "tests": [
-      "tests/workflows/test_issue_803_labels.py",
       "tests/workflows/test_triage_non_write_users.py"
     ],
     "expect": "passed",

@@ -20,6 +20,14 @@ name: AI evaluation
 # review-eval.yml (scripts/review-eval.py, 3 plays per case, #847), whose
 # `paths:` are the review's; this one never runs it.
 #
+# Before any case is replayed, `evals.py validate` (#840) holds every case
+# of the sets to the rule of docs/testing-and-quality.md: it passes on its
+# merged fix, fails on an assertion at its base, and asserts none of the
+# fix's own literals; a case that does not fails the job "The cases are
+# valid" by its name, and nothing is replayed. The autopilot's replay is
+# the production's loop: the work, then the review (local-review.sh) and
+# its fix rounds, up to policy/autonomy.yml's `autopilot-rounds`.
+#
 # Paid: each case is one model run (the autopilot's, a whole work round).
 # It runs only on a pull request from a branch of this repository (a fork's
 # code never runs with the keys), and by hand for one step. The first job
@@ -121,9 +129,36 @@ jobs:
           echo "cases=$cases" >> "$GITHUB_OUTPUT"
           echo "Steps to evaluate: $steps ($(jq length <<< "$cases") cases)" | tee -a "$GITHUB_STEP_SUMMARY"
 
+  # The cases measure the task (#840), before any is paid for: each passes
+  # on its merged fix, fails on an assertion at its base, and asserts none
+  # of the fix's own literals (`evals.py validate`, no model and no secret).
+  # A case that does not fails this job by its name, and no set is replayed.
+  validate:
+    name: The cases are valid
+    needs: steps
+    if: needs.steps.outputs.cases != '[]' && needs.steps.outputs.cases != '' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate the sets
+        env:
+          STEPS: ${{ needs.steps.outputs.steps }}
+        run: |
+          set -euo pipefail
+          git config --global user.name evals
+          git config --global user.email evals@localhost
+          mapfile -t steps < <(jq -r '.[]' <<< "$STEPS")
+          python3 scripts/evals.py validate "${steps[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+
   replay:
     name: Replay (${{ matrix.step }} ${{ matrix.case }})
-    needs: steps
+    needs:
+      - steps
+      - validate  # order: a set is replayed only once its cases are valid.
     if: needs.steps.outputs.cases != '[]' && needs.steps.outputs.cases != '' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     # The step's limit for one case, and the job's own (evals.py matrix).
