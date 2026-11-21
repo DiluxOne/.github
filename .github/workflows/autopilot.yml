@@ -177,7 +177,8 @@ name: Autopilot
 # #247), it asked a maintainer a question and waits (`asked` on the issue's
 # board, #802):
 # their answer, in their own words, brings it back (review-reply.yml) and
-# reaches its prompt; or the run continues; otherwise this workflow says so
+# reaches its prompt, on the issue before its pull request exists too
+# (#924); or the run continues; otherwise this workflow says so
 # itself, adds `needs-human` and fails. Every run writes a readable account
 # to its job summary and keeps the agent's transcript, scrubbed of tokens,
 # as an artifact, and the issue's board links the pull request, the run and
@@ -197,7 +198,10 @@ name: Autopilot
 # transcript fall back to the session the CLI kept as it went
 # (scripts/autopilot.py work-log), and the end rule still counts it as a run
 # out of time. Every input it reads from the issue is the PRD at its sealed
-# text, fenced as data in the prompt.
+# text, fenced as data in the prompt. The prompt carries only the deciders'
+# comments since the autopilot's last end, as `<answers>` documents within a
+# bound (64 KiB), and lives in .dx-io/prompt.md: the action gets a short
+# pointer to it, never its text, so its size never stops a round (#924).
 #
 # A reproduced bug (lane `bugfix-reproduced`): its failing test, written from
 # an outsider's report, is untrusted code. It never enters the agent's
@@ -859,7 +863,8 @@ jobs:
           # `/` commands left out, read with the PRD so the agent does not ask
           # again what they answered. Who decides is `who-decides` (#588,
           # deciders.py list answer), checked now; anyone else's words never
-          # reach the prompt. Read here for a start, below for the work.
+          # reach the prompt. Read for a start only: the work reads what
+          # followed the autopilot's last end (#924 C2, `answers` below).
           export SETTLED="$RUNNER_TEMP/settled.md"
           : > "$SETTLED"
           # A read of the events that fails, or finds no `accepted` (a
@@ -892,7 +897,7 @@ jobs:
               if [ "${LANE:-}" != bugfix-reproduced ]; then
                 [ -f "$RUNNER_TEMP/deciders.txt" ] || { jq -r '.[].author.login' "$RUNNER_TEMP/comments.json" | sort -u \
                   | python3 .dx-central/scripts/deciders.py list answer > "$RUNNER_TEMP/deciders.txt" || : > "$RUNNER_TEMP/deciders.txt"; }
-                COMMENTS="$RUNNER_TEMP/comments.json" DECIDERS="$RUNNER_TEMP/deciders.txt" ENDED_ONLY=true python3 .dx-central/scripts/autopilot.py answers > "$ANSWERS" \
+                COMMENTS="$RUNNER_TEMP/comments.json" DECIDERS="$RUNNER_TEMP/deciders.txt" ENDED_ONLY=true DOCUMENTS=true python3 .dx-central/scripts/autopilot.py answers > "$ANSWERS" \
                   || { : > "$ANSWERS"; echo "::warning::#$NUMBER's answers could not be read: the Spec reads none."; }
               fi
             else
@@ -956,7 +961,10 @@ jobs:
           jq -r '.[].author.login' "$RUNNER_TEMP/comments.json" | sort -u \
             | python3 .dx-central/scripts/deciders.py list answer > "$RUNNER_TEMP/deciders.txt" || : > "$RUNNER_TEMP/deciders.txt"
           COMMENTS="$RUNNER_TEMP/comments.json" DECIDERS="$RUNNER_TEMP/deciders.txt" python3 .dx-central/scripts/autopilot.py answers > "$RUNNER_TEMP/answers.md"
-          settle
+          # #924 C2: the prompt carries those comments alone (never every
+          # settled one, which on a long thread passed the ~128 KiB a
+          # variable holds), as `<answers>` documents within a bound.
+          COMMENTS="$RUNNER_TEMP/comments.json" DECIDERS="$RUNNER_TEMP/deciders.txt" DOCUMENTS=true python3 .dx-central/scripts/autopilot.py answers > "$RUNNER_TEMP/answer-documents.md"
           # #673: the last run's `make pre-pr` did not pass in full after its
           # step: the output's tail, from dilux-bot's own comment, in
           # .dx-io/pre-pr.md, which the prompt asks the agent to fix first.
@@ -966,7 +974,7 @@ jobs:
           # and logged in the Decisions (#561): the work and the finish
           # read the checklist as it is then.
           ANSWERS="$RUNNER_TEMP/answers.md" python3 .dx-central/scripts/autopilot.py criteria-edit
-          ANSWERS="$RUNNER_TEMP/answers.md" python3 .dx-central/scripts/autopilot.py prompt work > "$DX_IO/prompt.md"
+          ANSWERS="$RUNNER_TEMP/answer-documents.md" python3 .dx-central/scripts/autopilot.py prompt work > "$DX_IO/prompt.md"
 
       - name: Hand it to the agent
         if: steps.may.outputs.go == 'true'
@@ -1034,9 +1042,11 @@ jobs:
         id: task
         run: |
           set -euo pipefail
-          # A random delimiter: the PRD's text cannot end the output early.
-          eof="DX_$(openssl rand -hex 16)"
-          { echo "prompt<<$eof"; cat .dx-io/prompt.md; echo "$eof"; } >> "$GITHUB_OUTPUT"
+          # #924 C2: the action gets a short pointer to the task's file,
+          # never its text, which the runner passes as one environment
+          # variable: a long one stops the round before the model starts
+          # ("Argument list too long", at about 128 KiB).
+          echo "prompt=Your task is in the file $GITHUB_WORKSPACE/.dx-io/prompt.md: read it whole, every line, before anything else, and follow it." >> "$GITHUB_OUTPUT"
 
       - name: Claude writes the Spec
         id: spec
@@ -1415,8 +1425,8 @@ jobs:
           # (timeout-minutes of "Claude works") less a margin of 10 minutes,
           # for the credits and the finish. `check` stops `make pre-pr` there.
           echo "deadline=$(( $(date +%s) + (75 - 10) * 60 ))" >> "$GITHUB_OUTPUT"
-          eof="DX_$(openssl rand -hex 16)"
-          { echo "prompt<<$eof"; cat .dx-io/prompt.md; echo "$eof"; } >> "$GITHUB_OUTPUT"
+          # #924 C2: a short pointer to .dx-io/prompt.md, never its text.
+          echo "prompt=Your task is in the file $GITHUB_WORKSPACE/.dx-io/prompt.md: read it whole, every line, before anything else, and follow it." >> "$GITHUB_OUTPUT"
 
       # The test repository's fixed change (#563): each unticked criterion's
       # file, committed and ticked, then ready, through the agent's own
