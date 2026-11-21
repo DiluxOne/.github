@@ -91,3 +91,24 @@ def test_with_none_open_it_opens_its_own_as_before(tmp_path):
     out = lane.release(PLAN, "O/.github", run=fake, sleep=lambda s: None, minutes=1, root=str(tmp_path))
     assert out.get("version") == "v7.10.1"
     assert fake.has("gh", "pr", "create") and fake.has("gh", "pr", "merge", "700")
+
+
+def test_a_reused_pull_request_s_old_head_after_the_push_is_waited_for_not_followed(tmp_path):
+    """After the force push, GitHub may show the reused pull request's old
+    head (h1) a moment before the pushed one (h2): the lane waits for h2 and
+    merges it, instead of stopping on a head that "changed"."""
+    mine = {"number": 690, "body": lane.MARK + "\n", "author": {"login": f"app/{org.APP}", "is_bot": True}}
+    fake = lane_run([mine])
+    reads = []
+
+    def view(argv):
+        reads.append(1)
+        if fake.has("gh", "pr", "merge"):
+            return json.dumps({"mergedAt": "2026-11-21T10:00:00Z", "mergeCommit": {"oid": "abc123"}, "state": "MERGED", "headRefOid": "h2"})
+        return json.dumps({"mergedAt": None, "state": "OPEN", "headRefOid": "h1" if len(reads) == 1 else "h2", "mergeStateStatus": "CLEAN",
+                           "statusCheckRollup": [{"name": "ci", "status": "COMPLETED"}]})
+    fake.answers["gh pr view"] = view
+    fake.answers["api-commit.py push"] = "chore/release-v7.10.1 is at h2 on GitHub, signed by GitHub.\n"
+    out = lane.release(PLAN, "O/.github", run=fake, sleep=lambda s: None, minutes=1, root=str(tmp_path))
+    assert out.get("version") == "v7.10.1" and "error" not in out
+    assert fake.has("gh", "pr", "merge", "690", "--repo", "O/.github", "--squash", "--match-head-commit", "h2")

@@ -317,14 +317,19 @@ def release(p, repo, run=sh, sleep=time.sleep, minutes=60, root="."):
     # commit is made again through the API with GH_TOKEN (scripts/api-
     # commit.py), which GitHub signs, onto the planned commit, which is main
     # on GitHub. It runs from the checkout, as candidate() does.
-    run(sys.executable, os.path.join(HERE, "api-commit.py"), "push", branch, "--onto", "HEAD~1", "--force")
+    pushed = run(sys.executable, os.path.join(HERE, "api-commit.py"), "push", branch, "--onto", "HEAD~1", "--force")
+    # The head it pushed (api-commit.py says "<branch> is at <sha> on
+    # GitHub"): the one the merge follows, never the reused pull request's
+    # old head that GitHub may still show for a moment.
+    found = re.search(r" is at (\S+) on GitHub", pushed or "")
+    expect = found.group(1) if found else ""
     if stale:
         number = str(stale)
         run("gh", "pr", "edit", number, "--repo", repo, "--title", pr["title"], "--body", pr["body"])
     else:
         url = run("gh", "pr", "create", "--repo", repo, "--base", "main", "--head", branch, "--title", pr["title"], "--body", pr["body"]).strip()
         number = url.rstrip("/").rsplit("/", 1)[-1]
-    sha = merge_when_checked(repo, number, run, sleep, minutes)
+    sha = merge_when_checked(repo, number, run, sleep, minutes, expect=expect)
     run("git", "-C", root, "fetch", "-q", "origin", sha)
     parent = run("git", "-C", root, "rev-parse", f"{sha}^").strip()
     target = sha
@@ -400,7 +405,7 @@ def required_checks(repo, number, run=sh):
     return json.loads(out or "[]")
 
 
-def merge_when_checked(repo, number, run=sh, sleep=time.sleep, minutes=60):
+def merge_when_checked(repo, number, run=sh, sleep=time.sleep, minutes=60, expect=""):
     """The release pull request merged by the lane itself, never by
     auto-merge (#798: it changes only CHANGELOG.md, which the review floors
     to `risk:high`, and the auto-merge decision never merges that): once
@@ -413,7 +418,9 @@ def merge_when_checked(repo, number, run=sh, sleep=time.sleep, minutes=60):
     follows, its checks waited for again. Returns the merge commit. Raises
     on a required check that fails or is cancelled, a pull request that
     closes, a head that anyone else moves, or `minutes` running out, naming
-    what it waited on."""
+    what it waited on. `expect` is the head the lane just pushed: until
+    GitHub shows it on the pull request (a reused one may show its old head
+    a moment after a force push, #925), it is waited for, not followed."""
     head, waited, queued, why, settled, updating = "", 0, False, "its checks did not finish", None, False
     while True:
         view = json.loads(run("gh", "pr", "view", number, "--repo", repo, "--json", "mergedAt,mergeCommit,state,headRefOid,mergeStateStatus,statusCheckRollup") or "{}")
@@ -422,8 +429,11 @@ def merge_when_checked(repo, number, run=sh, sleep=time.sleep, minutes=60):
         if view.get("state") == "CLOSED":
             raise RuntimeError(f"the release pull request #{number} closed unmerged: nothing tagged")
         seen = view.get("headRefOid") or ""
-        head = head or seen
-        if seen and seen != head:
+        if not head and expect and seen != expect:
+            why = f"its head did not show the push {expect[:12]}"
+        else:
+            head = head or seen
+        if head and seen and seen != head:
             if not updating:
                 raise RuntimeError(f"the release pull request #{number} changed head ({seen[:12]}, not {head[:12]}): nothing tagged")
             # The head the lane's own update made (#925): followed, and its
