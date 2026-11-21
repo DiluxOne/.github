@@ -5,31 +5,50 @@ The cases are real pull requests of the organisation's public repositories
 (a private one's code would show in this public repository's logs):
 
   flag   the commit where the review raised a blocker or major that was
-         then fixed (the review resolved its thread, or its line changed):
-         a real bug. The review must raise a blocker or major on that file
-         again.
+         then fixed: its thread's `line` of `path` and its `hunk` (at
+         most NEAR (10) lines on each side of the line), a line of
+         which `fix`, the first later commit of the pull request to
+         change one, changed (`fixed`, the lines it changed there). A
+         thread that is only outdated or resolved, its hunk never changed,
+         is no case (#844), nor one whose fix is a docs, ci, chore, style
+         or test commit, or docs alone (#847). The review must raise a
+         blocker or major inside `fixed` again: another line of the file
+         is a miss.
   clean  the last commit of a merged pull request on which the review left
          no thread at all. The review must not block it.
 
 Each case is reviewed again, with the rules as they stand in the checkout,
 by scripts/local-review.sh (the same brief, profiles and model the pull
-request's review uses). The score is the share of `flag` cases found and of
-`clean` cases blocked; review-eval.yml fails a change to the review whose
-score is worse than evals/review/baseline.json by more than one case on
-either side (a model does not answer the same twice).
+request's review uses), PLAYS (3) times, each on a fresh checkout, and
+scored on its median: found, or blocked, when 2 of 3 plays say so (a play
+that could not be reviewed is dropped; fewer than 2 reviewed is
+unreviewed). The set holds at least MIN_CASES (10) cases of each kind, or
+it is neither run nor scored (#844). The score is the share of `flag` cases
+found and of `clean` cases blocked; review-eval.yml fails a change to the
+review whose score is worse than evals/review/baseline.json by more than
+one case on either side.
 
   review-eval.py collect [N]   write evals/review/cases.json: N cases of each
-                               kind (default 6), from the review's threads
+                               kind (default 10), from the review's threads
                                (GH_TOKEN, read)
-  review-eval.py run           review every case; results on stdout (JSON)
-                               (the Claude Code CLI, git, the checkout)
-  review-eval.py score FILE    the results in FILE against the baseline:
-                               a table on stdout, exit 1 when worse
-  review-eval.py baseline FILE write the results in FILE as the baseline
+  review-eval.py check [FILE]  validate the set (default cases.json): exit 1
+                               naming each flag case whose line its fix did
+                               not change (git, the public repositories)
+  review-eval.py run [--play N]
+                               check the set, then review every case, all
+                               the plays or play N alone; results on stdout
+                               (JSON) (the Claude Code CLI, git, the checkout)
+  review-eval.py score FILE... the results in the FILEs (one per play, or a
+                               whole run) against the baseline: a table on
+                               stdout, exit 1 when worse
+  review-eval.py baseline FILE...
+                               write the results as the baseline (a whole
+                               run of every play alone)
   review-eval.py --test        self-test
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -42,15 +61,20 @@ import org  # noqa: E402  the organisation, from org.yml (#191)
 CASES = os.path.join(ROOT, "evals", "review", "cases.json")
 BASELINE = os.path.join(ROOT, "evals", "review", "baseline.json")
 SLACK = 1
+# A set of at least MIN_CASES of each kind, each case reviewed PLAYS times
+# and scored on its median (C3, #844): one odd answer moves no case.
+MIN_CASES = 10
+PLAYS = 3
 
 QUERY = """
 query($q: String!) {
   search(query: $q, type: ISSUE, first: 50) {
     nodes { ... on PullRequest {
       number title baseRefOid headRefOid isCrossRepository
+      commits(first: 100) { nodes { commit { oid } } }
       reviewThreads(first: 50) { nodes {
-        isResolved isOutdated path resolvedBy { login }
-        comments(first: 1) { nodes { author { login } body originalCommit { oid } } }
+        isResolved isOutdated path originalLine diffSide resolvedBy { login }
+        comments(first: 1) { nodes { author { login } body diffHunk originalCommit { oid } } }
       } }
     } }
   }
@@ -63,8 +87,185 @@ def is_review(t):
     return (c.get("author") or {}).get("login") == org.APP and "AI review" in (c.get("body") or "")
 
 
-def cases_from(repo, prs, n):
-    """Up to n `flag` and n `clean` cases from one repository's pull requests."""
+def line_changed(diff, line):
+    """Whether `git diff -U0` text changes the old file's line: it falls in
+    a `-a,b` hunk with b >= 1 (a hunk of additions alone changes none)."""
+    for m in re.finditer(r"^@@ -(\d+)(?:,(\d+))? \+", diff or "", re.M):
+        start, count = int(m.group(1)), int(m.group(2) if m.group(2) is not None else 1)
+        if count >= 1 and start <= line < start + count:
+            return True
+    return False
+
+
+def first_fix(commits, line, diff_of):
+    """The first of commits (those after the case's head, in order) whose
+    diff from head, diff_of(commit), changes line; None when none does."""
+    for c in commits:
+        if line_changed(diff_of(c), line):
+            return c
+    return None
+
+
+def thread_hunk(diff_hunk):
+    """The head-side lines (first, last) of a review thread's hunk, from
+    its `@@ -a,b +c,d @@` header; None when it has none."""
+    m = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", diff_hunk or "")
+    if not m:
+        return None
+    start, count = int(m.group(1)), int(m.group(2) if m.group(2) is not None else 1)
+    return (start, start + count - 1) if count >= 1 else None
+
+
+# A thread's hunk is the diff's around its line, which for a new or rewritten
+# file is the whole file; only NEAR lines on each side of the line count,
+# so a later edit elsewhere in the file is no fix of the thread.
+NEAR = 10
+
+
+def near(hunk, line):
+    """hunk (first, last) cut to NEAR lines on each side of line."""
+    return (max(hunk[0], line - NEAR), min(hunk[1], line + NEAR))
+
+
+def fix_hunks(diff, hunk):
+    """The head-side lines [first, last] of each `git diff -U0` hunk that
+    changes a line of hunk (first, last): what the fix changed there. An
+    addition alone (`-a,0`) is at line a, the one it follows."""
+    out = []
+    for m in re.finditer(r"^@@ -(\d+)(?:,(\d+))? \+", diff or "", re.M):
+        start, count = int(m.group(1)), int(m.group(2) if m.group(2) is not None else 1)
+        lo, hi = (start, start + count - 1) if count >= 1 else (max(start, 1), max(start, 1))
+        if lo <= hunk[1] and hi >= hunk[0]:
+            out.append([lo, hi])
+    return out
+
+
+def first_fix_in(commits, hunk, diff_of):
+    """The first of commits (those after the case's head, in order) whose
+    diff from head changes a line of the thread's hunk, with what it
+    changed there: (commit, fix_hunks); None when none does."""
+    for c in commits:
+        got = fix_hunks(diff_of(c), hunk)
+        if got:
+            return c, got
+    return None
+
+
+# A commit of these types fixes no bug a review should find, nor does one
+# that changes docs alone (the maintainer, #847).
+NOT_FIX = ("docs", "ci", "chore", "style", "test")
+DOC_EXT = (".md", ".mdx", ".rst", ".adoc")
+DOC_NAMES = ("readme", "changelog", "license", "contributing")
+# A file of DOC_NAMES is docs with no extension or a text one, never as code
+# (license.php is code).
+NAME_EXT = ("", ".txt") + DOC_EXT
+
+
+def is_doc(path):
+    base = os.path.basename(path).lower()
+    stem, ext = os.path.splitext(base)
+    return path.split("/")[0] == "docs" or base.endswith(DOC_EXT) or (stem in DOC_NAMES and ext in NAME_EXT)
+
+
+def not_a_fix(subject, files):
+    """Whether a commit is no bug's fix: its Conventional Commit type is one
+    of NOT_FIX, or every file it changes is docs. A subject or file list
+    that could not be read (None) is no proof of a fix: it is not one."""
+    if subject is None or files is None:
+        return True
+    m = re.match(r"(\w+)(?:\([^)]*\))?!?:", subject or "")
+    return bool(m and m.group(1).lower() in NOT_FIX) or bool(files and all(is_doc(f) for f in files))
+
+
+def git_url(repo):
+    # DX_EVAL_GIT stands in for GitHub in the tests: a directory of o/r.
+    return f"{os.environ.get('DX_EVAL_GIT', 'https://github.com')}/{repo}"
+
+
+class Clones:
+    """One clone per repository, to read the cases' commits."""
+
+    def __init__(self, work):
+        self.work, self.dirs = work, {}
+
+    def git(self, repo, *args):
+        d = self.dirs.get(repo)
+        if d is None:
+            d = os.path.join(self.work, repo.replace("/", "_"))
+            if subprocess.run(["git", "clone", "-q", "--no-checkout", git_url(repo), d], capture_output=True).returncode != 0:
+                d = ""
+            self.dirs[repo] = d
+        if not d:
+            return None
+        return subprocess.run(["git", "-C", d, *args], capture_output=True, text=True)
+
+    def has(self, repo, pr, *oids):
+        """Whether every oid is a commit of the clone, fetched when not."""
+        def ok():
+            return all((self.git(repo, "cat-file", "-e", o + "^{commit}") or subprocess.CompletedProcess([], 1)).returncode == 0 for o in oids)
+        if ok():
+            return True
+        # The pull request's ref first (its commits after a squash merge),
+        # then the commits themselves.
+        if pr is not None:
+            self.git(repo, "fetch", "-q", "origin", f"refs/pull/{pr}/head")
+        if not ok():
+            self.git(repo, "fetch", "-q", "origin", *oids)
+        return ok()
+
+    def subject(self, repo, oid):
+        """oid's subject; None when it cannot be read."""
+        out = self.git(repo, "log", "-1", "--format=%s", oid)
+        return out.stdout.strip() if out is not None and out.returncode == 0 else None
+
+    def files(self, repo, oid):
+        """The files oid changes from its first parent (all, for a root);
+        None when they cannot be read."""
+        out = self.git(repo, "diff", "--name-only", oid + "^", oid)
+        if out is None or out.returncode != 0:
+            out = self.git(repo, "diff-tree", "--root", "-r", "--no-commit-id", "--name-only", oid)
+        return out.stdout.split() if out is not None and out.returncode == 0 else None
+
+    def diff(self, repo, a, b, path):
+        out = self.git(repo, "diff", "-U0", a, b, "--", path)
+        return out.stdout if out is not None and out.returncode == 0 else ""
+
+
+def refused(cases, clones):
+    """Why each flag case is refused, by its name: no line or fix, the fix
+    did not change its thread's hunk (its line, for a case with no hunk) or
+    not the lines the case says (C1, #844), or it is no bug's fix (#847)."""
+    why = []
+    for c in cases:
+        if c.get("expect") != "flag":
+            continue
+        line, fix = c.get("line"), c.get("fix")
+        if not isinstance(line, int) or isinstance(line, bool) or not fix or not c.get("path"):
+            why.append(f"{c.get('id')}: no line, path or fix")
+        elif not clones.has(c["repo"], c.get("pr"), c["head"], fix):
+            why.append(f"{c['id']}: {c['head']} or {fix} cannot be read from {c['repo']}")
+        else:
+            hunk = near(c.get("hunk") or [line, line], line)
+            got = fix_hunks(clones.diff(c["repo"], c["head"], fix, c["path"]), hunk) if hunk[0] <= line <= hunk[1] else []
+            if not got:
+                where = f"the hunk {hunk[0]}-{hunk[1]}" if c.get("hunk") else f"line {line}"
+                why.append(f"{c['id']}: {where} of {c['path']} was not changed by {fix}")
+            elif c.get("fixed") is not None and c["fixed"] != got:
+                why.append(f"{c['id']}: its fixed lines {c['fixed']} are not those {fix} changed in the hunk, {got}")
+            elif None in (subject := clones.subject(c["repo"], fix), files := clones.files(c["repo"], fix)):
+                why.append(f"{c['id']}: the subject or files of {fix} cannot be read from {c['repo']}")
+            elif not_a_fix(subject, files):
+                why.append(f"{c['id']}: {fix} is not a bug's fix (a {', '.join(NOT_FIX)} commit, or docs alone)")
+    return why
+
+
+def cases_from(repo, prs, n, fix_of=None):
+    """Up to n `flag` and n `clean` cases from one repository's pull requests.
+    fix_of(pr, head, path, hunk, commits) is (the commit after head that
+    changed a line of the thread's hunk, the lines it changed there), or
+    None: a thread whose hunk no commit changed is not a flag case, nor one
+    whose fix is no bug's fix (#844, #847). The case's line is the thread's
+    own, on the head it reviewed."""
     flag, clean = [], []
     for pr in prs:
         # Only a branch of the repository itself: a fork's code never runs
@@ -74,11 +275,23 @@ def cases_from(repo, prs, n):
         threads = [t for t in ((pr.get("reviewThreads") or {}).get("nodes") or [])]
         fixed = [t for t in threads if is_review(t) and (((t.get("resolvedBy") or {}).get("login") == org.APP) or t.get("isOutdated"))]
         if fixed:
-            t = fixed[0]
-            head = (((t.get("comments") or {}).get("nodes") or [{}])[0].get("originalCommit") or {}).get("oid")
-            if head and len(flag) < n:
-                flag.append({"id": f"{repo}#{pr['number']}:flag", "repo": repo, "pr": pr["number"], "title": pr.get("title") or "",
-                             "base": pr.get("baseRefOid"), "head": head, "expect": "flag", "path": t.get("path")})
+            commits = [((x or {}).get("commit") or {}).get("oid") for x in ((pr.get("commits") or {}).get("nodes") or [])]
+            for t in fixed:
+                first = ((t.get("comments") or {}).get("nodes") or [{}])[0] or {}
+                head = (first.get("originalCommit") or {}).get("oid")
+                line, hunk = t.get("originalLine"), thread_hunk(first.get("diffHunk"))
+                # A thread on the base's side (LEFT) is no line of the head.
+                if (not head or not isinstance(line, int) or head not in commits or len(flag) >= n
+                        or t.get("diffSide") == "LEFT" or not hunk or not hunk[0] <= line <= hunk[1]):
+                    continue
+                after = [c for c in commits[commits.index(head) + 1:] if c]
+                hunk = near(hunk, line)
+                got = fix_of(pr, head, t.get("path"), hunk, after) if fix_of else None
+                if got:
+                    flag.append({"id": f"{repo}#{pr['number']}:flag", "repo": repo, "pr": pr["number"], "title": pr.get("title") or "",
+                                 "base": pr.get("baseRefOid"), "head": head, "expect": "flag", "path": t.get("path"), "line": line,
+                                 "hunk": list(hunk), "fix": got[0], "fixed": got[1]})
+                    break
         elif not any(is_review(t) for t in threads) and len(clean) < n:
             clean.append({"id": f"{repo}#{pr['number']}:clean", "repo": repo, "pr": pr["number"], "title": pr.get("title") or "",
                           "base": pr.get("baseRefOid"), "head": pr.get("headRefOid"), "expect": "clean"})
@@ -111,12 +324,38 @@ def public_repos():
 
 def collect(n):
     per_repo = {}
+    clones = Clones(tempfile.mkdtemp(prefix="dx-collect-"))
     for name in public_repos():
         full = f"{org.ORG}/{name}"
         out = gh("api", "graphql", "-f", f"query={QUERY}", "-f", f"q=repo:{full} is:pr is:merged commenter:app/{org.APP}")
         prs = json.loads(out)["data"]["search"]["nodes"]
-        per_repo[full] = cases_from(full, prs, n)
+
+        def fix_of(pr, head, path, hunk, after, full=full):
+            if not clones.has(full, pr["number"], head, *after):
+                return None
+            got = first_fix_in(after, hunk, lambda c: clones.diff(full, head, c, path))
+            if not got or not_a_fix(clones.subject(full, got[0]), clones.files(full, got[0])):
+                return None
+            return got
+        per_repo[full] = cases_from(full, prs, n, fix_of)
     return pick(per_repo, n)
+
+
+def check(cases):
+    """The set's validation: 0, or 1 with each refused case on stderr."""
+    why = refused(cases, Clones(tempfile.mkdtemp(prefix="dx-check-")))
+    for w in why:
+        print(f"review-eval.py: {w}", file=sys.stderr)
+    return 1 if why else 0
+
+
+def as_line(v):
+    """A finding's line as an int, or None."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v
+    return int(v) if isinstance(v, str) and v.strip().isdigit() else None
 
 
 def verdict(case, review):
@@ -127,7 +366,14 @@ def verdict(case, review):
     serious = [f for f in review.get("findings") or [] if isinstance(f, dict)
                and f.get("severity") in ("blocker", "major") and not f.get("pre_existing")]
     if case["expect"] == "flag":
-        return any(f.get("file") == case["path"] for f in serious)
+        # Inside the hunk the fix changed in the case's file, not its file:
+        # another line of it, or a finding with no line, is a miss (C2,
+        # #844, #847). A case with no `fixed` has its line alone.
+        line = as_line(case.get("line"))
+        if line is None:
+            return False
+        fixed = case.get("fixed") or [[line, line]]
+        return any(f.get("file") == case["path"] and any(lo <= (as_line(f.get("line")) or 0) <= hi for lo, hi in fixed) for f in serious)
     return not serious
 
 
@@ -136,7 +382,7 @@ def run_case(case, central, work):
     repo_dir = os.path.join(work, case["repo"].replace("/", "_"))
     git = lambda *a: subprocess.run(["git", "-C", repo_dir, *a], capture_output=True, text=True)
     if not os.path.isdir(repo_dir):
-        if subprocess.run(["git", "clone", "-q", f"https://github.com/{case['repo']}", repo_dir]).returncode != 0:
+        if subprocess.run(["git", "clone", "-q", git_url(case["repo"]), repo_dir]).returncode != 0:
             return None
     git("fetch", "-q", "origin", f"refs/pull/{case['pr']}/head", case["base"])
     if git("cat-file", "-e", case["head"] + "^{commit}").returncode != 0:
@@ -159,12 +405,50 @@ def run_case(case, central, work):
         return None
 
 
+def short(items):
+    """Why the set is too small to score, or '': fewer than MIN_CASES flag
+    or clean cases (items are cases or results)."""
+    why = [f"{sum(1 for c in items if c.get('expect') == k)} {k} cases, fewer than {MIN_CASES}"
+           for k in ("flag", "clean") if sum(1 for c in items if c.get("expect") == k) < MIN_CASES]
+    return "; ".join(why)
+
+
+def unplayed(results):
+    """The cases not played PLAYS times, by name."""
+    return [r.get("id") for r in results if len(r.get("plays") or []) != PLAYS]
+
+
+def merge(runs):
+    """The plays of several runs (one per play, --play N) case by case."""
+    out, at = [], {}
+    for run in runs:
+        for r in run:
+            if r["id"] not in at:
+                at[r["id"]] = {"id": r["id"], "expect": r["expect"], "plays": []}
+                out.append(at[r["id"]])
+            at[r["id"]]["plays"] += list(r.get("plays") or [])
+    return out
+
+
+def median(r):
+    """A case's result over its plays: True (as expected), False, or None
+    when fewer than 2 plays were reviewed. A flag case is found, and a
+    clean one blocked, when 2 plays say so (2 of 3)."""
+    played = [p for p in r.get("plays") or [] if p is not None]
+    if len(played) < 2:
+        return None
+    if r["expect"] == "flag":
+        return sum(1 for p in played if p) >= 2
+    return sum(1 for p in played if not p) < 2
+
+
 def score(results):
-    flag = [r for r in results if r["expect"] == "flag" and r["ok"] is not None]
-    clean = [r for r in results if r["expect"] == "clean" and r["ok"] is not None]
-    return {"found": sum(1 for r in flag if r["ok"]), "flag": len(flag),
-            "blocked": sum(1 for r in clean if not r["ok"]), "clean": len(clean),
-            "unreviewed": sum(1 for r in results if r["ok"] is None)}
+    ok = [(r["expect"], median(r)) for r in results]
+    flag = [m for e, m in ok if e == "flag" and m is not None]
+    clean = [m for e, m in ok if e == "clean" and m is not None]
+    return {"found": sum(1 for m in flag if m), "flag": len(flag),
+            "blocked": sum(1 for m in clean if not m), "clean": len(clean),
+            "unreviewed": sum(1 for _, m in ok if m is None), "plays": PLAYS}
 
 
 def worse(now, base):
@@ -180,10 +464,14 @@ def worse(now, base):
 
 
 def table(results, now, base):
-    out = ["| Case | Expects | Result |", "| --- | --- | --- |"]
+    out = ["| Case | Expects | Plays | Result |", "| --- | --- | --- | --- |"]
+    words = {"flag": ("found", "missed"), "clean": ("clean", "blocked")}
     for r in results:
-        res = "could not review" if r["ok"] is None else ("as expected" if r["ok"] else "**missed**" if r["expect"] == "flag" else "**blocked**")
-        out.append(f"| {r['id']} | {r['expect']} | {res} |")
+        yes, no = words.get(r["expect"], ("as expected", "not"))
+        plays = ", ".join("not reviewed" if p is None else yes if p else no for p in r.get("plays") or [])
+        m = median(r)
+        res = "could not review" if m is None else ("as expected" if m else "**missed**" if r["expect"] == "flag" else "**blocked**")
+        out.append(f"| {r['id']} | {r['expect']} | {plays} | {res} |")
     out += ["", f"Found {now['found']} of {now['flag']} known bugs (baseline {base.get('found', '?')} of {base.get('flag', '?')}); "
             f"blocked {now['blocked']} of {now['clean']} clean pull requests (baseline {base.get('blocked', '?')}); {now['unreviewed']} not reviewed."]
     return "\n".join(out)
@@ -198,31 +486,54 @@ def self_test():
         failed |= got != want
 
     bot = {"login": org.APP}
-    first = lambda oid: {"nodes": [{"author": bot, "body": "x\n<sub>🤖 AI review · m (Anthropic)</sub>", "originalCommit": {"oid": oid}}]}
-    prs = [{"number": 1, "title": "fix: a", "baseRefOid": "b1", "headRefOid": "h1", "isCrossRepository": False, "reviewThreads": {"nodes": [{"isOutdated": True, "path": "a.php", "resolvedBy": None, "comments": first("c1")}]}},
+    first = lambda oid: {"nodes": [{"author": bot, "body": "x\n<sub>🤖 AI review · m (Anthropic)</sub>", "diffHunk": "@@ -4,3 +5,4 @@\n", "originalCommit": {"oid": oid}}]}
+    commits = lambda *o: {"nodes": [{"commit": {"oid": x}} for x in o]}
+    prs = [{"number": 1, "title": "fix: a", "baseRefOid": "b1", "headRefOid": "h1", "isCrossRepository": False, "commits": commits("c0", "c1", "c2", "h1"),
+            "reviewThreads": {"nodes": [{"isOutdated": True, "path": "a.php", "originalLine": 7, "resolvedBy": None, "comments": first("c1")}]}},
            {"number": 2, "title": "feat: b", "baseRefOid": "b2", "headRefOid": "h2", "isCrossRepository": False, "reviewThreads": {"nodes": []}},
            {"number": 3, "title": "fix: c", "baseRefOid": "b3", "headRefOid": "h3", "isCrossRepository": False, "reviewThreads": {"nodes": [{"isOutdated": False, "path": "c.php", "resolvedBy": {"login": "me"}, "comments": first("c3")}]}}]
-    flag, clean = cases_from("o/r", prs, 5)
-    check("cases: a fixed finding is a flag case at the commit it was raised on", [(c["pr"], c["head"], c["path"]) for c in flag], [(1, "c1", "a.php")])
+    seen = []
+    fix_of = lambda pr, head, path, hunk, after: seen.append((head, path, hunk, after)) or ("c2", [[6, 6]])
+    flag, clean = cases_from("o/r", prs, 5, fix_of)
+    check("cases: a fixed finding is a flag case at the commit it was raised on, with its line, hunk and fix", [(c["pr"], c["head"], c["path"], c["line"], c["hunk"], c["fix"], c["fixed"]) for c in flag], [(1, "c1", "a.php", 7, [5, 8], "c2", [[6, 6]])])
+    check("cases: the fix is looked for in the thread's hunk among the commits after head", seen, [("c1", "a.php", (5, 8), ["c2", "h1"])])
+    check("thread_hunk: the head side of the header", (thread_hunk("@@ -1,4 +2,6 @@ x"), thread_hunk("@@ -5 +5 @@"), thread_hunk("@@ -5,1 +5,0 @@"), thread_hunk(None)), ((2, 7), (5, 5), None, None))
+    check("fix_hunks: the fix's hunks that touch the thread's; an addition at the line it follows", (fix_hunks("@@ -3,2 +3,1 @@\n@@ -20,0 +20,2 @@\n", (1, 8)), fix_hunks("@@ -20,0 +20,2 @@\n", (18, 25)), fix_hunks("@@ -3 +3 @@\n", (5, 9))), ([[3, 4]], [[20, 20]], []))
+    check("first_fix_in: the first commit that changed the hunk", first_fix_in(["x", "y"], (1, 4), {"x": "@@ -9 +9 @@", "y": "@@ -3 +3 @@"}.get), ("y", [[3, 3]]))
+    check("not_a_fix: docs, ci, chore, style, test, or docs alone", [not_a_fix(*a) for a in (("docs(readme): x", ["a.php"]), ("ci: x", ["a.php"]), ("fix: x", ["readme.txt", "docs/a.php", "A.md"]), ("fix: x", ["a.php", "A.md"]), ("feat!: x", ["a.php"]))], [True, True, True, False, False])
+    check("near: a whole-file hunk is cut to NEAR lines around the line", (near((1, 300), 150), near((5, 8), 7)), ((150 - NEAR, 150 + NEAR), (5, 8)))
+    check("is_doc: a doc name as code is code", [is_doc(f) for f in ("LICENSE", "readme.txt", "CHANGELOG.md", "license.php", "contributing.py")], [True, True, True, False, False])
+    check("not_a_fix: an unreadable subject or file list is no fix", (not_a_fix(None, ["a.php"]), not_a_fix("fix: x", None)), (True, True))
+    check("cases: a thread whose line no commit changed is not a flag case", cases_from("o/r", prs[:1], 5, lambda *a: None), ([], []))
+    check("line_changed: inside a -a,b hunk; never an addition alone", [line_changed("@@ -3,2 +3,1 @@\n@@ -9,0 +9,1 @@\n", n) for n in (2, 3, 4, 5, 9)], [False, True, True, False, False])
+    check("first_fix: the first commit that changed the line", first_fix(["x", "y"], 3, {"x": "@@ -5 +5 @@", "y": "@@ -3 +3 @@"}.get), "y")
     check("cases: a pull request with no thread is clean at its last commit; a dismissed one is neither", [(c["pr"], c["head"]) for c in clean], [(2, "h2")])
     fork = [{"number": 9, "title": "x", "baseRefOid": "b", "headRefOid": "h", "isCrossRepository": True, "reviewThreads": {"nodes": []}},
             {"number": 8, "title": "y", "baseRefOid": "b", "headRefOid": "h", "reviewThreads": {"nodes": []}}]
     check("cases: never a fork's pull request, nor one that does not say", cases_from("o/r", fork, 5), ([], []))
     picked = pick({"o/a": ([{"id": "a1"}, {"id": "a2"}], []), "o/b": ([{"id": "b1"}], [])}, 2)
     check("pick: round the repositories", [c["id"] for c in picked], ["a1", "b1"])
-    case_f = {"expect": "flag", "path": "a.php"}
-    check("verdict: flag found on its file", verdict(case_f, {"findings": [{"severity": "major", "file": "a.php"}]}), True)
+    case_f = {"expect": "flag", "path": "a.php", "line": 3}
+    check("verdict: inside the hunk the fix changed, never beside it", [verdict({"expect": "flag", "path": "a.php", "line": 2, "fixed": [[4, 6]]}, {"findings": [{"severity": "major", "file": "a.php", "line": n}]}) for n in (2, 3, 4, 6, 7)], [False, False, True, True, False])
+    check("verdict: flag found on its line", verdict(case_f, {"findings": [{"severity": "major", "file": "a.php", "line": 3}]}), True)
+    check("verdict: a case with no line finds nothing", verdict({"expect": "flag", "path": "a.php"}, {"findings": [{"severity": "major", "file": "a.php"}]}), False)
+    check("verdict: another line of the file, or no line, is missed", (verdict(case_f, {"findings": [{"severity": "major", "file": "a.php", "line": 4}]}), verdict(case_f, {"findings": [{"severity": "major", "file": "a.php"}]})), (False, False))
     check("verdict: flag missed (a minor, another file, a pre-existing one)", verdict(case_f, {"findings": [{"severity": "minor", "file": "a.php"}, {"severity": "major", "file": "b.php"}, {"severity": "blocker", "file": "a.php", "pre_existing": True}]}), False)
     check("verdict: clean kept clean; clean blocked", (verdict({"expect": "clean"}, {"findings": [{"severity": "minor"}]}), verdict({"expect": "clean"}, {"findings": [{"severity": "major"}]})), (True, False))
     check("verdict: no review is unknown", verdict(case_f, None), None)
-    res = [{"id": "1", "expect": "flag", "ok": True}, {"id": "2", "expect": "flag", "ok": False}, {"id": "3", "expect": "clean", "ok": False}, {"id": "4", "expect": "clean", "ok": None}]
+    res = [{"id": "1", "expect": "flag", "plays": [True, True, False]}, {"id": "2", "expect": "flag", "plays": [False, True, False]},
+           {"id": "3", "expect": "clean", "plays": [False, False, True]}, {"id": "4", "expect": "clean", "plays": [None, None, True]}]
     now = score(res)
-    check("score: found, blocked, unreviewed", now, {"found": 1, "flag": 2, "blocked": 1, "clean": 1, "unreviewed": 1})
+    check("score: each case's median; found, blocked, unreviewed", now, {"found": 1, "flag": 2, "blocked": 1, "clean": 1, "unreviewed": 1, "plays": PLAYS})
+    check("median: 2 reviewed plays that split find no bug and block nothing", (median({"expect": "flag", "plays": [True, None, False]}), median({"expect": "clean", "plays": [True, None, False]})), (False, True))
+    check("merge: the plays of each run, case by case", merge([[{"id": "1", "expect": "flag", "plays": [True]}], [{"id": "1", "expect": "flag", "plays": [False]}]]), [{"id": "1", "expect": "flag", "plays": [True, False]}])
+    check("short: fewer than MIN_CASES of a kind", (short(res), short([{"expect": k} for k in ("flag", "clean") for _ in range(MIN_CASES)])), (f"2 flag cases, fewer than {MIN_CASES}; 2 clean cases, fewer than {MIN_CASES}", ""))
+    check("unplayed: a case not played PLAYS times", unplayed(res + [{"id": "5", "expect": "flag", "plays": [True]}]), ["5"])
     check("worse: within one case of the baseline is not worse", worse(now, {"found": 2, "flag": 2, "blocked": 0}), "")
     check("worse: two fewer bugs found is", worse({**now, "found": 0}, {"found": 2, "flag": 2, "blocked": 0}).startswith("it found 0 of 2"), True)
     check("worse: two more clean ones blocked is", "it blocked 2" in worse({**now, "blocked": 2}, {"found": 1, "flag": 2, "blocked": 0}), True)
     check("worse: more than one case unreviewed is", ("could not be reviewed" in worse({"found": 1, "flag": 1, "blocked": 0, "clean": 8, "unreviewed": 2}, {"found": 1, "flag": 1}), worse({"found": 1, "flag": 1, "blocked": 0, "clean": 9, "unreviewed": 1}, {"found": 1, "flag": 1})), (True, ""))
-    check("table: says what was missed", "**missed**" in table(res, now, {}), True)
+    check("table: says what was missed, and each play", ("**missed**" in table(res, now, {}), "| 1 | flag | found, found, missed | as expected |" in table(res, now, {})), (True, True))
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
@@ -231,27 +542,48 @@ def main(argv):
     if argv == ["--test"]:
         return self_test()
     if argv[:1] == ["collect"]:
-        cases = collect(int(argv[1]) if len(argv) > 1 else 6)
+        cases = collect(int(argv[1]) if len(argv) > 1 else MIN_CASES)
         os.makedirs(os.path.dirname(CASES), exist_ok=True)
         with open(CASES, "w", encoding="utf-8") as fh:
             json.dump(cases, fh, indent=2)
             fh.write("\n")
         print(f"{len(cases)} cases in {CASES}")
         return 0
-    if argv == ["run"]:
+    if argv[:1] == ["check"] and len(argv) <= 2:
+        with open(argv[1] if len(argv) == 2 else CASES, encoding="utf-8") as fh:
+            return check(json.load(fh))
+    if argv[:1] == ["run"] and (len(argv) == 1 or (len(argv) == 3 and argv[1] == "--play" and argv[2] in [str(n) for n in range(1, PLAYS + 1)])):
         with open(CASES, encoding="utf-8") as fh:
             cases = json.load(fh)
-        work = tempfile.mkdtemp(prefix="dx-eval-")
-        results = []
-        for c in cases:
-            ok = run_case(c, ROOT, work)
-            print(f"  {c['id']}: {ok}", file=sys.stderr)
-            results.append({"id": c["id"], "expect": c["expect"], "ok": ok})
+        # A set that does not hold is refused before any paid review (#844).
+        if short(cases):
+            print(f"review-eval.py: the set has {short(cases)}", file=sys.stderr)
+            return 1
+        if check(cases):
+            return 1
+        plays = [int(argv[2])] if len(argv) == 3 else list(range(1, PLAYS + 1))
+        results = [{"id": c["id"], "expect": c["expect"], "plays": []} for c in cases]
+        for n in plays:
+            # Each play on its own clones: a fresh checkout and last.json.
+            work = tempfile.mkdtemp(prefix=f"dx-eval-{n}-")
+            for c, r in zip(cases, results):
+                ok = run_case(c, ROOT, work)
+                print(f"  play {n}, {c['id']}: {ok}", file=sys.stderr)
+                r["plays"].append(ok)
         print(json.dumps(results, indent=2))
         return 0
-    if argv[:1] in (["score"], ["baseline"]) and len(argv) == 2:
-        with open(argv[1], encoding="utf-8") as fh:
-            results = json.load(fh)
+    if argv[:1] in (["score"], ["baseline"]) and len(argv) >= 2:
+        runs = []
+        for f in argv[1:]:
+            with open(f, encoding="utf-8") as fh:
+                runs.append(json.load(fh))
+        results = merge(runs)
+        if short(results):
+            print(f"review-eval.py: the set has {short(results)}; it is not scored", file=sys.stderr)
+            return 1
+        if unplayed(results):
+            print(f"review-eval.py: not played {PLAYS} times: {', '.join(unplayed(results))}", file=sys.stderr)
+            return 1
         now = score(results)
         if argv[0] == "baseline":
             if now["unreviewed"]:
@@ -265,10 +597,13 @@ def main(argv):
         try:
             with open(BASELINE, encoding="utf-8") as fh:
                 base = json.load(fh)
+            # A baseline of another number of plays is not comparable.
+            if base.get("plays") != PLAYS:
+                raise ValueError("plays")
         except (OSError, ValueError):
             # No baseline is no gate: that fails, it never passes quietly.
             print(table(results, now, {}))
-            print(f"\n**No baseline** at {BASELINE}: write one with `review-eval.py baseline`.")
+            print(f"\n**No baseline** of {PLAYS} plays at {BASELINE}: write one with `review-eval.py baseline`.")
             return 1
         print(table(results, now, base))
         why = worse(now, base)
