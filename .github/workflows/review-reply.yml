@@ -147,15 +147,15 @@ jobs:
           path: .dx-central
           persist-credentials: false
 
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+
       # GitHub's API rate limit (#925): gh waits for its reset, within this
       # job's time (scripts/gh-wait.sh), before the job's first gh.
       - name: The waiting gh (#925)
         env:
           TIMEOUT: 5
         run: test ! -f .dx-central/scripts/gh-wait.sh || bash .dx-central/scripts/gh-wait.sh --install "$TIMEOUT"
-
-      - name: The organisation's configuration (#197)
-        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
 
       - name: Bring the autopilot back
         id: back
@@ -312,15 +312,15 @@ jobs:
           path: .dx-central
           persist-credentials: false
 
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+
       # GitHub's API rate limit (#925): gh waits for its reset, within this
       # job's time (scripts/gh-wait.sh), before the job's first gh.
       - name: The waiting gh (#925)
         env:
           TIMEOUT: 10
         run: test ! -f .dx-central/scripts/gh-wait.sh || bash .dx-central/scripts/gh-wait.sh --install "$TIMEOUT"
-
-      - name: The organisation's configuration (#197)
-        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
 
       - name: What others said since the question
         id: others
@@ -429,15 +429,15 @@ jobs:
           path: .dx-central
           persist-credentials: false
 
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+
       # GitHub's API rate limit (#925): gh waits for its reset, within this
       # job's time (scripts/gh-wait.sh), before the job's first gh.
       - name: The waiting gh (#925)
         env:
           TIMEOUT: 5
         run: test ! -f .dx-central/scripts/gh-wait.sh || bash .dx-central/scripts/gh-wait.sh --install "$TIMEOUT"
-
-      - name: The organisation's configuration (#197)
-        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
 
       - name: The commenter may correct the credits
         id: who
@@ -510,7 +510,8 @@ jobs:
           c="$RUNNER_TEMP/dx-gh-central"
           # Not fetched, the job goes on as before: a call that hits the
           # limit fails instead of waiting.
-          if git init -q "$c" && git -C "$c" fetch -q --depth 1 https://github.com/DiluxOne/.github "$REF" && git -C "$c" checkout -q FETCH_HEAD; then
+          if git init -q "$c" && git -C "$c" fetch -q --depth 1 https://github.com/DiluxOne/.github "$REF" && git -C "$c" checkout -q FETCH_HEAD \
+            && { test ! -f "$c/scripts/config-overlay.sh" || bash "$c/scripts/config-overlay.sh" "$c"; }; then
             test ! -f "$c/scripts/gh-wait.sh" || bash "$c/scripts/gh-wait.sh" --install "$TIMEOUT"
           else
             echo "::warning::The engine's scripts could not be fetched: this job's calls do not wait on the API's rate limit."

@@ -303,7 +303,8 @@ jobs:
           c="$RUNNER_TEMP/dx-gh-central"
           # Not fetched, the job goes on as before: a call that hits the
           # limit fails instead of waiting.
-          if git init -q "$c" && git -C "$c" fetch -q --depth 1 https://github.com/DiluxOne/.github "$REF" && git -C "$c" checkout -q FETCH_HEAD; then
+          if git init -q "$c" && git -C "$c" fetch -q --depth 1 https://github.com/DiluxOne/.github "$REF" && git -C "$c" checkout -q FETCH_HEAD \
+            && { test ! -f "$c/scripts/config-overlay.sh" || bash "$c/scripts/config-overlay.sh" "$c"; }; then
             test ! -f "$c/scripts/gh-wait.sh" || bash "$c/scripts/gh-wait.sh" --install "$TIMEOUT"
           else
             echo "::warning::The engine's scripts could not be fetched: this job's calls do not wait on the API's rate limit."
