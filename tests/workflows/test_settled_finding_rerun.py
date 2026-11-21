@@ -267,11 +267,11 @@ def test_the_912_comment_is_the_scenarios_own():
     assert comments == [COMMENT_912]
 
 
-def decides(tmp_path, code):
+def decides(tmp_path, code, read="echo 912"):
     """review-reply.yml's "The commenter decides" with deciders.py answering
-    exit CODE for the commenter."""
-    gh = """case "$*" in
-  "pr view"*closingIssuesReferences*) echo 912 ;;
+    exit CODE for the commenter, and gh reading the closing issue with READ."""
+    gh = f"""case "$*" in
+  "pr view"*closingIssuesReferences*) {read} ;;
   *) echo "unexpected gh $*" >&2; exit 1 ;;
 esac"""
     # A deciders.py of its own, which records how it was asked.
@@ -291,6 +291,43 @@ def test_the_reply_asks_deciders_whether_the_commenter_decides(tmp_path):
     assert ran.code == 0, ran.stderr
     assert ran.output.get("decides") == "true"
     assert ["deciders", "912", "8", "may", "answer", "alice"] in ran.calls
+
+
+def test_a_closing_issue_that_cannot_be_read_never_counts_as_a_decision(tmp_path):
+    # Under `who-decides: acceptor` the pull request's own number is not the
+    # issue: a failed read must not fall back to it and come out a yes.
+    ran = decides(tmp_path, 0, read="echo 'HTTP 502' >&2; exit 1")
+    assert ran.code == 0, ran.stderr
+    assert ran.output.get("decides") == "false"
+    assert not ran.output.get("number")
+    assert not [c for c in ran.calls if c[0] == "deciders"], ran.calls
+
+
+def test_a_pull_request_with_no_closing_issue_is_asked_by_its_own_number(tmp_path):
+    ran = decides(tmp_path, 0, read="true")
+    assert ran.code == 0, ran.stderr
+    assert ran.output.get("decides") == "true" and ran.output.get("number") == "8"
+
+
+def test_the_rerun_uses_the_one_lookup_of_who_decides():
+    # One way to find the issue or the pull request who decides is asked of,
+    # so the step that tells the model and the re-run cannot drift.
+    lookups = [s.get("name") or s.get("id") for s in reply_steps() if "closingIssuesReferences" in str(s.get("run", ""))]
+    assert lookups == ["The commenter decides"], lookups
+    rerun = step("review-reply.yml", "Re-run the review on a settled finding")
+    assert "steps.decides.outputs.number" in str(rerun["env"].get("NUMBER")), rerun["env"]
+
+
+def test_the_rerun_with_no_number_runs_nothing_again(tmp_path):
+    rerun = step("review-reply.yml", "Re-run the review on a settled finding")
+    scripts = tmp_path / "work" / ".dx-central" / "scripts"
+    scripts.mkdir(parents=True, exist_ok=True)
+    (scripts / "deciders.py").write_text("import sys\nsys.exit(0)\n")
+    ran = run(rerun, tmp_path, env={"NUMBER": "", "PR": "8", "LOGIN": "alice", "BOT": BOT, "GH_TOKEN": "t"},
+              stubs={"gh": 'echo "unexpected gh $*" >&2; exit 1'}, central=False)
+    assert ran.code == 0, ran.stderr
+    assert not ran.of("gh"), ran.calls
+    assert "not run again" in ran.stdout
 
 
 def test_a_commenter_who_does_not_decide_is_told_so(tmp_path):
@@ -333,9 +370,14 @@ def post_912(tmp_path, decides_, event="issue_comment", bot_thread="false", thre
     """review-reply.yml's "Post the reply" with the model's #912 refusal as
     its reply, `settles` empty and `decided` naming the finding."""
     (tmp_path / "temp").mkdir(parents=True, exist_ok=True)
-    threads = [{"id": THREAD_ID, "path": "scenarios/settled-rerun/token.md", "line": 2,
-                "comment": f"**blocker**: {FINDING_912}\n\nA live credential."}]
+    first = f"**blocker**: {FINDING_912}\n\nA live credential."
+    threads = [{"id": THREAD_ID, "path": "scenarios/settled-rerun/token.md", "line": 2, "comment": first}]
     (tmp_path / "temp" / "bot-threads.json").write_text(json.dumps(threads))
+    if event == "pull_request_review_comment":
+        # "Pull request and thread" writes the thread the comment is in.
+        (tmp_path / "temp" / "thread.json").write_text(json.dumps(
+            {"id": THREAD_ID, "path": "scenarios/settled-rerun/token.md", "line": 2, "bot_thread": True,
+             "comments": [{"author": BOT.removesuffix("[bot]"), "body": first}, {"author": "alice", "body": COMMENT_912}]}))
     out = json.dumps({"reply": REFUSAL_912, "resolve": False, "settles": "", "decided": decided})
     env = {"OUT": out, "PR": "8", "THREAD": thread, "BOT_THREAD": bot_thread, "COMMENT_ID": "5",
            "EVENT": event, "MODEL": "m", "GH_TOKEN": "t", "GITHUB_SERVER_URL": "https://github.com",
@@ -377,3 +419,24 @@ def test_a_deciders_decision_in_the_bots_thread_resolves_and_settles_it(tmp_path
     assert ran.output.get("settled") == "true"
     assert ran.output.get("resolve") == "true"
     assert (ran.temp / "resolve.txt").read_text().strip() == THREAD_ID
+
+
+def test_a_decision_naming_another_finding_resolves_nothing_in_the_bots_thread(tmp_path):
+    ran = post_912(tmp_path, "true", event="pull_request_review_comment", bot_thread="true", thread=THREAD_ID,
+                   decided="The changelog is missing")
+    assert ran.code == 0, ran.stderr
+    assert "settled" not in ran.output and "resolve" not in ran.output
+    body = ran.of("gh")[0]
+    text = body[body.index("-f") + 1]
+    assert "<!-- dx-settled " not in text and "decides here" not in text
+
+
+def test_the_decided_title_is_made_inert_in_the_comment(tmp_path):
+    evil = "x @org/team\n\n**bold** [link](https://evil) <img src=x>"
+    ran = post_912(tmp_path, "true", decided=evil)
+    assert ran.code == 0, ran.stderr
+    body = ran.of("gh")[0]
+    text = body[body.index("--body") + 1]
+    line = next(l for l in text.splitlines() if "decides here" in l)
+    assert "@org" not in line and "](https://" not in line and "<img" not in line and "**bold**" not in line, line
+    assert "@alice" in line

@@ -1901,6 +1901,16 @@ def defuse(text):
     return text
 
 
+def inline_text(text, limit=200):
+    """Model text placed inside one line of the bot's comment (#912, a
+    finding's title): one line, inert (defuse), with no emphasis or code
+    span to break the line around it. Pure."""
+    text = defuse(" ".join(str(text or "").split())[:limit])
+    for c in "`*_~|":
+        text = text.replace(c, "\\" + c)
+    return text
+
+
 def others_comment(others, points, question_at=""):
     """The bot's comment for the maintainer: each argument with who said it
     and a link to their comment, both from GitHub, never from the model.
@@ -3723,6 +3733,9 @@ A class on html.
     check("#699 C5: a settled finding's mark reads back from the bot's own comments since the verdict, never closing early",
           ([x["finding"] for x in settlements(c5, "2026-11-08T10:00:00Z", "b")], settlements(c5, "2026-11-08T11:00:00Z", "b"), settled_mark("a --> x", "u").count("-->")),
           (["a -› x"], [], 1))
+    check("#912: a decided finding's title is one inert line in the bot's comment",
+          inline_text("x @org/team\n\n**b** `c` [l](https://e) <img>"),
+          "x @\u200borg/team \\*\\*b\\*\\* \\`c\\` \\[l\\](https:\u200b/\u200b/e) &lt;img&gt;")
     c2 = {"issue": {"state": "OPEN", "labels": ["accepted"]}, "lane": "human-issue", "may_start": [True, "ready"], "seal": "match"}
     check("#699 C2: next-step on an edited accepted issue that passes now starts it, once refused for its shape",
           (edit_starts(next_step(c2), {"shape_refused": "t"}), edit_starts(next_step(c2), {}), edit_starts(next_step(dict(c2, seal="changed")), {"shape_refused": "t"}),
@@ -6197,6 +6210,9 @@ def main(argv):
         step = next_step(state if isinstance(state, dict) else {})
         print(step_comment(step), file=sys.stderr)
         print(json.dumps(step))
+        return 0
+    if argv[:1] == ["inline-text"] and len(argv) == 2:
+        print(inline_text(argv[1]))
         return 0
     if argv[:1] == ["settled-mark"] and len(argv) == 3:
         print(settled_mark(argv[1], argv[2]))

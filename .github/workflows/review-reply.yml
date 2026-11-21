@@ -11,7 +11,9 @@ name: Claude review reply
 # A decision of someone `who-decides` allows (scripts/deciders.py, asked
 # before the model runs) to keep a finding settles it whether or not Claude
 # agrees (#912): Claude names the finding the comment decides (`decided`),
-# may say why it disagrees, and this workflow settles it for a decider only.
+# may say why it disagrees, and this workflow settles it for a decider only
+# (a closing issue it cannot read makes nobody one), in the bot's own thread
+# only when it is that thread's finding.
 # Claude has no write access: this workflow posts the reply.
 # Always the `high` reviewer of the policy files (the repository's, else the
 # organisation's).
@@ -560,7 +562,11 @@ jobs:
       # #912: whether the commenter decides here (#588, scripts/deciders.py),
       # asked before the model runs. A decision of someone who decides to
       # keep a finding settles it whether or not the model agrees; a
-      # deciders.py that cannot answer (exit 2) is never a yes.
+      # deciders.py that cannot answer (exit 2) is never a yes. This is the
+      # one lookup of what who-decides is asked of (the closing issue, else
+      # the pull request): `number`, which the review's re-run reads too. A
+      # closing issue that cannot be read is no number and never a yes: the
+      # pull request's number in its place could pass under `acceptor`.
       - name: The commenter decides
         id: decides
         if: steps.pr.outputs.run == 'true'
@@ -570,9 +576,14 @@ jobs:
           LOGIN: ${{ github.event.comment.user.login }}
         run: |
           set -euo pipefail
-          issue=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // empty' || true)
+          if ! issue=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // empty'); then
+            echo "::warning::The pull request's closing issue could not be read: $LOGIN is not taken to decide here."
+            echo "decides=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           number=${issue:-$PR}
-          if NUMBER="$number" python3 .dx-central/scripts/deciders.py may answer "$LOGIN"; then
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+          if NUMBER="$number" PR="$PR" python3 .dx-central/scripts/deciders.py may answer "$LOGIN"; then
             echo "decides=true" >> "$GITHUB_OUTPUT"
           else
             echo "decides=false" >> "$GITHUB_OUTPUT"
@@ -699,17 +710,22 @@ jobs:
           # #912: a decision of someone who decides (the step "The commenter
           # decides") settles the finding the comment names, whether or not
           # the model agrees: in the conversation it is what settles, in the
-          # bot's own thread it resolves that thread.
+          # bot's own thread it resolves that thread when it is that thread's
+          # finding (its first line, `**<severity>**: <title>`), never another.
           by_decider=""
           if [ "$DECIDES" = true ] && [ -n "$decided" ]; then
             if [ "$EVENT" = issue_comment ] && [ -z "$settles" ]; then
               settles=$decided by_decider=$decided
             elif [ "$EVENT" = pull_request_review_comment ] && [ "$BOT_THREAD" = true ] && [ -n "$THREAD" ] && [ "$resolve" != true ]; then
-              resolve=true by_decider=$decided
+              own=$(jq -r '(.comments[0].body // "") | split("\n")[0] | sub("^\\*\\*(blocker|major|minor)\\*\\*: "; "")' "$RUNNER_TEMP/thread.json" 2>/dev/null || true)
+              if [ -n "$own" ] && [ "$own" = "$decided" ]; then
+                resolve=true by_decider=$decided
+              fi
             fi
           fi
           if [ -n "$by_decider" ]; then
-            body="$body"$'\n\n'"@$LOGIN decides here (\`who-decides\`): their decision settles: $by_decider."
+            # The title is the model's text: one inert line, no mention.
+            body="$body"$'\n\n'"@$LOGIN decides here (\`who-decides\`): their decision settles: $(python3 .dx-central/scripts/autopilot.py inline-text "$by_decider")."
           fi
           # A settled finding (#699 C5): the bot's thread it resolves, or a
           # finding a conversation comment settles, with a thread of its own
@@ -795,13 +811,14 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.rerunner.outputs.token }}
           PR: ${{ steps.pr.outputs.pr }}
+          # What who-decides is asked of, from "The commenter decides" (one
+          # lookup for both); none when the closing issue could not be read.
+          NUMBER: ${{ steps.decides.outputs.number }}
           LOGIN: ${{ github.event.comment.user.login }}
           BOT: ${{ steps.bot.outputs.app-slug }}[bot]
         run: |
           set -euo pipefail
-          issue=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // empty')
-          number=${issue:-$PR}
-          if ! NUMBER="$number" PR="$PR" python3 .dx-central/scripts/deciders.py may answer "$LOGIN"; then
+          if [ -z "$NUMBER" ] || ! NUMBER="$NUMBER" PR="$PR" python3 .dx-central/scripts/deciders.py may answer "$LOGIN"; then
             echo "$LOGIN does not decide here: the review is not run again."; exit 0
           fi
           HEAD=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq .headRefOid)
