@@ -240,6 +240,10 @@ on:
         description: The pull request (mode fix).
         type: string
         default: ''
+      description-ok:
+        description: The review's word on the description (mode fix, #924 C3); `false` asks the round to rewrite it.
+        type: string
+        default: ''
       central-ref:
         type: string
         default: ''
@@ -852,6 +856,8 @@ jobs:
           # without a verdict (#741: `inputs fix` reads the calling run's
           # jobs, and writes checks.md, which `prompt fix` points at).
           QUEUE: ${{ github.event_name == 'pull_request' && github.event.action == 'dequeued' }}
+          # #924 C3: a review that said the description does not match.
+          DESCRIPTION_OK: ${{ inputs.description-ok }}
           RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
         run: |
           set -euo pipefail
@@ -1787,6 +1793,17 @@ jobs:
           rc=0
           held=$(python3 .dx-central/scripts/autopilot.py holder) || rc=$?
           if [ "$rc" -ne 0 ]; then echo "The autopilot steps aside: $held"; echo "held=$held" >> "$GITHUB_OUTPUT"; exit 0; fi
+          # #924 C3: the agent's rewrite of the description (`describe`) is
+          # set before its commits are pushed, so the review the push starts
+          # reads it; with no commit, apply adds `review:full` first, so the
+          # edit's review is a full one on the new body, never a reuse.
+          # Older central scripts have no `describe`: nothing to apply.
+          describe() {
+            grep -q '^def describe_body' .dx-central/scripts/autopilot.py || return 0
+            NO_COMMIT="$1" python3 .dx-central/scripts/autopilot.py apply .dx-out/outbox.jsonl +describe \
+              || echo "::warning::The description was not rewritten (the log says why)."
+          }
+          described=false
           if [ -f .dx-out/work.bundle ]; then
             git fetch -q .dx-out/work.bundle HEAD
             new=$(git rev-parse FETCH_HEAD)
@@ -1823,6 +1840,8 @@ jobs:
               python3 .dx-central/scripts/api-commit.py push "$BRANCH" --force --onto "$(git merge-base "origin/$BRANCH" "origin/$DEFAULT")"
               git fetch -q origin "$BRANCH"
             fi
+            if [ "$(git rev-parse HEAD)" = "$(git rev-parse "origin/$BRANCH")" ]; then describe true; else describe false; fi
+            described=true
             # #820: a round that ends ready pushes once, after the pull
             # request is marked ready: `finish ready` (in `apply` below)
             # pushes these commits with the empty ready commit on top, so one
@@ -1844,7 +1863,12 @@ jobs:
               [ "$shown" = true ] || echo "::warning::#$PR does not show $pushed after a minute; a tick may find no commit (a continue run ticks it)."
             fi
           fi
-          python3 .dx-central/scripts/autopilot.py apply .dx-out/outbox.jsonl
+          [ "$described" = true ] || describe true
+          if grep -q '^def describe_body' .dx-central/scripts/autopilot.py; then
+            python3 .dx-central/scripts/autopilot.py apply .dx-out/outbox.jsonl -describe
+          else
+            python3 .dx-central/scripts/autopilot.py apply .dx-out/outbox.jsonl
+          fi
 
       # A fresh token for the verdict, however long the rest took.
       - name: App token for the end
@@ -1874,6 +1898,8 @@ jobs:
           HEAD_BEFORE: ${{ needs.prep.outputs.mode == 'fix' && needs.prep.outputs.head || '' }}
           # #699 C3: a fix round that set the title alone did its work.
           RETITLED: ${{ steps.applied.outputs.retitled }}
+          # #924 C3: so did one that rewrote the description alone.
+          DESCRIBED: ${{ steps.applied.outputs.described }}
           WORK_OUTCOME: ${{ needs.work.outputs.outcome || needs.work.result }}
           # #479: a work job that failed without its agent's outcome lost its
           # runner, and the run does not count.
