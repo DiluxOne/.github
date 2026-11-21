@@ -2,6 +2,23 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
+## [7.20.0](https://github.com/DiluxOne/.github/releases/tag/v7.20.0) · 2026-11-21
+
+### Features
+
+- every AI step is measured on a golden set ([#830](https://github.com/DiluxOne/.github/pull/830))
+
+### Fixes
+
+- the AI evaluation's cases are validated and replay production ([#915](https://github.com/DiluxOne/.github/pull/915))
+- release scenario bug-by-person-merges fails ([#917](https://github.com/DiluxOne/.github/pull/917))
+- release scenario settled-rerun fails ([#914](https://github.com/DiluxOne/.github/pull/914))
+- the review set is graded on the bug's line ([#847](https://github.com/DiluxOne/.github/pull/847))
+
+### Tests
+
+- release scenario hint-no-needs-human fails ([#922](https://github.com/DiluxOne/.github/pull/922))
+
 ## [7.19.0](https://github.com/DiluxOne/.github/releases/tag/v7.19.0) · 2026-11-20
 
 ### Features
@@ -44,6 +61,7 @@ Every version of the engine (the workflows, scripts, policy and kinds other repo
 
 ### Maintenance
 
+- release v7.19.0 ([#911](https://github.com/DiluxOne/.github/pull/911))
 - say what a kind's battery is, in one place ([#829](https://github.com/DiluxOne/.github/pull/829))
 
 ## [7.18.0](https://github.com/DiluxOne/.github/releases/tag/v7.18.0) · 2026-11-17
