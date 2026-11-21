@@ -1830,17 +1830,20 @@ jobs:
               echo "::error::The agent's commits change .github/workflows: nothing is pushed."; exit 1
             fi
             git checkout -q -B "$BRANCH" "$new"
+            if [ "$REWORD" = true ]; then
+              # The lease: GitHub's branch is still the head this round
+              # read, or nothing is written over. Read before the
+              # description is set, so a lost lease leaves it as it was.
+              there=$(gh api "repos/$GITHUB_REPOSITORY/branches/$BRANCH" --jq .commit.sha)
+              if [ "$there" != "$(git rev-parse "origin/$BRANCH")" ]; then
+                echo "::error::$BRANCH moved on GitHub while the agent worked (the lease does not hold): nothing is pushed."; exit 1
+              fi
+            fi
             # Before any push of the round, the reworded history's too, so
             # the review that push starts reads the new description (#924).
             if [ "$REWORD" != true ] && [ "$(git rev-parse HEAD)" = "$(git rev-parse "origin/$BRANCH")" ]; then describe true; else describe false; fi
             described=true
             if [ "$REWORD" = true ]; then
-              # The lease: GitHub's branch is still the head this round
-              # read, or nothing is written over.
-              there=$(gh api "repos/$GITHUB_REPOSITORY/branches/$BRANCH" --jq .commit.sha)
-              if [ "$there" != "$(git rev-parse "origin/$BRANCH")" ]; then
-                echo "::error::$BRANCH moved on GitHub while the agent worked (the lease does not hold): nothing is pushed."; exit 1
-              fi
               python3 .dx-central/scripts/api-commit.py push "$BRANCH" --force --onto "$(git merge-base "origin/$BRANCH" "origin/$DEFAULT")"
               git fetch -q origin "$BRANCH"
             fi

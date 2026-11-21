@@ -185,6 +185,9 @@ def test_a_branch_that_moved_on_github_is_not_written_over(tmp_path):
     ran, _ = reworded(tmp_path, lease_holds=False)
     assert ran.code == 1 and "the lease does not hold" in ran.stdout
     assert not ran.of("api-commit.py")
+    # #927: a lost lease pushes nothing, so the description is not
+    # rewritten either: the gh read of the branch comes before the edit.
+    assert ["autopilot.py", "apply", ".dx-out/outbox.jsonl", "+describe"] not in ran.calls, ran.calls
 
 
 def test_a_round_that_only_retitles_ends_ready_and_the_test_repository_answers_it():
