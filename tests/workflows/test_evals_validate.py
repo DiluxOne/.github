@@ -191,3 +191,128 @@ def test_c1_collect_keeps_only_the_valid_cases(monkeypatch):
     got = mod.collect("autopilot", 6)
     assert [c["merge"] for c in got] == ["m2", "m4"]
     assert [c["merge"] for c in mod.collect("autopilot", 1)] == ["m2"]
+
+
+# C2: the autopilot's replay is the production's loop, and its baseline
+# comes from a run of valid, replayed cases.
+
+def loop(monkeypatch, tmp_path, blocking_rounds, review_fails=False):
+    """replay_autopilot with the model, the review and the tests faked:
+    what it asked, in order, and the head the tests were graded on."""
+    import subprocess
+    mod = evals()
+    has(mod, "review_round")
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    subprocess.run(["git", "init", "-q", str(tree)], check=True)
+    base = mod.commit_all(str(tree), "the base")
+    monkeypatch.setattr(mod, "checkout", lambda case, work: (str(tree), base))
+    asked, reviews = [], []
+
+    def ask(prompt, args, cwd, step, root=None):
+        asked.append((prompt, args))
+        (tree / f"f{len(asked)}.txt").write_text("x")
+        return {"result": "ok"}
+    monkeypatch.setattr(mod, "ask", ask)
+
+    def review(tree_, base_, title, body_file):
+        reviews.append(title)
+        n = len(reviews)
+        return None if review_fails else (n <= blocking_rounds, f"- [ ] **major** `a.py:1`: point {n}")
+    monkeypatch.setattr(mod, "review_round", review)
+    monkeypatch.setattr(mod, "clone_of", lambda case, work, *refs: str(tmp_path))
+    graded = []
+    monkeypatch.setattr(mod, "merged_tests", lambda tree_, case, clone, head, out: graded.append(head) or {t: "passed" for t in case["tests"]})
+    case = {**AUTO, "title": "feat: a thing", "body": body(SPEC)}
+    got = mod.replay_autopilot(case, str(tmp_path))
+    head = mod.git(str(tree), "rev-parse", "HEAD").stdout.strip()
+    return mod, asked, reviews, graded, head, got, tree
+
+
+def test_c2_the_replay_runs_the_work_then_the_review_and_its_fix_rounds(monkeypatch, tmp_path):
+    mod, asked, reviews, graded, head, got, tree = loop(monkeypatch, tmp_path, 2)
+    has(mod, "review_round")
+    # The work, two fix rounds for the two blocking reviews, and a third review that is clean.
+    assert len(asked) == 3 and len(reviews) == 3
+    assert "draft pull request" in asked[0][0] and "The review of pull request" in asked[1][0] and "round 2 of" in asked[2][0]
+    # The fix rounds' arguments are the workflow's, in mode fix.
+    assert asked[0][1] == mod.autopilot_args("work", "20") and asked[1][1] == mod.autopilot_args("work", "10")
+    # The fix round reads the review's findings where the production's prompt says.
+    assert "point 2" in (tree / ".dx-io" / "review.md").read_text(encoding="utf-8")
+    # The production's draft: its branch, and its title and body for the review.
+    assert mod.git(str(tree), "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "feat/1-a-thing"
+    assert reviews == ["feat: a thing"] * 3 and "Closes #1" in (tree / ".dx-io" / "pr.md").read_text(encoding="utf-8")
+    # Graded on the final tree.
+    assert graded == [head] and got == {"tests/workflows/test_a.py": "passed"}
+
+
+def test_c2_the_rounds_stop_at_the_productions_limit(monkeypatch, tmp_path):
+    import yaml
+    rounds = yaml.safe_load((ROOT / "policy" / "autonomy.yml").read_text(encoding="utf-8"))["autopilot-rounds"]
+    mod, asked, reviews, graded, head, got, tree = loop(monkeypatch, tmp_path, 99)
+    has(mod, "max_rounds")
+    assert mod.max_rounds() == rounds
+    assert len(asked) == 1 + rounds and f"round {rounds} of {rounds}" in asked[-1][0]
+    assert graded == [head]
+
+
+def test_c2_a_review_that_cannot_run_leaves_the_case_not_replayed(monkeypatch, tmp_path):
+    mod, asked, reviews, graded, head, got, tree = loop(monkeypatch, tmp_path, 0, review_fails=True)
+    assert len(asked) == 1 and len(reviews) == 1
+    assert got is None and graded == []
+
+
+def test_c2_an_autopilot_job_has_the_time_of_its_rounds():
+    mod = evals()
+    has(mod, "max_rounds")
+    minutes = {x["minutes"] for x in mod.matrix(["autopilot"])}
+    assert minutes == {mod.job_minutes("autopilot")}
+    assert mod.job_minutes("autopilot") > mod.STEPS["autopilot"]["minutes"] * 2 and mod.job_minutes("autopilot") <= 360
+
+
+def write_results(tmp_path, results):
+    f = tmp_path / "results.json"
+    f.write_text(json.dumps(results), encoding="utf-8")
+    return str(f)
+
+
+def baseline_env(monkeypatch, tmp_path, bad):
+    mod = evals()
+    (tmp_path / "evals" / "autopilot").mkdir(parents=True)
+    monkeypatch.setattr(mod, "EVALS", str(tmp_path / "evals"))
+    cases = [AUTO, {**AUTO, "id": "o/r#3:autopilot"}]
+    monkeypatch.setattr(mod, "load_cases", lambda step, root=None: cases)
+    monkeypatch.setattr(mod, "validate", lambda step, cs, work: bad)
+    return mod, tmp_path / "evals" / "autopilot" / "baseline.json"
+
+
+def test_c2_the_baseline_refuses_a_set_with_an_invalid_case(monkeypatch, tmp_path, capsys):
+    mod, path = baseline_env(monkeypatch, tmp_path, [("o/r#3:autopilot", "base: every test passes at its base")])
+    res = write_results(tmp_path, [{"id": "o/r#1:autopilot", "expect": "passed", "ok": True}, {"id": "o/r#3:autopilot", "expect": "passed", "ok": False}])
+    assert mod.main(["baseline", "autopilot", res]) == 1
+    assert not path.exists()
+    assert "o/r#3:autopilot" in capsys.readouterr().err
+
+
+def test_c2_the_baseline_refuses_a_run_that_left_a_case_out(monkeypatch, tmp_path):
+    mod, path = baseline_env(monkeypatch, tmp_path, [])
+    res = write_results(tmp_path, [{"id": "o/r#1:autopilot", "expect": "passed", "ok": True}])
+    assert mod.main(["baseline", "autopilot", res]) == 1
+    assert not path.exists()
+    unrun = write_results(tmp_path, [{"id": "o/r#1:autopilot", "expect": "passed", "ok": True}, {"id": "o/r#3:autopilot", "expect": "passed", "ok": None}])
+    assert mod.main(["baseline", "autopilot", unrun]) == 1
+    assert not path.exists()
+
+
+def test_c2_the_baseline_is_written_from_a_run_of_valid_replayed_cases(monkeypatch, tmp_path):
+    mod, path = baseline_env(monkeypatch, tmp_path, [])
+    has(mod, "max_rounds")
+    res = write_results(tmp_path, [{"id": "o/r#1:autopilot", "expect": "passed", "ok": True}, {"id": "o/r#3:autopilot", "expect": "passed", "ok": False}])
+    assert mod.main(["baseline", "autopilot", res]) == 0
+    assert json.loads(path.read_text(encoding="utf-8")) == {"passed": 1, "cases": 2, "unrun": 0}
+
+
+def test_c2_the_docs_say_the_replay_and_the_baseline():
+    text = (ROOT / "docs" / "testing-and-quality.md").read_text(encoding="utf-8")
+    assert "autopilot-rounds" in text and "local-review.sh" in text
+    assert "every case valid" in text

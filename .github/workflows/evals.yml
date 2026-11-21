@@ -28,7 +28,8 @@ name: AI evaluation
 # the production's loop: the work, then the review (local-review.sh) and
 # its fix rounds, up to policy/autonomy.yml's `autopilot-rounds`.
 #
-# Paid: each case is one model run (the autopilot's, a whole work round).
+# Paid: each case is one model run (the autopilot's, a whole work round
+# and the review and fix rounds after it).
 # It runs only on a pull request from a branch of this repository (a fork's
 # code never runs with the keys), and by hand for one step. The first job
 # lists the steps with no secret; private repositories are never cases.

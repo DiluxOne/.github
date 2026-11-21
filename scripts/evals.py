@@ -18,7 +18,9 @@ deterministically wherever a grade exists:
              files name at least half of the files the merged pull request
              changed
   autopilot  the merged pull request's tests pass on the tree the step
-             leaves (the same sandboxes)
+             leaves (the same sandboxes): the production's loop, the work,
+             then the review (local-review.sh) and its fix rounds up to
+             policy/autonomy.yml's `autopilot-rounds` (#840)
   review     flag or clean, as #234 and #847 have it: a known bug is
              found again inside the lines its fix changed, a clean pull
              request is not blocked, each case played 3 times and scored
@@ -79,6 +81,8 @@ the check: it could not tell.
                                table on stdout, exit 1 when worse (review:
                                `review-eval.py score FILE...`, one per play)
   evals.py baseline STEP FILE  write the results in FILE as the baseline
+                               (spec, autopilot: only from a run of every
+                               case of the set, each valid by `validate`)
                                (review: `review-eval.py baseline FILE...`)
   evals.py --test              self-test (offline)
 """
@@ -343,9 +347,23 @@ def load_cases(step, root=ROOT):
         return json.load(fh)
 
 
+# The longest a job of GitHub's hosted runners may run.
+MAX_JOB_MINUTES = 360
+
+
+def job_minutes(step):
+    """A replay job's time: the step's for one case, and the job's own; the
+    autopilot's, its work and each of the production's rounds (a review and
+    a fix), within a hosted job's limit."""
+    if step != "autopilot":
+        return STEPS[step]["minutes"] + JOB_MINUTES
+    rounds = max_rounds()
+    return min(MAX_JOB_MINUTES, STEPS[step]["minutes"] * (1 + rounds) + STEPS["review"]["minutes"] * rounds + JOB_MINUTES)
+
+
 def matrix(steps, root=ROOT):
     """One replay job per case of each step: the matrix evals.yml runs."""
-    return [{"step": s, "case": c["id"], "n": n, "minutes": STEPS[s]["minutes"] + JOB_MINUTES}
+    return [{"step": s, "case": c["id"], "n": n, "minutes": job_minutes(s)}
             for s in steps for n, c in enumerate(load_cases(s, root))]
 
 
@@ -572,7 +590,13 @@ def replay_autopilot(case, work):
     os.makedirs(io, exist_ok=True)
     with open(os.path.join(io, "spec.md"), "w", encoding="utf-8") as fh:
         fh.write(ap.schema.part_text(body, "spec") + "\n")
-    branch = f"eval/{case['issue']}"
+    # The draft the production opens (#840): its branch, title and body,
+    # which the review reads as the pull request's.
+    issue_type = case.get("type") or TYPE_OF.get(case["title"].split(":", 1)[0].split("(", 1)[0].rstrip("!").strip().lower(), "Task")
+    draft = ap.draft(str(case["issue"]), issue_type, case["title"], body)
+    branch = draft["branch"]
+    with open(os.path.join(io, "pr.md"), "w", encoding="utf-8") as fh:
+        fh.write(draft["body"] + "\n")
     git(tree, "checkout", "-q", "-b", branch)
     prompt = ap.prompt_work(case["repo"], case["issue"], 0, branch, prd, ap.left_criteria(body, ""), False)
     try:
@@ -583,11 +607,71 @@ def replay_autopilot(case, work):
     if ask(prompt, args, tree, "autopilot") is None:
         return None
     head = commit_all(tree, "chore: what the agent left")
+    # The production's loop (#840): the review, then a fix round on what it
+    # blocks, up to the production's rounds; graded on the tree it leaves.
+    rounds = max_rounds()
+    try:
+        fix_args = autopilot_args("work", "10")
+    except KeyError as e:
+        print(f"  {case['id']}: {e}", file=sys.stderr)
+        return None
+    # Each round within the job's time: one that could not finish there
+    # leaves the case not replayed, by name, never graded half done.
+    import time
+    ends = time.monotonic() + (job_minutes("autopilot") - JOB_MINUTES - STEPS["autopilot"]["minutes"]) * 60
+    for rnd in range(1, rounds + 1):
+        if time.monotonic() + (STEPS["autopilot"]["minutes"] + STEPS["review"]["minutes"]) * 60 > ends:
+            print(f"  {case['id']}: no time left for fix round {rnd} of {rounds} in the job", file=sys.stderr)
+            return None
+        review = review_round(tree, got[1], draft["title"], os.path.join(io, "pr.md"))
+        if review is None:
+            return None
+        blocking, findings = review
+        if not blocking:
+            break
+        with open(os.path.join(io, "review.md"), "w", encoding="utf-8") as fh:
+            fh.write(findings)
+        if ask(ap.prompt_fix(case["repo"], 0, rnd, rounds), fix_args, tree, "autopilot") is None:
+            return None
+        head = commit_all(tree, f"chore: what fix round {rnd} left")
     # Only now the merged commit comes in, for its tests: the agent is done.
     clone = clone_of(case, work, case["merge"])
     if not clone:
         return None
     return merged_tests(tree, case, clone, head, os.path.join(work, "out", case["id"].replace("/", "_")))
+
+
+def max_rounds(root=ROOT):
+    """The production's limit of review rounds, policy/autonomy.yml's
+    `autopilot-rounds`, read from this checkout before any agent runs."""
+    import yaml
+    with open(os.path.join(root, "policy", "autonomy.yml"), encoding="utf-8") as fh:
+        return int(yaml.safe_load(fh)["autopilot-rounds"])
+
+
+def review_round(tree, base, title, body_file, root=ROOT):
+    """The production's review of the agent's branch, as the autopilot's own
+    pre-review runs it and the pull request's review reads it (the same
+    brief, profile and policy: local-review.sh, the change's own); (blocking,
+    findings) or None when it gave no verdict. An agent that changed this
+    checkout stops the whole run, as in ask."""
+    env = {k: v for k, v in os.environ.items() if k not in SECRET_ENV}
+    findings = os.path.join(tree, ".git", "dx-review", "findings.md")
+    if os.path.exists(findings):
+        os.remove(findings)
+    before = fingerprint(root)
+    try:
+        got = subprocess.run(["bash", os.path.join(root, "scripts", "local-review.sh"), "--base", base, "--title", title, "--body-file", body_file, "--full"],
+                             cwd=tree, env=env, capture_output=True, text=True, timeout=STEPS["review"]["minutes"] * 60)
+    except subprocess.TimeoutExpired:
+        return None
+    finally:
+        if fingerprint(root) != before:
+            raise SystemExit(f"evals.py: the review of the autopilot's work changed {root}; the run stops, nothing of it is graded")
+    if got.returncode not in (0, 1) or not os.path.isfile(findings):
+        return None
+    with open(findings, encoding="utf-8") as fh:
+        return got.returncode == 1, fh.read()
 
 
 def merged_tests(tree, case, clone, head, out):
@@ -1150,6 +1234,20 @@ def main(argv):
             if unrun:
                 print(f"evals.py: {unrun} cases were not replayed; a baseline is written only from a whole run", file=sys.stderr)
                 return 1
+            if step in VALIDATED:
+                # #840: only from a run of the whole set, every case valid
+                # and replayed.
+                import tempfile
+                cases = load_cases(step)
+                left = sorted({c["id"] for c in cases} - {r["id"] for r in results})
+                if left:
+                    print(f"evals.py: the run left out {', '.join(left)}; a baseline is written only from a run of every case of the set", file=sys.stderr)
+                    return 1
+                bad = validate(step, cases, tempfile.mkdtemp(prefix="dx-validate-"))
+                if bad:
+                    print("evals.py: a baseline is written only from a set whose every case is valid; not valid: "
+                          + "; ".join(f"{i} ({why})" for i, why in bad), file=sys.stderr)
+                    return 1
             write_json(baseline, now)
             print(json.dumps(now))
             return 0
