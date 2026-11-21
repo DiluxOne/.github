@@ -401,8 +401,27 @@ SECRET_ENV = ("GH_TOKEN", "GITHUB_TOKEN")
 CENTRAL_PARTS = ("scripts", "policy", "kinds", "rules", "review-profiles", "design-systems", "org.yml", "repos.yml", "labels.yml", "agents-block.md")
 
 
+# The model's keys: the agent's and the review's CLI need them, git never
+# does (#840).
+MODEL_ENV = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
+# Git with no hooks and no system or global config: what an agent planted
+# around its tree never runs (the tree's own config is never read by the
+# review either: it reads a clone, review_round).
+GIT_SAFE = {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_COUNT": "2", "GIT_CONFIG_KEY_0": "core.hooksPath", "GIT_CONFIG_VALUE_0": "/dev/null",
+            "GIT_CONFIG_KEY_1": "core.fsmonitor", "GIT_CONFIG_VALUE_1": "false"}
+
+
+def git_env(keep_model=False):
+    """The environment git runs in: no token, no model key (unless the
+    review's CLI, which runs it, needs it), hooks and outside config off."""
+    drop = SECRET_ENV + (() if keep_model else MODEL_ENV)
+    return {**{k: v for k, v in os.environ.items() if k not in drop}, **GIT_SAFE}
+
+
 def git(repo_dir, *args):
-    return subprocess.run(["git", "-C", repo_dir, *args], capture_output=True, text=True)
+    return subprocess.run(["git", "-C", repo_dir, "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", *args],
+                          capture_output=True, text=True, env=git_env())
 
 
 def clone_of(case, work, *refs):
@@ -655,14 +674,22 @@ def review_round(tree, base, title, body_file, root=ROOT):
     brief, profile and policy: local-review.sh, the change's own); (blocking,
     findings) or None when it gave no verdict. An agent that changed this
     checkout stops the whole run, as in ask."""
-    env = {k: v for k, v in os.environ.items() if k not in SECRET_ENV}
-    findings = os.path.join(tree, ".git", "dx-review", "findings.md")
-    if os.path.exists(findings):
-        os.remove(findings)
+    # The review, whose CLI holds the model key, never runs git in the tree
+    # the agent wrote, whose .git may hold a hook or a config of its own: it
+    # reads a fresh clone of its commits (made without the key), with no
+    # hooks and no outside config, under the tree's own name.
+    review = os.path.join(os.path.dirname(os.path.abspath(tree)), "review", os.path.basename(os.path.abspath(tree)))
+    shutil.rmtree(review, ignore_errors=True)
+    os.makedirs(os.path.dirname(review), exist_ok=True)
+    if git(os.path.dirname(review), "clone", "-q", "--no-hardlinks", os.path.abspath(tree), review).returncode != 0:
+        return None
+    git(review, "remote", "remove", "origin")
+    env = git_env(keep_model=True)
+    findings = os.path.join(review, ".git", "dx-review", "findings.md")
     before = fingerprint(root)
     try:
         got = subprocess.run(["bash", os.path.join(root, "scripts", "local-review.sh"), "--base", base, "--title", title, "--body-file", body_file, "--full"],
-                             cwd=tree, env=env, capture_output=True, text=True, timeout=STEPS["review"]["minutes"] * 60)
+                             cwd=review, env=env, capture_output=True, text=True, timeout=STEPS["review"]["minutes"] * 60)
     except subprocess.TimeoutExpired:
         return None
     finally:

@@ -269,6 +269,77 @@ def test_c2_a_review_that_cannot_run_leaves_the_case_not_replayed(monkeypatch, t
     assert got is None and graded == []
 
 
+MODEL_KEYS = {"ANTHROPIC_API_KEY": "sk-planted-test", "CLAUDE_CODE_OAUTH_TOKEN": "oauth-planted-test"}
+
+
+def planted_tree(tmp_path):
+    """An agent's tree as it could leave it: a commit, and a hook and a
+    config of its own in its .git, each of which would run with the key."""
+    import subprocess
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    run = lambda *a: subprocess.run(["git", "-C", str(tree), *a], check=True, capture_output=True)
+    run("init", "-q")
+    run("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base")
+    base = subprocess.run(["git", "-C", str(tree), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    (tree / "a.py").write_text("x = 1\n")
+    leak = tmp_path / "leak"
+    hook = tree / ".git" / "hooks" / "pre-commit"
+    hook.write_text(f"#!/bin/sh\nenv > {leak}\n")
+    hook.chmod(0o755)
+    run("config", "planted.key", "agent")
+    return tree, base, leak
+
+
+def test_c2_the_trees_git_runs_without_the_model_key_and_its_hooks(monkeypatch, tmp_path):
+    import subprocess
+    mod = evals()
+    for k, v in MODEL_KEYS.items():
+        monkeypatch.setenv(k, v)
+    tree, _, leak = planted_tree(tmp_path)
+    envs, real = [], subprocess.run
+
+    def spy(argv, *a, **kw):
+        if argv and argv[0] == "git":
+            envs.append(kw.get("env"))
+        return real(argv, *a, **kw)
+    monkeypatch.setattr(mod.subprocess, "run", spy)
+    head = mod.commit_all(str(tree), "chore: what the agent left")
+    assert head, "no commit"
+    assert not leak.exists(), "the tree's own pre-commit hook ran"
+    assert envs, "evals.py ran no git"
+    for env in envs:
+        assert env is not None, "git ran with the whole environment, the model key in it"
+        assert not set(MODEL_KEYS) & set(env), "the model key is in git's environment"
+        assert env.get("GIT_CONFIG_NOSYSTEM") == "1" and env.get("GIT_CONFIG_GLOBAL") == mod.os.devnull
+
+
+def test_c2_the_review_round_reads_a_clone_without_the_trees_hooks_and_config(monkeypatch, tmp_path):
+    mod = evals()
+    has(mod, "review_round")
+    for k, v in MODEL_KEYS.items():
+        monkeypatch.setenv(k, v)
+    tree, base, leak = planted_tree(tmp_path)
+    mod.commit_all(str(tree), "chore: what the agent left")
+    # A stand-in for local-review.sh: what it sees of git, and its findings where it keeps them.
+    root = tmp_path / "root"
+    (root / "scripts").mkdir(parents=True)
+    seen = tmp_path / "seen"
+    (root / "scripts" / "local-review.sh").write_text(
+        "#!/bin/bash\n"
+        f"{{ pwd; git config --list; echo hooks=$(git config core.hooksPath); }} > {seen}\n"
+        "state=$(git rev-parse --git-dir)/dx-review; mkdir -p \"$state\"; echo '- none' > \"$state/findings.md\"\n")
+    body = tmp_path / "pr.md"
+    body.write_text("body\n")
+    got = mod.review_round(str(tree), base, "feat: x", str(body), root=str(root))
+    assert got == (False, "- none\n"), got
+    text = seen.read_text()
+    assert text.splitlines()[0] != str(tree), "the review ran in the tree the agent left"
+    assert "planted.key" not in text, "the review's git read the tree's own config"
+    assert "hooks=/dev/null" in text, "the review's git keeps hooks on"
+    assert not leak.exists()
+
+
 def test_c2_an_autopilot_job_has_the_time_of_its_rounds():
     mod = evals()
     has(mod, "max_rounds")
