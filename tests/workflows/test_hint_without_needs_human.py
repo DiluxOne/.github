@@ -111,6 +111,8 @@ def test_the_hint_brings_it_back_with_no_label_of_a_persons(tmp_path):
     calls = run_back(tmp_path, "autopilot,type:fix", {"role": "the autopilot", "what": "fix round"}).of("gh")
     assert ["issue", "edit", "7", "--repo", "o/r", "--add-label", "autopilot:continue"] in calls
     assert not [c for c in calls if "repos/o/r/issues/9/labels/needs-human" in c], calls
+    # #919: neither added nor removed: no call names needs-human at all.
+    assert not [c for c in calls if any("needs-human" in str(a) for a in c)], calls
 
 
 def test_a_comment_on_one_that_waits_on_a_person_is_a_reply(tmp_path):

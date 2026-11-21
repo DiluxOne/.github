@@ -18,7 +18,7 @@ Every path [the model](model.md) describes, from an issue to its merge or its re
 | A claim | `claim-and-release`, `claim-pull-request` |
 | Merge on its own or by a person | `low-risk-merges`, `merge-queue`, `high-risk-waits`, `bug-by-person-merges` |
 | Its `ceiling` | `high-risk-waits` |
-| The flow with no label by hand | `marker-g1-start`, `conventions-fix`, `hint-no-needs-human`, `settled-rerun` |
+| The flow with no label by hand | `marker-g1-start`, `conventions-fix`, `settled-rerun` |
 
 What each row plays:
 
@@ -34,4 +34,4 @@ What each row plays:
 - **A claim**: as its path above.
 - **Merge on its own or by a person**: a low-risk change merges on its own, through the merge queue too; a high-risk one waits for a person.
 - **Its `ceiling`**: a change past the risk the policy lets merge on its own (`high-risk-waits`, its path high for kind engine-test) waits for a person.
-- **The flow with no label by hand** (#699): an issue with the release lane's mark before its first section passes G1 and the autopilot's start alike; a failed conventions check on the autopilot's pull request starts its fix round, which gives the title back; a hint of someone who decides on one that waits on the autopilot brings it back with no `needs-human`; an answer that settles a review finding runs the review again on the same head. Each moves no label by hand but the acceptance (`hands`), and the file's `flows:` lists them, so one with no scenario fails `coverage`. An edit that makes a refused issue pass (C2) and the release lane's own bug (C6) are no test-repository scenario: `statically:` names the tests that hold them.
+- **The flow with no label by hand** (#699): an issue with the release lane's mark before its first section passes G1 and the autopilot's start alike; a failed conventions check on the autopilot's pull request starts its fix round, which gives the title back; an answer that settles a review finding runs the review again on the same head. Each moves no label by hand but the acceptance (`hands`), and the file's `flows:` lists them, so one with no scenario fails `coverage`. An edit that makes a refused issue pass (C2), a hint of someone who decides on one that waits on the autopilot, which brings it back with no `needs-human` (C4: Test first is red on every scenario's feat pull request, so none lasts waiting on the autopilot, #919), and the release lane's own bug (C6) are no test-repository scenario: `statically:` names the tests that hold them.
