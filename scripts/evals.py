@@ -18,7 +18,9 @@ deterministically wherever a grade exists:
              files name at least half of the files the merged pull request
              changed
   autopilot  the merged pull request's tests pass on the tree the step
-             leaves (the same sandboxes)
+             leaves (the same sandboxes): the production's loop, the work,
+             then the review (local-review.sh) and its fix rounds up to
+             policy/autonomy.yml's `autopilot-rounds` (#840)
   review     flag or clean, as #234 and #847 have it: a known bug is
              found again inside the lines its fix changed, a clean pull
              request is not blocked, each case played 3 times and scored
@@ -64,6 +66,12 @@ the check: it could not tell.
                                CASE; results on stdout (JSON) (the Claude
                                Code CLI, git, the checkout); review:
                                `review-eval.py run [--play N]`
+  evals.py validate [STEP...]  every case of evals/spec/ and evals/autopilot/
+                               (or STEP's) passes on its merged fix, fails on
+                               an assertion at its base, and asserts no
+                               literal of 30 characters or more of the fix's
+                               added lines; exit 1 naming each case that does
+                               not, with the check it fails (#840)
   evals.py matrix [STEP...]    the replay jobs of the steps (args or stdin):
                                [{step, case, n, minutes}] on stdout (JSON)
   evals.py merge STEP FILE...  the step's results from its jobs' FILEs, in
@@ -73,6 +81,8 @@ the check: it could not tell.
                                table on stdout, exit 1 when worse (review:
                                `review-eval.py score FILE...`, one per play)
   evals.py baseline STEP FILE  write the results in FILE as the baseline
+                               (spec, autopilot: only from a run of every
+                               case of the set, each valid by `validate`)
                                (review: `review-eval.py baseline FILE...`)
   evals.py --test              self-test (offline)
 """
@@ -225,7 +235,7 @@ STEPS = {
     "repro": {"paths": (".github/workflows/issue-repro.yml", "scripts/repro-ways.py"),
               "fields": ("issue", "base", "test"), "judge": False, "grade": grade_repro, "minutes": 15},
     "spec": {"paths": (".github/workflows/autopilot.yml", "scripts/autopilot.py"),
-             "fields": ("issue", "title", "body", "base", "type", "files"), "judge": False, "grade": grade_spec, "minutes": 15},
+             "fields": ("issue", "title", "body", "base", "merge", "type", "files"), "judge": False, "grade": grade_spec, "minutes": 15},
     "autopilot": {"paths": (".github/workflows/autopilot.yml", "scripts/autopilot.py"),
                   "fields": ("issue", "title", "body", "base", "merge", "tests"), "judge": False, "grade": grade_autopilot, "minutes": 50},
     "review": {"paths": REVIEW_PATHS, "fields": ("pr", "title", "base", "head"), "judge": False, "grade": verdict, "minutes": 15},
@@ -337,9 +347,23 @@ def load_cases(step, root=ROOT):
         return json.load(fh)
 
 
+# The longest a job of GitHub's hosted runners may run.
+MAX_JOB_MINUTES = 360
+
+
+def job_minutes(step):
+    """A replay job's time: the step's for one case, and the job's own; the
+    autopilot's, its work and each of the production's rounds (a review and
+    a fix), within a hosted job's limit."""
+    if step != "autopilot":
+        return STEPS[step]["minutes"] + JOB_MINUTES
+    rounds = max_rounds()
+    return min(MAX_JOB_MINUTES, STEPS[step]["minutes"] * (1 + rounds) + STEPS["review"]["minutes"] * rounds + JOB_MINUTES)
+
+
 def matrix(steps, root=ROOT):
     """One replay job per case of each step: the matrix evals.yml runs."""
-    return [{"step": s, "case": c["id"], "n": n, "minutes": STEPS[s]["minutes"] + JOB_MINUTES}
+    return [{"step": s, "case": c["id"], "n": n, "minutes": job_minutes(s)}
             for s in steps for n, c in enumerate(load_cases(s, root))]
 
 
@@ -377,8 +401,27 @@ SECRET_ENV = ("GH_TOKEN", "GITHUB_TOKEN")
 CENTRAL_PARTS = ("scripts", "policy", "kinds", "rules", "review-profiles", "design-systems", "org.yml", "repos.yml", "labels.yml", "agents-block.md")
 
 
+# The model's keys: the agent's and the review's CLI need them, git never
+# does (#840).
+MODEL_ENV = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
+# Git with no hooks and no system or global config: what an agent planted
+# around its tree never runs (the tree's own config is never read by the
+# review either: it reads a clone, review_round).
+GIT_SAFE = {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_COUNT": "2", "GIT_CONFIG_KEY_0": "core.hooksPath", "GIT_CONFIG_VALUE_0": "/dev/null",
+            "GIT_CONFIG_KEY_1": "core.fsmonitor", "GIT_CONFIG_VALUE_1": "false"}
+
+
+def git_env(keep_model=False):
+    """The environment git runs in: no token, no model key (unless the
+    review's CLI, which runs it, needs it), hooks and outside config off."""
+    drop = SECRET_ENV + (() if keep_model else MODEL_ENV)
+    return {**{k: v for k, v in os.environ.items() if k not in drop}, **GIT_SAFE}
+
+
 def git(repo_dir, *args):
-    return subprocess.run(["git", "-C", repo_dir, *args], capture_output=True, text=True)
+    return subprocess.run(["git", "-C", repo_dir, "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", *args],
+                          capture_output=True, text=True, env=git_env())
 
 
 def clone_of(case, work, *refs):
@@ -566,7 +609,13 @@ def replay_autopilot(case, work):
     os.makedirs(io, exist_ok=True)
     with open(os.path.join(io, "spec.md"), "w", encoding="utf-8") as fh:
         fh.write(ap.schema.part_text(body, "spec") + "\n")
-    branch = f"eval/{case['issue']}"
+    # The draft the production opens (#840): its branch, title and body,
+    # which the review reads as the pull request's.
+    issue_type = case.get("type") or TYPE_OF.get(case["title"].split(":", 1)[0].split("(", 1)[0].rstrip("!").strip().lower(), "Task")
+    draft = ap.draft(str(case["issue"]), issue_type, case["title"], body)
+    branch = draft["branch"]
+    with open(os.path.join(io, "pr.md"), "w", encoding="utf-8") as fh:
+        fh.write(draft["body"] + "\n")
     git(tree, "checkout", "-q", "-b", branch)
     prompt = ap.prompt_work(case["repo"], case["issue"], 0, branch, prd, ap.left_criteria(body, ""), False)
     try:
@@ -577,11 +626,79 @@ def replay_autopilot(case, work):
     if ask(prompt, args, tree, "autopilot") is None:
         return None
     head = commit_all(tree, "chore: what the agent left")
+    # The production's loop (#840): the review, then a fix round on what it
+    # blocks, up to the production's rounds; graded on the tree it leaves.
+    rounds = max_rounds()
+    try:
+        fix_args = autopilot_args("work", "10")
+    except KeyError as e:
+        print(f"  {case['id']}: {e}", file=sys.stderr)
+        return None
+    # Each round within the job's time: one that could not finish there
+    # leaves the case not replayed, by name, never graded half done.
+    import time
+    ends = time.monotonic() + (job_minutes("autopilot") - JOB_MINUTES - STEPS["autopilot"]["minutes"]) * 60
+    for rnd in range(1, rounds + 1):
+        if time.monotonic() + (STEPS["autopilot"]["minutes"] + STEPS["review"]["minutes"]) * 60 > ends:
+            print(f"  {case['id']}: no time left for fix round {rnd} of {rounds} in the job", file=sys.stderr)
+            return None
+        review = review_round(tree, got[1], draft["title"], os.path.join(io, "pr.md"))
+        if review is None:
+            return None
+        blocking, findings = review
+        if not blocking:
+            break
+        with open(os.path.join(io, "review.md"), "w", encoding="utf-8") as fh:
+            fh.write(findings)
+        if ask(ap.prompt_fix(case["repo"], 0, rnd, rounds), fix_args, tree, "autopilot") is None:
+            return None
+        head = commit_all(tree, f"chore: what fix round {rnd} left")
     # Only now the merged commit comes in, for its tests: the agent is done.
     clone = clone_of(case, work, case["merge"])
     if not clone:
         return None
     return merged_tests(tree, case, clone, head, os.path.join(work, "out", case["id"].replace("/", "_")))
+
+
+def max_rounds(root=ROOT):
+    """The production's limit of review rounds, policy/autonomy.yml's
+    `autopilot-rounds`, read from this checkout before any agent runs."""
+    import yaml
+    with open(os.path.join(root, "policy", "autonomy.yml"), encoding="utf-8") as fh:
+        return int(yaml.safe_load(fh)["autopilot-rounds"])
+
+
+def review_round(tree, base, title, body_file, root=ROOT):
+    """The production's review of the agent's branch, as the autopilot's own
+    pre-review runs it and the pull request's review reads it (the same
+    brief, profile and policy: local-review.sh, the change's own); (blocking,
+    findings) or None when it gave no verdict. An agent that changed this
+    checkout stops the whole run, as in ask."""
+    # The review, whose CLI holds the model key, never runs git in the tree
+    # the agent wrote, whose .git may hold a hook or a config of its own: it
+    # reads a fresh clone of its commits (made without the key), with no
+    # hooks and no outside config, under the tree's own name.
+    review = os.path.join(os.path.dirname(os.path.abspath(tree)), "review", os.path.basename(os.path.abspath(tree)))
+    shutil.rmtree(review, ignore_errors=True)
+    os.makedirs(os.path.dirname(review), exist_ok=True)
+    if git(os.path.dirname(review), "clone", "-q", "--no-hardlinks", os.path.abspath(tree), review).returncode != 0:
+        return None
+    git(review, "remote", "remove", "origin")
+    env = git_env(keep_model=True)
+    findings = os.path.join(review, ".git", "dx-review", "findings.md")
+    before = fingerprint(root)
+    try:
+        got = subprocess.run(["bash", os.path.join(root, "scripts", "local-review.sh"), "--base", base, "--title", title, "--body-file", body_file, "--full"],
+                             cwd=review, env=env, capture_output=True, text=True, timeout=STEPS["review"]["minutes"] * 60)
+    except subprocess.TimeoutExpired:
+        return None
+    finally:
+        if fingerprint(root) != before:
+            raise SystemExit(f"evals.py: the review of the autopilot's work changed {root}; the run stops, nothing of it is graded")
+    if got.returncode not in (0, 1) or not os.path.isfile(findings):
+        return None
+    with open(findings, encoding="utf-8") as fh:
+        return got.returncode == 1, fh.read()
 
 
 def merged_tests(tree, case, clone, head, out):
@@ -593,6 +710,148 @@ def merged_tests(tree, case, clone, head, out):
     if git(tree, "fetch", "-q", clone, case["merge"]).returncode != 0:
         return None
     return {t: run_test(tree, case, case["base"], t, head, case["merge"], os.path.join(out, str(i)), "feat: replay") for i, t in enumerate(case["tests"])}
+
+
+# Validating the cases (#840): a case measures the task only if it passes
+# on its merged fix, fails on an assertion at its base, and asserts none of
+# the fix's own literals (a test that greps the fix's sentences passes for
+# whoever copies them, and fails for any other right answer).
+
+# A literal this long, in the fix's added lines and in what the case
+# asserts, is the fix's own text, not its behaviour.
+LITERAL = 30
+QUOTED = re.compile(r"\"((?:[^\"\\\n]|\\.){%d,})\"|'((?:[^'\\\n]|\\.){%d,})'" % (LITERAL, LITERAL))
+# The steps whose cases `validate` holds to the rule.
+VALIDATED = ("spec", "autopilot")
+
+
+def literals(text, n=LITERAL):
+    """The quoted strings of TEXT of N characters or more."""
+    return {a or b for a, b in QUOTED.findall(text or "") if len(a or b) >= n}
+
+
+def added_lines(diff, exclude):
+    """The `+` lines of a unified DIFF, the files of EXCLUDE (the case's own
+    tests) left out: the merged fix's added text, one line each."""
+    out, skip = [], False
+    for line in (diff or "").splitlines():
+        if line.startswith("+++ "):
+            path = line[4:].strip()
+            skip = (path[2:] if path.startswith("b/") else path) in exclude
+        elif line.startswith("+") and not skip:
+            out.append(line[1:])
+    return "\n".join(out)
+
+
+def asserted_literals(path, text, n=LITERAL):
+    """The literals of N characters or more that the test at PATH asserts:
+    in Python, the strings inside its assert statements (a path it opens or
+    a fixture it builds asserts nothing); in any other file, or one Python
+    cannot parse, every quoted string."""
+    if path.endswith(".py"):
+        import ast
+        try:
+            tree = ast.parse(text or "")
+        except SyntaxError:
+            return literals(text, n)
+        return {c.value for a in ast.walk(tree) if isinstance(a, ast.Assert)
+                for c in ast.walk(a) if isinstance(c, ast.Constant) and isinstance(c.value, str) and len(c.value) >= n}
+    return literals(text, n)
+
+
+def leaks(asserted, added):
+    """The literals of ASSERTED (a set) that the fix's ADDED lines carry:
+    the fix's own words, asserted."""
+    return sorted(x for x in asserted if x in added)
+
+
+def spec_answer(case):
+    """The merged issue's real PRD and Spec, as replay_spec hands them to
+    the grade; and its PRD alone, the base's (no `Spec: files`)."""
+    schema = _load("issue_schema", "issue-schema.py")
+    body = case.get("body") or ""
+    prd = schema.part_text(body, "prd")
+    return prd + "\n\n" + schema.part_text(body, "spec"), prd + "\n"
+
+
+def check_case(step, case, facts):
+    """What makes CASE invalid, one `<check>: <why>` each (merge, base,
+    literal), from its FACTS: for autopilot {merge, base: {test: outcome},
+    added, tests_text: {test: text at merge}}; for spec {added}."""
+    problems = []
+    if step == "spec":
+        merged, prd = spec_answer(case)
+        if grade_spec(case, {"body": merged}) is not True:
+            problems.append("merge: the merged issue's own Spec does not pass the grade")
+        if grade_spec(case, {"body": prd}) is not False:
+            problems.append("base: the PRD alone does not fail the grade")
+        # A spec case asserts the files the Spec names: a string literal of
+        # the fix's added lines that is in one of them is the fix's text.
+        files = "\n".join(case.get("files") or [])
+        asserted = {x for x in literals(facts.get("added") or "") if x in files}
+    else:
+        at_merge, at_base = facts.get("merge") or {}, facts.get("base") or {}
+        not_passing = [f"{t} ({at_merge.get(t)})" for t in case["tests"] if at_merge.get(t) != "passed"]
+        if not_passing:
+            problems.append("merge: does not pass on its merged fix: " + ", ".join(not_passing))
+        # "reproduced": the test ran and failed on an assertion; broken (an
+        # error, a collection error) or no outcome is no measure.
+        broken = [f"{t} ({at_base.get(t)})" for t in case["tests"] if at_base.get(t) not in ("reproduced", "passed")]
+        if broken:
+            problems.append("base: breaks at its base without failing an assertion: " + ", ".join(broken))
+        elif not any(at_base.get(t) == "reproduced" for t in case["tests"]):
+            problems.append("base: every test passes at its base, so none fails on an assertion")
+        asserted = set().union(*(asserted_literals(t, (facts.get("tests_text") or {}).get(t) or "") for t in case["tests"]))
+    leaked = leaks(asserted, facts.get("added") or "")
+    if leaked:
+        problems.append("literal: asserts the merged fix's own text: " + "; ".join(repr(x[:60]) for x in leaked[:3]))
+    return problems
+
+
+def facts_of(step, case, work):
+    """What check_case reads, from the case's repository at its base and its
+    merge (the tests run through test-first.py's sandbox, as merged_tests
+    runs them); None when it cannot be had."""
+    clone = clone_of(case, work, case["base"], case["merge"])
+    if not clone:
+        return None
+    diff = git(clone, "diff", case["base"], case["merge"])
+    if diff.returncode != 0:
+        return None
+    # The case's own tests and their fixtures (every file under tests/, as
+    # collect leaves them out of a spec case's files): what they quote is
+    # no fix's text.
+    changed = git(clone, "diff", "--name-only", case["base"], case["merge"]).stdout.split()
+    added = added_lines(diff.stdout, {f for f in changed if f.startswith("tests/")})
+    if step == "spec":
+        return {"added": added}
+    out = os.path.join(work, "validate", re.sub(r"[^A-Za-z0-9._-]", "_", case["id"]))
+    at = {}
+    for ref in ("merge", "base"):
+        at[ref] = {t: run_test(clone, case, case["base"], t, case[ref], case["merge"], os.path.join(out, ref, str(i)), "feat: validate")
+                   for i, t in enumerate(case["tests"])}
+    texts = {t: git(clone, "show", f"{case['merge']}:{t}").stdout for t in case["tests"]}
+    return {**at, "added": added, "tests_text": texts}
+
+
+def validate(step, cases, work):
+    """[(case id, its first problem)] for every case of STEP's set that is
+    not valid; a case whose facts cannot be had is not valid either."""
+    if cases:
+        preload()
+    bad = []
+    for c in cases:
+        try:
+            got = facts_of(step, c, work)
+        except Exception as e:  # one case never stops the check: it is invalid, by name
+            got, why = None, f"{type(e).__name__}: {e}"
+        else:
+            why = "its repository, base or merge could not be had"
+        problems = check_case(step, c, got) if got is not None else [f"facts: {why}"]
+        print(f"  {c['id']}: " + ("valid" if not problems else "; ".join(problems)), file=sys.stderr)
+        if problems:
+            bad.append((c["id"], problems[0]))
+    return bad
 
 
 # Triage's and reply's replays come with their sets (from GitHub), and
@@ -648,7 +907,7 @@ def cases_from_commits(step, repo, commits, n):
         issue = int(closes.group(1))
         base = {"id": f"{repo}#{issue}:{step}", "repo": repo, "issue": issue, "pr": int(pr.group(1)), "base": c["parent"]}
         if step == "spec":
-            out.append({**base, "type": TYPE_OF.get(kind, "Task"), "files": rest, "expect": "named"})
+            out.append({**base, "merge": c["sha"], "type": TYPE_OF.get(kind, "Task"), "files": rest, "expect": "named"})
         else:
             out.append({**base, "merge": c["sha"], "tests": tests, "expect": "passed"})
     return out
@@ -673,8 +932,43 @@ def collect(step, n, root=ROOT):
     if step not in ("repro", "spec", "autopilot"):
         raise SystemExit(f"evals.py: {step}'s cases come from GitHub, which `collect` does not read yet; add them to evals/{step}/cases.json by hand")
     # This checkout is the organisation's public .github repository.
-    cases = cases_from_commits(step, f"{org.ORG}/.github", git_commits(root), n)
-    return cases if step == "repro" else [pin_issue(c) for c in cases]
+    if step == "repro":
+        return cases_from_commits(step, f"{org.ORG}/.github", git_commits(root), n)
+    # The set's own cases first, as they are pinned, then every candidate
+    # of the history, and only the valid ones, up to N (#840): a case that
+    # does not measure the task never enters the set, and none enters twice.
+    import itertools
+    import tempfile
+    preload()
+    work, out = tempfile.mkdtemp(prefix="dx-collect-"), []
+    try:
+        mine = load_cases(step, root)
+    except FileNotFoundError:
+        mine = []
+    seen = {c["id"] for c in mine}
+    history = (c for c in cases_from_commits(step, f"{org.ORG}/.github", git_commits(root), 10 ** 6) if c["id"] not in seen)
+    for c in itertools.chain(mine, history):
+        if len(out) >= n:
+            break
+        c = c if c["id"] in seen else pin_issue(c)
+        got = facts_of(step, c, work)
+        kept = rewritten(step, c, got) if got is not None else None
+        print(f"  {c['id']}: " + ("kept" if kept else "not valid, left out"), file=sys.stderr)
+        if kept:
+            out.append(kept)
+    return out
+
+
+def rewritten(step, case, facts):
+    """CASE made valid from its FACTS, or None: an autopilot case keeps the
+    merged tests that are valid alone (they pass on the fix, fail on an
+    assertion at the base, and assert none of its literals); a spec case is
+    valid as it is, or not at all."""
+    if step == "autopilot":
+        case = {**case, "tests": [t for t in case["tests"] if not check_case(step, {**case, "tests": [t]}, facts)]}
+        if not case["tests"]:
+            return None
+    return case if not check_case(step, case, facts) else None
 
 
 def write_json(path, data):
@@ -808,6 +1102,23 @@ def self_test():
     check("run: a step with no replay yet leaves every case unreplayed", [[r["ok"] for r in run(s, [{"id": "x", "expect": "resolved"}], "/nonexistent")] for s in ("repro", "reply")], [[None], [None]])
     check("steps: a step with no set is listed by its paths, never run", (steps_of([".github/workflows/issue-repro.yml"]), steps_of([".github/workflows/issue-repro.yml"], with_set=True)), (["repro"], []))
 
+    # Validating a case (#840): on its fix, on an assertion at its base, none
+    # of the fix's literals asserted.
+    long_ = "a sentence of the fix, long enough to count"
+    diff = f'+++ b/s.py\n+M = "{long_}"\n+++ b/tests/t.py\n+assert "a literal only the test adds, long enough" in x\n'
+    check("validate: the fix's added lines, its tests left out", (long_ in added_lines(diff, {"tests/t.py"}), "only the test" in added_lines(diff, {"tests/t.py"})), (True, False))
+    check("validate: the literals a Python test asserts, not those it opens",
+          asserted_literals("t.py", f'open("{long_}")\nassert x == "{"y" * 30}"\n'), {"y" * 30})
+    ac = {"id": "a", "tests": ["t.py"]}
+    fa = lambda b, m="passed", text="assert f() == 0\n": {"base": {"t.py": b}, "merge": {"t.py": m}, "added": added_lines(diff, {"tests/t.py"}), "tests_text": {"t.py": text}}
+    check("validate: an autopilot case's checks", [[p.split(":")[0] for p in check_case("autopilot", ac, f)] for f in (
+          fa("reproduced"), fa("broken"), fa("passed"), fa("reproduced", "reproduced"), fa("reproduced", text=f'assert "{long_}" in out\n'))],
+          [[], ["base"], ["base"], ["merge"], ["literal"]])
+    check("validate: a case is rewritten to its valid tests, or left out", (rewritten("autopilot", ac, fa("reproduced")), rewritten("autopilot", ac, fa("broken"))), (ac, None))
+    sc = {"type": "Bug", "files": ["header.php", "assets/dark.css"], "body": spec}
+    check("validate: a spec case passes on its own Spec, and fails on its PRD alone", (check_case("spec", sc, {"added": ""}), [p.split(":")[0] for p in check_case("spec", {**sc, "files": ["x.php"]}, {"added": ""})]),
+          ([], ["merge"]))
+
     # Collecting from git: the reproduced bugs, the accepted issues.
     commits = [{"sha": "m1", "parent": "p1", "subject": "fix: the bug reproduced from #41 (#42)", "body": "Closes #43.", "files": ["scripts/a.py", "tests/repro/test_issue_41.py"]},
                {"sha": "m2", "parent": "p2", "subject": "feat(x)!: b (#45)", "body": "Closes #44.", "files": ["scripts/b.py", "tests/workflows/test_b.py", "CHANGELOG.md"]},
@@ -917,6 +1228,22 @@ def main(argv):
                 return 1
         print(json.dumps(run(argv[1], cases, tempfile.mkdtemp(prefix="dx-eval-")), indent=2))
         return 0
+    if argv[:1] == ["validate"] and all(s in STEPS for s in argv[1:]):
+        import tempfile
+        bad = []
+        # A step whose cases the rule does not cover yet (#735's follow-up)
+        # is said, never validated by another's rule.
+        for step in argv[1:]:
+            if step not in VALIDATED:
+                print(f"{step}: its cases are not validated yet (evals.py VALIDATED).")
+        for step in [s for s in argv[1:] if s in VALIDATED] if len(argv) > 1 else VALIDATED:
+            bad += validate(step, load_cases(step), tempfile.mkdtemp(prefix="dx-validate-"))
+        for case_id, why in bad:
+            print(f"{case_id}: {why}")
+            print(f"::error::{case_id} is not a valid case: {why}", file=sys.stderr)
+        if not bad:
+            print("Every case is valid: it passes on its merged fix, fails on an assertion at its base, and asserts none of the fix's own literals.")
+        return 1 if bad else 0
     if argv[:1] == ["matrix"]:
         steps = argv[1:] or [line.strip() for line in sys.stdin if line.strip()]
         if any(s not in STEPS or s in ELSEWHERE or not has_set(s) for s in steps):
@@ -942,6 +1269,20 @@ def main(argv):
             if unrun:
                 print(f"evals.py: {unrun} cases were not replayed; a baseline is written only from a whole run", file=sys.stderr)
                 return 1
+            if step in VALIDATED:
+                # #840: only from a run of the whole set, every case valid
+                # and replayed.
+                import tempfile
+                cases = load_cases(step)
+                left = sorted({c["id"] for c in cases} - {r["id"] for r in results})
+                if left:
+                    print(f"evals.py: the run left out {', '.join(left)}; a baseline is written only from a run of every case of the set", file=sys.stderr)
+                    return 1
+                bad = validate(step, cases, tempfile.mkdtemp(prefix="dx-validate-"))
+                if bad:
+                    print("evals.py: a baseline is written only from a set whose every case is valid; not valid: "
+                          + "; ".join(f"{i} ({why})" for i, why in bad), file=sys.stderr)
+                    return 1
             write_json(baseline, now)
             print(json.dumps(now))
             return 0
