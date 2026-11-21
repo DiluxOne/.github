@@ -19,7 +19,7 @@ name: Weekly failure
 #     permissions:
 #       contents: read
 #       issues: write
-#     uses: DiluxOne/.github/.github/workflows/weekly-failure.yml@v7
+#     uses: DiluxOne/.github/.github/workflows/weekly-failure.yml@v7-next
 #     secrets:
 #       DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
 
