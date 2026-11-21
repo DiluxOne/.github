@@ -5,8 +5,11 @@ name: Review evaluation
 # Every case of evals/review/cases.json, real pull requests of the public
 # repositories (a bug the review found and was fixed, which it must find
 # again in the hunk its fix changed; a clean one it must not block), is reviewed again with
-# the rules of this pull request (scripts/local-review.sh, the same brief
-# the review reads) and scored against evals/review/baseline.json
+# the rules of this pull request the way production reviews a pull request
+# (#930): the brief for its pull request in full mode, claude-review.yml's
+# own review and verify steps (their prompts and args, read from it), and
+# the verified output (scripts/review-eval.py run). The play's read-only
+# token reads each case's closing issue for its criteria. It is scored against evals/review/baseline.json
 # (scripts/review-eval.py). Worse by more than one case on either side
 # fails this check, and the table says which cases. It is the review step
 # of every AI step's evaluation (#735, scripts/evals.py, which runs
@@ -21,7 +24,8 @@ name: Review evaluation
 # played 3 times, one job per play, and a last job scores each case's
 # median (2 of 3 plays).
 #
-# Paid: each case is one review per play (60 for 20 cases). It runs only
+# Paid: each case is one review per play, and one verification when it
+# raised a blocker or major (60 reviews for 20 cases). It runs only
 # when a pull request touches the review, from a branch of this repository
 # (a fork's code never runs with the keys), and by hand. Private
 # repositories are never cases: their code would show in this public
@@ -46,6 +50,8 @@ on:
       - scripts/local-review.sh
       - scripts/review-verify.py
       - scripts/review-count.py
+      - scripts/review-eval.py
+      - scripts/policy.py
       - .github/workflows/claude-review.yml
       - policy/autonomy.yml
       - evals/review/**
@@ -122,6 +128,9 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
           DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN }}
           DX_BOT_ID: ${{ vars.DX_BOT_ID }}
+          # Read-only (contents: read): each case's closing issue, for its
+          # criteria, as the review's brief step reads them.
+          GH_TOKEN: ${{ github.token }}
           PLAY: ${{ matrix.play }}
         run: |
           set -euo pipefail

@@ -18,8 +18,16 @@ The cases are real pull requests of the organisation's public repositories
          no thread at all. The review must not block it.
 
 Each case is reviewed again, with the rules as they stand in the checkout,
-by scripts/local-review.sh (the same brief, profiles and model the pull
-request's review uses), PLAYS (3) times, each on a fresh checkout, and
+the way production reviews a pull request (#930): the brief for its pull
+request in full mode (scripts/review-brief.sh, with the per-file diffs, the
+policy's floor, model and effort, and the criteria of the issue it closes,
+GH_TOKEN, read), then claude-review.yml's own review step (its `prompt`
+and `claude_args`, read from the workflow at run time, so the two cannot
+drift; an expression in them the evaluation does not fill in fails the run
+by its name), then its verify step (scripts/review-verify.py), and the
+verified output is scored. Only earlier threads and a previous verdict are
+left out (they would hand the answer over), and nothing is posted. PLAYS
+(3) times, each on a fresh checkout, and
 scored on its median: found, or blocked, when 2 of 3 plays say so (a play
 that could not be reviewed is dropped; fewer than 2 reviewed is
 unreviewed). The set holds at least MIN_CASES (10) cases of each kind, or
@@ -37,7 +45,8 @@ one case on either side.
   review-eval.py run [--play N]
                                check the set, then review every case, all
                                the plays or play N alone; results on stdout
-                               (JSON) (the Claude Code CLI, git, the checkout)
+                               (JSON) (the Claude Code CLI, git, the checkout,
+                               GH_TOKEN to read the criteria)
   review-eval.py score FILE... the results in the FILEs (one per play, or a
                                whole run) against the baseline: a table on
                                stdout, exit 1 when worse
@@ -46,9 +55,11 @@ one case on either side.
                                run of every play alone)
   review-eval.py --test        self-test
 """
+import importlib.util
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -360,7 +371,7 @@ def as_line(v):
 
 def verdict(case, review):
     """Whether the review did what the case expects. review is
-    local-review.sh's last.json, or None when it gave none."""
+    the verified review output, or None when it gave none."""
     if not isinstance(review, dict):
         return None
     serious = [f for f in review.get("findings") or [] if isinstance(f, dict)
@@ -377,32 +388,193 @@ def verdict(case, review):
     return not serious
 
 
-def run_case(case, central, work):
-    """Review one case; True, False, or None when it could not be reviewed."""
+def review_workflow():
+    # DX_EVAL_REVIEW_WORKFLOW stands in for claude-review.yml in the tests.
+    return os.environ.get("DX_EVAL_REVIEW_WORKFLOW") or os.path.join(ROOT, ".github", "workflows", "claude-review.yml")
+
+
+def review_steps(path=None):
+    """The review's and the verifier's `prompt` and `claude_args`, read from
+    claude-review.yml's steps of id `claude` and `verify` (#930 C1): the
+    evaluation plays what production runs, and cannot drift from it."""
+    import yaml
+    with open(path or review_workflow(), encoding="utf-8") as fh:
+        wf = yaml.safe_load(fh) or {}
+    found = {}
+    for job in (wf.get("jobs") or {}).values():
+        for s in (job or {}).get("steps") or []:
+            if isinstance(s, dict) and s.get("id") in ("claude", "verify"):
+                w = s.get("with") or {}
+                found["review" if s["id"] == "claude" else "verify"] = {"prompt": str(w.get("prompt") or ""), "args": str(w.get("claude_args") or "")}
+    missing = [k for k in ("review", "verify") if not found.get(k, {}).get("prompt") or not found[k]["args"]]
+    if missing:
+        raise ValueError(f"{path or review_workflow()} has no {' or '.join(missing)} step with a prompt and claude_args")
+    return found
+
+
+# The expressions of the review's and the verifier's steps the evaluation
+# fills in; any other fails the run by its name (#930 C1).
+KNOWN = ("github.repository", "github.event.pull_request.number", "steps.scope.outputs.model",
+         "steps.scope.outputs.effort", "steps.policy.outputs.budget || '3'", "steps.verify-task.outputs.prompt")
+
+
+def fill(text, values):
+    """text with each `${{ expr }}` replaced by values[expr]; ValueError
+    naming the first expression values does not know."""
+    def one(m):
+        expr = m.group(1).strip()
+        if expr not in values:
+            raise ValueError(f"the review's workflow uses ${{{{ {expr} }}}}, which the evaluation does not fill in")
+        return str(values[expr])
+    return re.sub(r"\$\{\{(.*?)\}\}", one, text, flags=re.S)
+
+
+def check_steps(steps):
+    """'' when every expression of steps is one the evaluation fills, else why."""
+    dummy = {k: "x" for k in KNOWN}
+    try:
+        for s in steps.values():
+            fill(s["prompt"], dummy)
+            fill(s["args"], dummy)
+    except ValueError as e:
+        return str(e)
+    return ""
+
+
+def claude_bin():
+    # DX_EVAL_CLAUDE stands in for the Claude Code CLI in the tests.
+    return os.environ.get("DX_EVAL_CLAUDE") or "claude"
+
+
+def ask(prompt, args, cwd):
+    """One `claude -p` with production's args; its structured output, or None."""
+    try:
+        # One call never holds the run: 25 minutes, the review step's limit.
+        out = subprocess.run([claude_bin(), "-p", prompt, *shlex.split(args), "--output-format", "json"], cwd=cwd,
+                             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=1500)
+        got = json.loads(out.stdout or "null")
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+    got = got.get("structured_output") if isinstance(got, dict) else None
+    if isinstance(got, str):
+        try:
+            got = json.loads(got)
+        except ValueError:
+            return None
+    return got if isinstance(got, dict) else None
+
+
+def pr_text(repo, pr):
+    """The pull request's description and the acceptance criteria of the one
+    issue it closes, as claude-review.yml's brief step reads them (GH_TOKEN,
+    read); ('', '') when they cannot be read."""
+    if not os.environ.get("GH_TOKEN"):
+        return "", ""
+    try:
+        got = json.loads(gh("pr", "view", str(pr), "--repo", repo, "--json", "body,closingIssuesReferences"))
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        return "", ""
+    body = got.get("body") or ""
+    closes = [i.get("number") for i in got.get("closingIssuesReferences") or []]
+    if len(closes) != 1:
+        return body, ""
+    try:
+        issue = gh("issue", "view", str(closes[0]), "--repo", repo, "--json", "body", "--jq", ".body")
+        crit = subprocess.run(["python3", os.path.join(HERE, "issue-schema.py"), "criteria"], input=issue, capture_output=True, text=True)
+    except (OSError, subprocess.CalledProcessError):
+        return body, ""
+    return body, crit.stdout if crit.returncode == 0 else ""
+
+
+def policy_of(case, repo_dir, work):
+    """policy.py's outputs for the case, as claude-review.yml's policy step
+    computes them: the repository's policy from the base, the files the
+    pull request changes."""
+    git = lambda *a: subprocess.run(["git", "-C", repo_dir, *a], capture_output=True, text=True)
+    repo_policy = os.path.join(work, "repo-policy.yml")
+    shown = git("show", f"{case['base']}:.github/review-policy.yml")
+    with open(repo_policy, "w", encoding="utf-8") as fh:
+        fh.write(shown.stdout if shown.returncode == 0 else "")
+    names = git("diff", "--name-status", "-M", f"{case['base']}...{case['head']}").stdout
+    changed = "\n".join(p for line in names.splitlines() for p in line.split("\t")[1:])
+    out = os.path.join(work, "policy.out")
+    open(out, "w").close()
+    env = {**os.environ, "DEFAULT_POLICY": os.path.join(ROOT, "policy", "review-policy.default.yml"), "REPO_POLICY": repo_policy,
+           "CHANGED_FILES": changed, "GITHUB_OUTPUT": out, "GITHUB_REPOSITORY": case["repo"], "PR": str(case["pr"])}
+    subprocess.run(["python3", os.path.join(HERE, "policy.py")], cwd=repo_dir, env=env, capture_output=True, text=True)
+    got = {}
+    with open(out, encoding="utf-8") as fh:
+        for line in fh:
+            k, _, v = line.rstrip("\n").partition("=")
+            got[k] = v
+    return got
+
+
+def play_review(case, repo_dir, work, steps):
+    """Production's review of the case's checkout: the brief for its pull
+    request in full mode (scripts/review-brief.sh, as the brief step builds
+    it), the review step's prompt and args, then the verify step's
+    (scripts/review-verify.py prompt and apply). The verified output, or
+    None when the review gave none. No earlier threads or verdict (they
+    would hand the answer over), and nothing is posted."""
+    pol = policy_of(case, repo_dir, work)
+    model = pol.get("model") or "claude-sonnet-5-5"
+    effort = pol.get("effort") or "medium"
+    body, criteria = pr_text(case["repo"], case["pr"])
+    crit = os.path.join(work, "criteria.md")
+    with open(crit, "w", encoding="utf-8") as fh:
+        fh.write(criteria)
+    central = os.path.join(repo_dir, ".dx-central")
+    os.makedirs(central, exist_ok=True)
+    env = {**os.environ, "REPO": case["repo"], "TITLE": case.get("title") or "", "BODY": body, "BASE": case["base"], "HEAD": case["head"],
+           "PR": str(case["pr"]), "MODE": "full", "RANGE": "", "LAST": "", "FLOOR": pol.get("floor") or "high", "REASONS": pol.get("reasons") or "",
+           "PROFILE": "general", "KIND": pol.get("kind") or "", "CRITERIA": crit, "CENTRAL": ROOT, "WORK": work,
+           "OUT": ".dx-central/brief.md", "DIFF_DIR": ".dx-central/diff"}
+    for k in ("PREVIOUS_JSON", "OPEN_THREADS", "SETTLED_THREADS"):
+        env.pop(k, None)
+    if subprocess.run(["bash", os.path.join(HERE, "review-brief.sh")], cwd=repo_dir, env=env, capture_output=True, text=True).returncode != 0:
+        return None
+    values = {"github.repository": case["repo"], "github.event.pull_request.number": case["pr"], "steps.scope.outputs.model": model,
+              "steps.scope.outputs.effort": effort, "steps.policy.outputs.budget || '3'": pol.get("budget") or "3"}
+    review = ask(fill(steps["review"]["prompt"], values), fill(steps["review"]["args"], values), repo_dir)
+    if review is None:
+        return None
+    verify = subprocess.run(["python3", os.path.join(HERE, "review-verify.py"), "prompt"], input=json.dumps(review), capture_output=True, text=True)
+    verdicts = None
+    if verify.returncode == 0 and verify.stdout.strip():
+        values["steps.verify-task.outputs.prompt"] = verify.stdout
+        verdicts = ask(fill(steps["verify"]["prompt"], values), fill(steps["verify"]["args"], values), repo_dir)
+    return verify_apply(review, verdicts)
+
+
+def verify_apply(review, verdicts):
+    """scripts/review-verify.py's apply: the review with the rejected ones demoted."""
+    sys.path.insert(0, HERE)
+    spec = importlib.util.spec_from_file_location("review_verify", os.path.join(HERE, "review-verify.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.apply(review, verdicts)
+
+
+def run_case(case, central, work, steps=None):
+    """Review one case as production does; True, False, or None when it
+    could not be reviewed."""
+    steps = steps or review_steps()
+    os.makedirs(work, exist_ok=True)
     repo_dir = os.path.join(work, case["repo"].replace("/", "_"))
     git = lambda *a: subprocess.run(["git", "-C", repo_dir, *a], capture_output=True, text=True)
     if not os.path.isdir(repo_dir):
-        if subprocess.run(["git", "clone", "-q", git_url(case["repo"]), repo_dir]).returncode != 0:
+        if subprocess.run(["git", "clone", "-q", git_url(case["repo"]), repo_dir], capture_output=True).returncode != 0:
             return None
     git("fetch", "-q", "origin", f"refs/pull/{case['pr']}/head", case["base"])
     if git("cat-file", "-e", case["head"] + "^{commit}").returncode != 0:
         git("fetch", "-q", "origin", case["head"])
-    if git("checkout", "-q", "-B", f"eval/{case['pr']}", case["head"]).returncode != 0:
+    # A clean tree for each case: the last case's brief and diffs go.
+    git("clean", "-qfdx")
+    if git("checkout", "-q", "-f", "-B", f"eval/{case['pr']}", case["head"]).returncode != 0:
         return None
-    state = os.path.join(repo_dir, ".git", "dx-review", "last.json")
-    if os.path.exists(state):
-        os.remove(state)
-    try:
-        # One case never holds the run: 15 minutes, then it is unreviewed.
-        subprocess.run(["bash", os.path.join(central, "scripts", "local-review.sh"), "--base", case["base"], "--full", "--title", case["title"]],
-                       cwd=repo_dir, capture_output=True, text=True, timeout=900)
-    except subprocess.TimeoutExpired:
-        return None
-    try:
-        with open(state, encoding="utf-8") as fh:
-            return verdict(case, json.load(fh))
-    except (OSError, ValueError):
-        return None
+    case_work = tempfile.mkdtemp(prefix="dx-case-", dir=work)
+    return verdict(case, play_review(case, repo_dir, case_work, steps))
 
 
 def short(items):
@@ -553,6 +725,17 @@ def main(argv):
         with open(argv[1] if len(argv) == 2 else CASES, encoding="utf-8") as fh:
             return check(json.load(fh))
     if argv[:1] == ["run"] and (len(argv) == 1 or (len(argv) == 3 and argv[1] == "--play" and argv[2] in [str(n) for n in range(1, PLAYS + 1)])):
+        # The review's workflow is read first: an expression the evaluation
+        # does not fill in fails the run by its name, before any review.
+        try:
+            steps = review_steps()
+        except (OSError, ValueError) as e:
+            print(f"review-eval.py: {e}", file=sys.stderr)
+            return 1
+        why = check_steps(steps)
+        if why:
+            print(f"review-eval.py: {why}", file=sys.stderr)
+            return 1
         with open(CASES, encoding="utf-8") as fh:
             cases = json.load(fh)
         # A set that does not hold is refused before any paid review (#844).

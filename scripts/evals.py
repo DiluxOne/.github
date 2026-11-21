@@ -130,6 +130,8 @@ REVIEW_PATHS = (
     "scripts/local-review.sh",
     "scripts/review-verify.py",
     "scripts/review-count.py",
+    "scripts/review-eval.py",
+    "scripts/policy.py",
     ".github/workflows/claude-review.yml",
 )
 TEST_FILE = re.compile(r"tests/(?:repro/(?:.+/)?|workflows/)test_[^/]+\.py")
