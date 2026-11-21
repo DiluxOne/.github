@@ -6,6 +6,7 @@ review and fix rounds, and a baseline is written only from a run of valid,
 replayed cases (C2)."""
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,11 @@ def evals():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def kind(problem):
+    """The check a problem names: its first word (merge, base, literal, facts)."""
+    return re.match(r"[a-z]+", problem).group(0)
 
 
 def has(mod, name):
@@ -90,7 +96,7 @@ def test_c1_a_valid_autopilot_case_has_no_problem():
 ])
 def test_c1_an_invalid_autopilot_case_fails_the_check_it_breaks(kw, check):
     problems = has(evals(), "check_case")("autopilot", AUTO, facts(**kw))
-    assert [p.split(":", 1)[0] for p in problems] == [check], problems
+    assert [kind(p) for p in problems] == [check], problems
 
 
 def spec_case(files, body):
@@ -113,12 +119,12 @@ def test_c1_a_spec_case_passes_on_its_merged_spec_and_fails_on_the_prd_alone():
     assert check_case("spec", good, {"added": ""}) == []
     # The issue's real Spec names other files than the merge changed: no pass on its fix.
     other = spec_case(["a.php", "b.php", "c.php"], body(SPEC))
-    assert [p.split(":", 1)[0] for p in check_case("spec", other, {"added": ""})] == ["merge"]
+    assert [kind(p) for p in check_case("spec", other, {"added": ""})] == ["merge"]
     # A file the case asserts that is a literal the fix's lines carry.
     leak = spec_case(["header.php", "assets/dark.css"], body(SPEC))
     added = has(mod, "added_lines")('diff --git a/x b/x\n+++ b/x\n+PATH = "assets/dark.css is where the new theme lives now"\n', [])
     problems = check_case("spec", {**leak, "files": ["assets/dark.css is where the new theme lives now"]}, {"added": added})
-    assert "literal" in [p.split(":", 1)[0] for p in problems], problems
+    assert "literal" in [kind(p) for p in problems], problems
 
 
 def test_c1_validate_names_each_invalid_case_and_exits_1(monkeypatch, capsys):
