@@ -111,7 +111,7 @@ def test_the_action_gets_a_short_pointer_not_the_prompt(tmp_path):
     git(work, "init", "-q", "-b", "main")
     git(work, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "start")
     git(work, "update-ref", "refs/remotes/origin/main", "HEAD")
-    big = "a long task " * (20 * KIB)
+    big = "a long task " * (20 * KIB) + "\n"
     ran = run(step("autopilot.yml", "task", "work"), tmp_path, env={"DEFAULT": "main"}, files={".dx-io/prompt.md": big})
     assert ran.code == 0, ran.stderr
     pointer = ran.output["prompt"]
@@ -123,7 +123,7 @@ def test_the_action_gets_a_short_pointer_not_the_prompt(tmp_path):
 
 
 def test_the_spec_job_gets_the_pointer_too(tmp_path):
-    ran = run(step("autopilot.yml", "task", "spec"), tmp_path, files={".dx-io/prompt.md": "x" * (200 * KIB)})
+    ran = run(step("autopilot.yml", "task", "spec"), tmp_path, files={".dx-io/prompt.md": "x" * (200 * KIB) + "\n"})
     assert ran.code == 0, ran.stderr
     pointer = ran.output["prompt"]
     size = len(pointer.encode("utf-8"))
