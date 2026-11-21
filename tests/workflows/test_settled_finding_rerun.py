@@ -246,3 +246,134 @@ def test_settled_rerun_waits_for_the_blocking_review_before_it_settles():
     assert got and got[0] == 'no comment with "blocking":true', got
     blocked = record.replace('"blocking":false', '"blocking":true')
     assert scenarios.holds(waits[-1], {"comments": [blocked]}) == []
+
+
+# #912: on the release lane the review blocked, the scenario's decider wrote
+# its comment below, and the reply model refused to settle ("Your word that
+# the token is a fake helps, but it doesn't settle this"), so `settles` was
+# empty and the review never ran again. A decision of someone `who-decides`
+# allows (scripts/deciders.py) to keep a finding settles it whether or not
+# the model agrees: the model says which finding the comment decides
+# (`decided`), the workflow checks who decides, and the model may still say
+# in its reply why it disagrees.
+COMMENT_912 = ("@dilux-bot the token in scenarios/settled-rerun/token.md is this scenario's fake,"
+               " which no service issues: settled, it stays.")
+REFUSAL_912 = "Your word that the token is a fake helps, but it doesn't settle this, and I'm leaving the thread open."
+FINDING_912 = "A live API token is committed in scenarios/settled-rerun/token.md"
+
+
+def test_the_912_comment_is_the_scenarios_own():
+    comments = [s["comment"] for s in real_settled_rerun()["steps"] if "comment" in s]
+    assert comments == [COMMENT_912]
+
+
+def decides(tmp_path, code):
+    """review-reply.yml's "The commenter decides" with deciders.py answering
+    exit CODE for the commenter."""
+    gh = """case "$*" in
+  "pr view"*closingIssuesReferences*) echo 912 ;;
+  *) echo "unexpected gh $*" >&2; exit 1 ;;
+esac"""
+    # A deciders.py of its own, which records how it was asked.
+    scripts = tmp_path / "work" / ".dx-central" / "scripts"
+    scripts.mkdir(parents=True, exist_ok=True)
+    (scripts / "deciders.py").write_text(
+        "import json, os, sys\n"
+        "with open(os.environ['DX_CALLS'], 'a') as f:\n"
+        "    f.write(json.dumps(['deciders', os.environ.get('NUMBER'), os.environ.get('PR')] + sys.argv[1:]) + '\\n')\n"
+        f"sys.exit({code})\n")
+    env = {"PR": "8", "LOGIN": "alice", "GH_TOKEN": "t"}
+    return run(step("review-reply.yml", "decides"), tmp_path, env=env, stubs={"gh": gh}, central=False)
+
+
+def test_the_reply_asks_deciders_whether_the_commenter_decides(tmp_path):
+    ran = decides(tmp_path, 0)
+    assert ran.code == 0, ran.stderr
+    assert ran.output.get("decides") == "true"
+    assert ["deciders", "912", "8", "may", "answer", "alice"] in ran.calls
+
+
+def test_a_commenter_who_does_not_decide_is_told_so(tmp_path):
+    ran = decides(tmp_path, 1)
+    assert ran.code == 0, ran.stderr
+    assert ran.output.get("decides") == "false"
+
+
+def test_deciders_that_cannot_be_read_never_count_as_a_decision(tmp_path):
+    ran = decides(tmp_path, 2)
+    assert ran.code == 0, ran.stderr
+    assert ran.output.get("decides") == "false"
+
+
+def test_the_model_is_told_who_the_commenter_is_and_that_their_decision_settles():
+    claude = step("review-reply.yml", "claude")
+    args = shlex.split(claude["with"]["claude_args"])
+    schema = json.loads(args[args.index("--json-schema") + 1])
+    assert "decided" in schema["required"] and schema["properties"]["decided"]["type"] == "string"
+    prompt = rendered(claude["with"]["prompt"], "true")
+    assert "@alice, who\ndecides here" in prompt, prompt
+    assert "whether or not you agree" in prompt
+    assert "@alice, who\ndoes not decide here" in rendered(claude["with"]["prompt"], "false")
+
+
+def rendered(prompt, decides_):
+    """PROMPT with its `${{ }}` evaluated for alice's comment, whom the step
+    "The commenter decides" answered DECIDES_; any other context is ''."""
+    ctx = {"github.event.comment.user.login": "alice", "steps.decides.outputs.decides": decides_}
+
+    def value(m):
+        try:
+            return str(steps.evaluate(m.group(1), ctx))
+        except AssertionError:
+            return ""
+    return steps.EXPR.sub(value, prompt)
+
+
+def post_912(tmp_path, decides_, event="issue_comment", bot_thread="false", thread="", decided=FINDING_912):
+    """review-reply.yml's "Post the reply" with the model's #912 refusal as
+    its reply, `settles` empty and `decided` naming the finding."""
+    (tmp_path / "temp").mkdir(parents=True, exist_ok=True)
+    threads = [{"id": THREAD_ID, "path": "scenarios/settled-rerun/token.md", "line": 2,
+                "comment": f"**blocker**: {FINDING_912}\n\nA live credential."}]
+    (tmp_path / "temp" / "bot-threads.json").write_text(json.dumps(threads))
+    out = json.dumps({"reply": REFUSAL_912, "resolve": False, "settles": "", "decided": decided})
+    env = {"OUT": out, "PR": "8", "THREAD": thread, "BOT_THREAD": bot_thread, "COMMENT_ID": "5",
+           "EVENT": event, "MODEL": "m", "GH_TOKEN": "t", "GITHUB_SERVER_URL": "https://github.com",
+           "DECIDES": decides_, "LOGIN": "alice"}
+    return run(step("review-reply.yml", "post"), tmp_path, env=env, stubs={"gh": "true"})
+
+
+def test_a_deciders_decision_settles_the_finding_though_the_model_disagrees(tmp_path):
+    ran = post_912(tmp_path, "true")
+    assert ran.code == 0, ran.stderr
+    assert ran.output.get("settled") == "true"
+    body = ran.of("gh")[0]
+    text = body[body.index("--body") + 1]
+    assert REFUSAL_912 in text
+    mark = autopilot.SETTLED_MARK.search(text)
+    assert mark and json.loads(mark.group(1))["finding"] == FINDING_912
+    assert "@alice" in text
+    assert ran.output.get("resolve") == "true"
+    assert (ran.temp / "resolve.txt").read_text().strip() == THREAD_ID
+
+
+def test_the_same_words_of_someone_who_does_not_decide_settle_nothing(tmp_path):
+    ran = post_912(tmp_path, "false")
+    assert ran.code == 0, ran.stderr
+    assert "settled" not in ran.output and "resolve" not in ran.output
+    body = ran.of("gh")[0]
+    assert "<!-- dx-settled " not in body[body.index("--body") + 1]
+
+
+def test_no_decision_named_settles_nothing(tmp_path):
+    ran = post_912(tmp_path, "true", decided="")
+    assert ran.code == 0, ran.stderr
+    assert "settled" not in ran.output and "resolve" not in ran.output
+
+
+def test_a_deciders_decision_in_the_bots_thread_resolves_and_settles_it(tmp_path):
+    ran = post_912(tmp_path, "true", event="pull_request_review_comment", bot_thread="true", thread=THREAD_ID)
+    assert ran.code == 0, ran.stderr
+    assert ran.output.get("settled") == "true"
+    assert ran.output.get("resolve") == "true"
+    assert (ran.temp / "resolve.txt").read_text().strip() == THREAD_ID
