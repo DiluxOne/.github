@@ -2,6 +2,12 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
+## [7.20.1](https://github.com/DiluxOne/.github/releases/tag/v7.20.1) · 2026-11-21
+
+### Fixes
+
+- autopilot misses issue answers, long prompts, its description ([#927](https://github.com/DiluxOne/.github/pull/927))
+
 ## [7.20.0](https://github.com/DiluxOne/.github/releases/tag/v7.20.0) · 2026-11-21
 
 ### Features
@@ -18,6 +24,10 @@ Every version of the engine (the workflows, scripts, policy and kinds other repo
 ### Tests
 
 - release scenario hint-no-needs-human fails ([#922](https://github.com/DiluxOne/.github/pull/922))
+
+### Maintenance
+
+- release v7.20.0 ([#923](https://github.com/DiluxOne/.github/pull/923))
 
 ## [7.19.0](https://github.com/DiluxOne/.github/releases/tag/v7.19.0) · 2026-11-20
 
