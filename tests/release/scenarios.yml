@@ -175,12 +175,12 @@ bodies:
   bug-not-reproduced: |
     ### What happened?
 
-    `scenarios/bug-not-reproduced/greeting.md` said "helo" once, in a run nobody kept.
+    `scenarios/bug-not-reproduced/notice.md` said "recieve" once, in a run nobody kept.
 
     ### Steps to reproduce
 
-    1. Read `scenarios/bug-not-reproduced/greeting.md` on `main`.
-    2. See whether it says "helo" instead of "hello".
+    1. Read `scenarios/bug-not-reproduced/notice.md` on `main`.
+    2. See whether it says "recieve" instead of "receive".
 
     ### Version
 
@@ -188,11 +188,11 @@ bodies:
 
     ### Problem
 
-    The greeting said "helo" instead of "hello" once.
+    The notice said "recieve" instead of "receive" once.
 
     ### Scope
 
-    - The greeting's word.
+    - The notice's word.
 
     ### Out of scope
 
@@ -200,22 +200,24 @@ bodies:
 
     ### Acceptance criteria
 
-    - C1: Given the repository, when `scenarios/bug-not-reproduced/greeting.md` is read, then it says "hello".
+    - C1: Given the repository, when `scenarios/bug-not-reproduced/notice.md` is read, then it says "receive".
 
     ### Criticality
 
     Normal
-  # #881: its own body, naming only its own file, so the triage never reads
-  # it as `bug-not-reproduced`'s report (a `duplicate`, with no reproduction).
+  # #881, #916: its own body, naming only its own file and its own word, so
+  # the triage never reads it as another bug's report (a `duplicate`, with
+  # no reproduction): no two bug bodies here cite the same file name or
+  # quote the same word (tests/workflows/test_scenario_bugs_distinct.py).
   bug-by-person-merges: |
     ### What happened?
 
-    A reader saw "helo" in `scenarios/bug-by-person-merges/greeting.md` one morning, and nobody kept a copy of it.
+    A reader saw "thnaks" in `scenarios/bug-by-person-merges/footer.md` one morning, and nobody kept a copy of it.
 
     ### Steps to reproduce
 
-    1. Open `scenarios/bug-by-person-merges/greeting.md` on `main`.
-    2. Check whether its word is "helo" rather than "hello".
+    1. Open `scenarios/bug-by-person-merges/footer.md` on `main`.
+    2. Check whether its last word is "thnaks" rather than "thanks".
 
     ### Version
 
@@ -223,11 +225,11 @@ bodies:
 
     ### Problem
 
-    A reader reported that the greeting of this scenario was misspelt as "helo".
+    A reader reported that the footer of this scenario was misspelt as "thnaks".
 
     ### Scope
 
-    - The word the greeting says.
+    - The word the footer says.
 
     ### Out of scope
 
@@ -235,7 +237,7 @@ bodies:
 
     ### Acceptance criteria
 
-    - C1: Given the repository, when `scenarios/bug-by-person-merges/greeting.md` is read, then it says "hello".
+    - C1: Given the repository, when `scenarios/bug-by-person-merges/footer.md` is read, then it says "thanks".
 
     ### Criticality
 
@@ -453,9 +455,11 @@ scenarios:
   # Bugs.
   # The test repository's fixed reproduction (#707, its pack's `repro`)
   # fails while scenarios/<scenario>/greeting.md says "helo": this one
-  # lands it on main before its issue opens; the other lands its own saying
-  # "hello" (#764), so the steps its report gives run and do not show the
-  # bug. The fix
+  # lands it on main before its issue opens; the others land a file of
+  # their own that shows no bug (#764), each a defect no other bug body
+  # describes (#916: a notice, a footer), so the steps their reports give
+  # run and do not show the bug, and the triage reads none as a duplicate
+  # of another. The fix
   # of a confirmed bug closes the lane's own issue, never the report, so
   # the report's verdict is what it expects; it causes no transition of its
   # own (`next_step:fix` is the review's round: `statically:`). That lane
@@ -470,7 +474,7 @@ scenarios:
   - id: bug-not-reproduced
     covers: []
     minutes: 15
-    before: [{lands: greeting, says: hello}]
+    before: [{lands: notice, says: receive}]
     opens: {issue: {title: "fix: something failed once", body: bug-not-reproduced}}
     expect: {labels: [needs-info], absent: [bug:confirmed, needs-human]}
   # #696: a person's bug (one the reproduction did not confirm, so no lane
@@ -479,7 +483,7 @@ scenarios:
   - id: bug-by-person-merges
     covers: []
     minutes: 15
-    before: [{lands: greeting, says: hello}]
+    before: [{lands: footer, says: thanks}]
     opens: {issue: {title: "fix: a reader saw a misspelt word one morning", body: bug-by-person-merges}}
     steps: [{until: {labels: [awaiting-acceptance, needs-info]}}, {label: accepted}, {until: {comments: ["<!-- dx-prd-seal -->"]}},
             {until: {pull: {closes: true, branch: "^fix/[0-9]+-"}}}]
