@@ -61,6 +61,11 @@ name: Claude review
 #   Called by org-pull-request.yml, the organisation's required pipeline,
 #   for every repository, and by this repository's own pull-request.yml;
 #   read either for the call and its permissions.
+#
+# GitHub's API rate limit (#925): each job first puts scripts/gh-wait.sh on
+# its PATH as `gh` (`--install` with the job's timeout-minutes), so a call
+# that finds the App's calls spent waits for the reset, within the job's
+# time less 3 minutes (DX_RATE_DEADLINE), and runs again instead of failing.
 
 on:
   workflow_call:
@@ -152,6 +157,23 @@ jobs:
           permission-pull-requests: read
         # Without the App's token, the job's own reads the pull request.
         continue-on-error: true
+
+      # GitHub's API rate limit (#925): gh waits for its reset, within this
+      # job's time (scripts/gh-wait.sh), before the job's first gh.
+      - name: The waiting gh (#925)
+        env:
+          REF: ${{ inputs.central-ref || job.workflow_sha }}
+          TIMEOUT: 5
+        run: |
+          set -euo pipefail
+          c="$RUNNER_TEMP/dx-gh-central"
+          # Not fetched, the job goes on as before: a call that hits the
+          # limit fails instead of waiting.
+          if git init -q "$c" && git -C "$c" fetch -q --depth 1 https://github.com/DiluxOne/.github "$REF" && git -C "$c" checkout -q FETCH_HEAD; then
+            test ! -f "$c/scripts/gh-wait.sh" || bash "$c/scripts/gh-wait.sh" --install "$TIMEOUT"
+          else
+            echo "::warning::The engine's scripts could not be fetched: this job's calls do not wait on the API's rate limit."
+          fi
 
       - name: Is the commit the pull request's head
         id: current
@@ -257,6 +279,13 @@ jobs:
           ref: ${{ inputs.central-ref || job.workflow_sha }}
           path: .dx-central
           persist-credentials: false
+
+      # GitHub's API rate limit (#925): gh waits for its reset, within this
+      # job's time (scripts/gh-wait.sh), before the job's first gh.
+      - name: The waiting gh (#925)
+        env:
+          TIMEOUT: "${{ github.event.action == 'edited' && 60 || 30 }}"
+        run: test ! -f .dx-central/scripts/gh-wait.sh || bash .dx-central/scripts/gh-wait.sh --install "$TIMEOUT"
 
       - name: The organisation's configuration (#197)
         run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh

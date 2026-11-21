@@ -21,7 +21,12 @@ name: Autopilot in step with main
 # core again or stops, or 6 hours pass: the next starts once that one's pull
 # request merges or closes (scripts/autopilot.py core-next). Search gives 1000
 # at most: when it found more accepted issues than it gave, or they cannot
-# be counted, those read are started and the step fails (#811).
+# be counted, those read are started and the step fails (#811). An accepted
+# issue whose run GitHub's API rate limit left to the next (#925:
+# scripts/gh-wait.sh waited within its job's time, and the reset fell after
+# it, so it wrote `rate_limited` on the issue's board) gets its
+# `autopilot:continue` once that reset passed (scripts/autopilot.py sweep
+# rate-limited); the run it starts clears the key.
 #
 # Until none is left (#802), it first moves the flow's old labels
 # (`autopilot:run-N`, `free-N`, `round-N`, `waiting`, `answered`, `catchup`,
@@ -217,6 +222,19 @@ jobs:
             st=$(GITHUB_REPOSITORY="$repo" NUMBER="$n" python3 .dx-central/scripts/receipts.py state get 2>/dev/null) || { echo "::warning::$repo#$n: its board could not be read."; continue; }
             at=$(jq -r '.core_started // empty' <<<"$st")
             [ -z "$at" ] || echo "$repo $n $at" >> "$RUNNER_TEMP/core-started.txt"
+            # A run GitHub's API rate limit left to the next (#925,
+            # `rate_limited` on its board, scripts/gh-wait.sh): once the
+            # limit reset, dilux-bot asks the continue, whose run clears it.
+            if [ "$(jq -c '.rate_limited // null' <<<"$st")" != null ]; then
+              labels=$(gh issue view "$n" --repo "$repo" --json labels --jq '[.labels[].name] | join(",")') || labels=""
+              rl=$(LABELS="$labels" python3 .dx-central/scripts/autopilot.py sweep rate-limited <<<"$st") || rl=""
+              echo "$repo#$n: ${rl#*$'\t'}"
+              if [ "${rl%%$'\t'*}" = continue ]; then
+                gh label create "autopilot:continue" --repo "$repo" --color 1D76DB --force --description "On an issue: the autopilot continues its draft pull request, or starts it" >/dev/null 2>&1 || true
+                gh issue edit "$n" --repo "$repo" --add-label "autopilot:continue" >/dev/null \
+                  || { echo "::warning::$repo#$n: the continue could not be asked for; the next sweep tries again."; failed="$failed $repo#$n"; }
+              fi
+            fi
             waits=$(jq -c '.core_wait // null' <<<"$st")
             case $waits in null|false) continue ;; esac
             gh issue view "$n" --repo "$repo" --json body --jq .body > "$RUNNER_TEMP/body.md" || continue

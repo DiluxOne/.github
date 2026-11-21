@@ -57,6 +57,11 @@ name: Release lane
 # identity's tokens (DX_TEST_TOKEN, and DX_TEST_FORK_TOKEN, which may fork
 # the test repository, #694) run in the `release` environment, which only
 # main may use.
+#
+# GitHub's API rate limit (#925): each job first puts scripts/gh-wait.sh on
+# its PATH as `gh` (`--install` with the job's timeout-minutes), so a call
+# that finds the App's calls spent waits for the reset, within the job's
+# time less 3 minutes (DX_RATE_DEADLINE), and runs again instead of failing.
 
 on:
   workflow_run:
@@ -93,6 +98,13 @@ jobs:
           ref: main
           fetch-depth: 0
           persist-credentials: false
+
+      # GitHub's API rate limit (#925): gh waits for its reset, within this
+      # job's time (scripts/gh-wait.sh), before the job's first gh.
+      - name: The waiting gh (#925)
+        env:
+          TIMEOUT: 10
+        run: test ! -f scripts/gh-wait.sh || bash scripts/gh-wait.sh --install "$TIMEOUT"
 
       - name: What is releasable
         id: plan
@@ -140,6 +152,13 @@ jobs:
           fetch-depth: 0
           token: ${{ steps.app.outputs.token }}
 
+      # GitHub's API rate limit (#925): gh waits for its reset, within this
+      # job's time (scripts/gh-wait.sh), before the job's first gh.
+      - name: The waiting gh (#925)
+        env:
+          TIMEOUT: 10
+        run: test ! -f scripts/gh-wait.sh || bash scripts/gh-wait.sh --install "$TIMEOUT"
+
       - name: The release candidate, and v7-next at it
         env:
           PLAN: ${{ needs.plan.outputs.plan }}
@@ -175,6 +194,13 @@ jobs:
         with:
           ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
+
+      # GitHub's API rate limit (#925): gh waits for its reset, within this
+      # job's time (scripts/gh-wait.sh), before the job's first gh.
+      - name: The waiting gh (#925)
+        env:
+          TIMEOUT: 120
+        run: test ! -f scripts/gh-wait.sh || bash scripts/gh-wait.sh --install "$TIMEOUT"
 
       - name: The test repository
         id: test
@@ -284,6 +310,13 @@ jobs:
           ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
 
+      # GitHub's API rate limit (#925): gh waits for its reset, within this
+      # job's time (scripts/gh-wait.sh), before the job's first gh.
+      - name: The waiting gh (#925)
+        env:
+          TIMEOUT: 30
+        run: test ! -f scripts/gh-wait.sh || bash scripts/gh-wait.sh --install "$TIMEOUT"
+
       - name: The test repository
         id: test
         run: echo "repo=$(python3 scripts/org.py test-repo)" >> "$GITHUB_OUTPUT"
@@ -336,6 +369,13 @@ jobs:
         with:
           ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
+
+      # GitHub's API rate limit (#925): gh waits for its reset, within this
+      # job's time (scripts/gh-wait.sh), before the job's first gh.
+      - name: The waiting gh (#925)
+        env:
+          TIMEOUT: 120
+        run: test ! -f scripts/gh-wait.sh || bash scripts/gh-wait.sh --install "$TIMEOUT"
 
       - name: The test repository
         id: test
@@ -431,6 +471,13 @@ jobs:
           fetch-depth: 0
           token: ${{ steps.app.outputs.token }}
 
+      # GitHub's API rate limit (#925): gh waits for its reset, within this
+      # job's time (scripts/gh-wait.sh), before the job's first gh.
+      - name: The waiting gh (#925)
+        env:
+          TIMEOUT: 90
+        run: test ! -f scripts/gh-wait.sh || bash scripts/gh-wait.sh --install "$TIMEOUT"
+
       # Every scenarios-* artifact, each in its own directory. A job that
       # failed before it wrote its results leaves none: the merge reads that
       # as a failing row, never as a pass.
@@ -517,6 +564,13 @@ jobs:
           ref: main
           fetch-depth: 0
           token: ${{ steps.app.outputs.token }}
+
+      # GitHub's API rate limit (#925): gh waits for its reset, within this
+      # job's time (scripts/gh-wait.sh), before the job's first gh.
+      - name: The waiting gh (#925)
+        env:
+          TIMEOUT: 45
+        run: test ! -f scripts/gh-wait.sh || bash scripts/gh-wait.sh --install "$TIMEOUT"
 
       - name: Watch, and move v7 back on the first engine failure
         env:

@@ -220,6 +220,14 @@ name: Autopilot
 # too (#397): the agent is told never to widen a permission, a lane or a
 # limit, and G7 leaves any fix that does to a person
 # (scripts/no-widening.py).
+#
+# GitHub's API rate limit (#925): each job first puts scripts/gh-wait.sh on
+# its PATH as `gh` (`--install` with the job's timeout-minutes), so a call
+# that finds the App's calls spent waits for the reset, within the job's
+# time less 3 minutes (DX_RATE_DEADLINE), and runs again instead of failing.
+# A reset past the job's time ends the run, with `rate_limited` on the
+# issue's board: the hourly sweep (autopilot-sweep.yml) continues it once
+# the limit reset, and the run it starts clears the key.
 
 on:
   workflow_call:
@@ -284,6 +292,23 @@ jobs:
           repositories: ${{ github.event.repository.name }}
           permission-issues: read
           permission-pull-requests: read
+      # GitHub's API rate limit (#925): gh waits for its reset, within this
+      # job's time (scripts/gh-wait.sh), before the job's first gh.
+      - name: The waiting gh (#925)
+        env:
+          REF: ${{ inputs.central-ref || job.workflow_sha }}
+          TIMEOUT: 5
+        run: |
+          set -euo pipefail
+          c="$RUNNER_TEMP/dx-gh-central"
+          # Not fetched, the job goes on as before: a call that hits the
+          # limit fails instead of waiting.
+          if git init -q "$c" && git -C "$c" fetch -q --depth 1 https://github.com/DiluxOne/.github "$REF" && git -C "$c" checkout -q FETCH_HEAD; then
+            test ! -f "$c/scripts/gh-wait.sh" || bash "$c/scripts/gh-wait.sh" --install "$TIMEOUT"
+          else
+            echo "::warning::The engine's scripts could not be fetched: this job's calls do not wait on the API's rate limit."
+          fi
+
       - name: A reproduced bug's work?
         id: lane
         env:
@@ -366,6 +391,14 @@ jobs:
           test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
           echo "ref=$(git -C .dx-central rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
           if [ -d .git ]; then printf '%s\n' /.dx-central/ /.dx-io/ /.dx-out/ >> .git/info/exclude; fi
+
+      # GitHub's API rate limit (#925): gh waits for its reset, within this
+      # job's time (scripts/gh-wait.sh), before the job's first gh.
+      - name: The waiting gh (#925)
+        env:
+          TIMEOUT: 15
+          DX_RATE_NUMBER: ${{ inputs.issue }}
+        run: test ! -f .dx-central/scripts/gh-wait.sh || bash .dx-central/scripts/gh-wait.sh --install "$TIMEOUT"
 
       - name: What to work on
         id: what
@@ -773,6 +806,7 @@ jobs:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           MODE: ${{ steps.what.outputs.mode }}
           PR: ${{ steps.what.outputs.pr }}
+          ISSUE: ${{ steps.what.outputs.issue }}
         run: |
           set -euo pipefail
           echo "started=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
@@ -785,6 +819,12 @@ jobs:
           # A fix round's head before it: the end rule tells a round that
           # pushed from one that did not.
           if [ -n "$PR" ]; then echo "head=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq .headRefOid)" >> "$GITHUB_OUTPUT"; fi
+          # The run GitHub's API rate limit left to the next (#925,
+          # scripts/gh-wait.sh) is this one: the key comes off the board.
+          if [ -n "$ISSUE" ] && grep -q '"rate_limited"' .dx-central/scripts/receipts.py \
+            && [ -n "$(NUMBER="$ISSUE" python3 .dx-central/scripts/receipts.py state get rate_limited 2>/dev/null | jq -r '. // empty' 2>/dev/null)" ]; then
+            NUMBER="$ISSUE" python3 .dx-central/scripts/receipts.py state set rate_limited= >/dev/null || echo "::warning::#$ISSUE's board: its rate limit could not be cleared."
+          fi
 
       # Counted before the agent runs: a round or run that fails or times out
       # after pushing still counts, so the caps hold. On the pull request's
@@ -1011,6 +1051,14 @@ jobs:
           echo "ref=$(git -C .dx-central rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
           if [ -d .git ]; then printf '%s\n' /.dx-central/ /.dx-io/ /.dx-out/ >> .git/info/exclude; fi
 
+      # GitHub's API rate limit (#925): gh waits for its reset, within this
+      # job's time (scripts/gh-wait.sh), before the job's first gh.
+      - name: The waiting gh (#925)
+        env:
+          TIMEOUT: 30
+          DX_RATE_NUMBER: ${{ needs.prep.outputs.issue }}
+        run: test ! -f .dx-central/scripts/gh-wait.sh || bash .dx-central/scripts/gh-wait.sh --install "$TIMEOUT"
+
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: autopilot-in-spec
@@ -1130,6 +1178,14 @@ jobs:
           test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
           echo "ref=$(git -C .dx-central rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
           if [ -d .git ]; then printf '%s\n' /.dx-central/ /.dx-io/ /.dx-out/ >> .git/info/exclude; fi
+
+      # GitHub's API rate limit (#925): gh waits for its reset, within this
+      # job's time (scripts/gh-wait.sh), before the job's first gh.
+      - name: The waiting gh (#925)
+        env:
+          TIMEOUT: 15
+          DX_RATE_NUMBER: ${{ needs.prep.outputs.issue }}
+        run: test ! -f .dx-central/scripts/gh-wait.sh || bash .dx-central/scripts/gh-wait.sh --install "$TIMEOUT"
 
       - name: The repository's own policy
         env:
@@ -1350,6 +1406,14 @@ jobs:
           test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
           echo "ref=$(git -C .dx-central rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
           if [ -d .git ]; then printf '%s\n' /.dx-central/ /.dx-io/ /.dx-out/ >> .git/info/exclude; fi
+
+      # GitHub's API rate limit (#925): gh waits for its reset, within this
+      # job's time (scripts/gh-wait.sh), before the job's first gh.
+      - name: The waiting gh (#925)
+        env:
+          TIMEOUT: 90
+          DX_RATE_NUMBER: ${{ needs.prep.outputs.issue }}
+        run: test ! -f .dx-central/scripts/gh-wait.sh || bash .dx-central/scripts/gh-wait.sh --install "$TIMEOUT"
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -1586,6 +1650,14 @@ jobs:
           echo "ref=$(git -C .dx-central rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
           if [ -d .git ]; then printf '%s\n' /.dx-central/ /.dx-io/ /.dx-out/ /.dx-verify/ >> .git/info/exclude; fi
 
+      # GitHub's API rate limit (#925): gh waits for its reset, within this
+      # job's time (scripts/gh-wait.sh), before the job's first gh.
+      - name: The waiting gh (#925)
+        env:
+          TIMEOUT: 360
+          DX_RATE_NUMBER: ${{ needs.prep.outputs.issue }}
+        run: test ! -f .dx-central/scripts/gh-wait.sh || bash .dx-central/scripts/gh-wait.sh --install "$TIMEOUT"
+
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: autopilot-in-work
@@ -1702,6 +1774,14 @@ jobs:
           test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
           echo "ref=$(git -C .dx-central rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
           if [ -d .git ]; then printf '%s\n' /.dx-central/ /.dx-io/ /.dx-out/ >> .git/info/exclude; fi
+
+      # GitHub's API rate limit (#925): gh waits for its reset, within this
+      # job's time (scripts/gh-wait.sh), before the job's first gh.
+      - name: The waiting gh (#925)
+        env:
+          TIMEOUT: 30
+          DX_RATE_NUMBER: ${{ needs.prep.outputs.issue }}
+        run: test ! -f .dx-central/scripts/gh-wait.sh || bash .dx-central/scripts/gh-wait.sh --install "$TIMEOUT"
 
       - name: The repository's own policy
         env:

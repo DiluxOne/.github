@@ -124,6 +124,7 @@ jobs:
       - run: bash scripts/stamp-version.sh --test
       - run: bash scripts/release-markers.sh --test
       - run: bash scripts/changelog-fragments.sh --test
+      - run: bash scripts/gh-wait.sh --test
       # A plugin's translations in the form that merges (#452): msgcat and msgfmt.
       - run: command -v msgcat >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq gettext; }
       - run: bash scripts/plugin-i18n.sh --test
