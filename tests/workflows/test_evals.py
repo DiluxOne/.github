@@ -290,8 +290,14 @@ def test_c4_each_doc_names_the_runner_and_the_workflow(doc):
 
 def test_c4_testing_and_quality_says_which_paths_run_which_set_and_how_a_case_is_added():
     text = (ROOT / "docs" / "testing-and-quality.md").read_text(encoding="utf-8")
-    assert "## How the AI is measured" in text
-    section = text.split("## How the AI is measured", 1)[1]
+    sections = {}
+    heading = ""
+    for line in text.splitlines():
+        if line.startswith("## "):
+            heading = line[3:].strip()
+        sections[heading] = sections.get(heading, "") + line + "\n"
+    assert "How the AI is measured" in sections
+    section = sections["How the AI is measured"]
     mod = evals()
     for step in SIX:
         assert f"`{step}`" in section, step
@@ -375,3 +381,54 @@ def test_c2_an_empty_file_list_fails_steps_not_selects_nothing():
     assert ok.returncode == 0 and ok.stdout.strip() == ""
     text = (ROOT / ".github" / "workflows" / "evals.yml").read_text(encoding="utf-8")
     assert "set -euo pipefail" in text and "pr-files.py | python3 scripts/evals.py steps" in text
+
+
+# C3: the review's gate is review-eval.yml's, exactly: a slack of one case
+# on each count, whatever the baseline (a baseline of found <= 1 keeps it).
+
+def old_review_worse(now, base):
+    """review-eval.py's worse() as review-eval.yml ran it before #735."""
+    why = []
+    if base.get("flag") and now["found"] < base["found"] - 1:
+        why.append("found")
+    if now["blocked"] > base.get("blocked", 0) + 1:
+        why.append("blocked")
+    if now["unreviewed"] > 1:
+        why.append("unreviewed")
+    return why
+
+
+def review_results(found, flag, blocked, clean, unreviewed=0):
+    return ([{"id": f"f{i}", "expect": "flag", "ok": i < found} for i in range(flag)]
+            + [{"id": f"c{i}", "expect": "clean", "ok": i >= blocked} for i in range(clean)]
+            + [{"id": f"u{i}", "expect": "flag", "ok": None} for i in range(unreviewed)])
+
+
+REVIEW_BASES = [json.loads((ROOT / "evals" / "review" / "baseline.json").read_text(encoding="utf-8")),
+                {"found": 1, "flag": 6, "blocked": 0, "clean": 6, "unreviewed": 0},
+                {"found": 0, "flag": 6, "blocked": 1, "clean": 6, "unreviewed": 0}]
+
+
+@pytest.mark.parametrize("base", REVIEW_BASES)
+def test_c3_the_review_gate_is_review_eval_ymls(base):
+    ev = evals()
+    for found in range(base["flag"] + 1):
+        for blocked in range(base["clean"] + 1):
+            for unreviewed in range(3):
+                res = review_results(found, base["flag"], blocked, base["clean"], unreviewed)
+                now = ev.score("review", res)
+                assert bool(ev.worse("review", now, base)) == bool(old_review_worse(now, base)), (now, base)
+
+
+def test_c3_the_review_verdict_on_its_baseline_is_the_same_through_both_scripts(tmp_path):
+    import subprocess
+    base = REVIEW_BASES[0]
+    for found in range(base["flag"] + 1):
+        for blocked in (0, 1, 2):
+            res = tmp_path / f"r{found}{blocked}.json"
+            res.write_text(json.dumps(review_results(found, base["flag"], blocked, base["clean"])), encoding="utf-8")
+            new = subprocess.run(["python3", str(ROOT / "scripts" / "evals.py"), "score", "review", str(res)], capture_output=True, text=True)
+            old = subprocess.run(["python3", str(ROOT / "scripts" / "review-eval.py"), "score", str(res)], capture_output=True, text=True)
+            assert (new.returncode, new.stdout) == (old.returncode, old.stdout)
+            now = evals().score("review", json.loads(res.read_text(encoding="utf-8")))
+            assert new.returncode == (1 if old_review_worse(now, base) else 0), (now, new.stdout)

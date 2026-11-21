@@ -25,7 +25,8 @@ name: AI evaluation
 # lists the steps with no secret; private repositories are never cases.
 #
 # The slack is none when the baseline is not above it (autopilot's 1 of 6
-# fails at 0). A baseline that cannot be read, is not JSON or has the
+# fails at 0), for every step but the review, which keeps review-eval.yml's
+# slack of one on each count, whatever its baseline. A baseline that cannot be read, is not JSON or has the
 # wrong shape fails the check, and so does a missing or pending one for a
 # step in evals.py's BASELINED (review, spec, autopilot). Only a step never
 # baselined with no baseline (missing, or pending) passes with a warning, and

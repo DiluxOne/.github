@@ -32,7 +32,8 @@ is worse than the step's baseline by more than one case (a model does not
 answer the same twice). A case left not replayed is the runner's failure,
 never the step's score: it fails the check with the case's name (the
 review keeps its slack of one, as review-eval.yml had it). The slack is
-none when the baseline itself is not above it (1 of 6 still fails at 0).
+none when the baseline itself is not above it (1 of 6 still fails at 0),
+for every step but the review, whose gate is review-eval.yml's exactly.
 A step never baselined (not in BASELINED) whose baseline is missing or
 pending passes with a warning and prints the whole run's results, what
 `baseline` reads, between the lines `--- baseline STEP ---` and
@@ -265,7 +266,9 @@ def worse(step, now, base):
     """Why the score is worse than the baseline by more than its slack, or ''."""
     why = []
     if step == "review":
-        if base.get("flag") and now["found"] < base["found"] - slack(base["found"]):
+        # review-eval.yml's gate, exactly: a slack of one case on each count,
+        # whatever the baseline (#735 keeps it; the scaling is the others').
+        if base.get("flag") and now["found"] < base["found"] - SLACK:
             why.append(f"it found {now['found']} of {now['flag']} known bugs, the baseline {base['found']} of {base['flag']}")
         if now["blocked"] > base.get("blocked", 0) + SLACK:
             why.append(f"it blocked {now['blocked']} of {now['clean']} clean pull requests, the baseline {base.get('blocked', 0)}")
@@ -813,6 +816,9 @@ def self_test():
     check("review worse: two more clean ones blocked is", "it blocked 2" in worse("review", {**now, "blocked": 2}, {"found": 1, "flag": 2, "blocked": 0}), True)
     check("review worse: more than one case unreviewed is", ("could not be reviewed" in worse("review", {"found": 1, "flag": 1, "blocked": 0, "clean": 8, "unreviewed": 2}, {"found": 1, "flag": 1}),
                                                              worse("review", {"found": 1, "flag": 1, "blocked": 0, "clean": 9, "unreviewed": 1}, {"found": 1, "flag": 1})), (True, ""))
+    check("review worse: a baseline of one bug found keeps its slack of one, as review-eval.yml had it",
+          (worse("review", {"found": 0, "flag": 6, "blocked": 0, "clean": 6, "unreviewed": 0}, {"found": 1, "flag": 6, "blocked": 0}),
+           bool(worse("review", {"found": 0, "flag": 6, "blocked": 0, "clean": 6, "unreviewed": 0}, {"found": 2, "flag": 6, "blocked": 0}))), ("", True))
     check("review table: says what was missed", "**missed**" in table("review", res, now, {}), True)
     with open(os.path.join(EVALS, "review", "baseline.json"), encoding="utf-8") as fh:
         check("review: its baseline has the score's shape, unchanged", set(json.load(fh)) == set(now), True)
@@ -855,8 +861,6 @@ def self_test():
     check("worse: a baseline not above the slack has none (1 of 6, then 0 of 6, fails)",
           (worse("autopilot", {"passed": 0, "cases": 6, "unrun": 0}, {"passed": 1, "cases": 6, "unrun": 0}).startswith("0 of 6"),
            worse("autopilot", {"passed": 1, "cases": 6, "unrun": 0}, {"passed": 1, "cases": 6, "unrun": 0})), (True, ""))
-    check("review worse: one bug found as the baseline, none found now, is",
-          worse("review", {"found": 0, "flag": 6, "blocked": 0, "clean": 6, "unreviewed": 0}, {"found": 1, "flag": 6, "blocked": 0}).startswith("it found 0"), True)
     import tempfile
     d = tempfile.mkdtemp(prefix="dx-eval-test-")
     def base_of(step, text):
