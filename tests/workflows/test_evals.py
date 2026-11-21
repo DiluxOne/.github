@@ -526,6 +526,8 @@ def test_c1_collect_pins_the_issue_of_each_spec_and_autopilot_case(monkeypatch):
     # Each candidate valid (#840: collect keeps only those; tests/workflows/test_evals_validate.py).
     monkeypatch.setattr(ev, "facts_of", lambda step, case, work: {})
     monkeypatch.setattr(ev, "rewritten", lambda step, case, facts: case)
+    # No set yet: only the history's cases, each pinned.
+    monkeypatch.setattr(ev, "load_cases", lambda step, root=None: [])
     for step in ("spec", "autopilot"):
         got = ev.collect(step, 6)
         assert [(c["title"], c["body"]) for c in got] == [("feat: b", "the text")]

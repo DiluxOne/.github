@@ -907,15 +907,23 @@ def collect(step, n, root=ROOT):
     # This checkout is the organisation's public .github repository.
     if step == "repro":
         return cases_from_commits(step, f"{org.ORG}/.github", git_commits(root), n)
-    # Every candidate of the history, then only the valid ones, up to N
-    # (#840): a case that does not measure the task never enters the set.
+    # The set's own cases first, as they are pinned, then every candidate
+    # of the history, and only the valid ones, up to N (#840): a case that
+    # does not measure the task never enters the set, and none enters twice.
+    import itertools
     import tempfile
     preload()
     work, out = tempfile.mkdtemp(prefix="dx-collect-"), []
-    for c in cases_from_commits(step, f"{org.ORG}/.github", git_commits(root), 10 ** 6):
+    try:
+        mine = load_cases(step, root)
+    except FileNotFoundError:
+        mine = []
+    seen = {c["id"] for c in mine}
+    history = (c for c in cases_from_commits(step, f"{org.ORG}/.github", git_commits(root), 10 ** 6) if c["id"] not in seen)
+    for c in itertools.chain(mine, history):
         if len(out) >= n:
             break
-        c = pin_issue(c)
+        c = c if c["id"] in seen else pin_issue(c)
         got = facts_of(step, c, work)
         kept = rewritten(step, c, got) if got is not None else None
         print(f"  {c['id']}: " + ("kept" if kept else "not valid, left out"), file=sys.stderr)

@@ -193,6 +193,7 @@ def test_c1_collect_keeps_only_the_valid_cases(monkeypatch):
     monkeypatch.setattr(mod, "pin_issue", lambda c: {**c, "title": "t", "body": "b"})
     monkeypatch.setattr(mod, "preload", lambda: None)
     valid = {"m2", "m4"}
+    monkeypatch.setattr(mod, "load_cases", lambda step, root=None: [])
     monkeypatch.setattr(mod, "facts_of", lambda step, c, work: facts() if c["merge"] in valid else facts(base="passed"))
     got = mod.collect("autopilot", 6)
     assert [c["merge"] for c in got] == ["m2", "m4"]
@@ -322,3 +323,69 @@ def test_c2_the_docs_say_the_replay_and_the_baseline():
     text = (ROOT / "docs" / "testing-and-quality.md").read_text(encoding="utf-8")
     assert "autopilot-rounds" in text and "local-review.sh" in text
     assert "every case valid" in text
+
+
+def test_c1_collect_keeps_the_sets_valid_cases_first(monkeypatch):
+    # The maintainer's answer on #840: collect keeps the set's valid cases
+    # first, then fills up to N from the history, never a case twice.
+    mod = evals()
+    has(mod, "rewritten")
+    commits = [{"sha": f"m{i}", "parent": f"p{i}", "subject": f"feat: thing {i} (#{100 + i})", "body": f"Closes #{i}.",
+                "files": ["scripts/x.py", "tests/workflows/test_a.py"]} for i in range(1, 5)]
+    monkeypatch.setattr(mod, "git_commits", lambda root: commits)
+    pinned = []
+    monkeypatch.setattr(mod, "pin_issue", lambda c: pinned.append(c["id"]) or {**c, "title": "t", "body": "b"})
+    monkeypatch.setattr(mod, "preload", lambda: None)
+    hist = {c["merge"]: c for c in mod.cases_from_commits("autopilot", "DiluxOne/.github", commits, 10)}
+    kept = {**hist["m3"], "title": "pinned", "body": "as merged"}
+    dropped = {**AUTO, "id": "o/r#9:autopilot", "merge": "m9"}
+    monkeypatch.setattr(mod, "load_cases", lambda step, root=None: [dropped, kept])
+    valid = {"m1", "m3", "m4"}
+    monkeypatch.setattr(mod, "facts_of", lambda step, c, work: facts() if c["merge"] in valid else facts(base="passed"))
+    got = mod.collect("autopilot", 3)
+    # The set's valid case first, as pinned; then the history's, m3 not twice.
+    assert [c["merge"] for c in got] == ["m3", "m1", "m4"]
+    assert (got[0]["title"], got[0]["body"]) == ("pinned", "as merged") and kept["id"] not in pinned
+    assert [c["merge"] for c in mod.collect("autopilot", 1)] == ["m3"]
+
+
+def workflow():
+    import yaml
+    text = (ROOT / ".github" / "workflows" / "evals.yml").read_text(encoding="utf-8")
+    return text, yaml.safe_load(text)
+
+
+def test_c1_evals_yml_collects_a_new_set_by_hand_and_pushes_nothing():
+    text, wf = workflow()
+    on = wf.get("on", wf.get(True))
+    inputs = on["workflow_dispatch"]["inputs"]
+    assert "step" in inputs and inputs.get("mode", {}).get("options") == ["eval", "collect"]
+    assert inputs["mode"].get("default") == "eval"
+    jobs = wf["jobs"]
+    assert "collect" in jobs, "evals.yml has no collect job"
+    collect = jobs["collect"]
+    assert "inputs.mode == 'collect'" in collect["if"] and "workflow_dispatch" in collect["if"]
+    run = "\n".join(s.get("run", "") for s in collect["steps"])
+    # Six valid cases, the floor; with the job's read token alone.
+    assert 'evals.py collect "$STEP" 6' in run
+    assert any(s.get("env", {}).get("GH_TOKEN") == "${{ github.token }}" for s in collect["steps"])
+    assert wf["permissions"] == {"contents": "read"}
+    assert all(j.get("permissions", {}).get("contents", "read") == "read" for j in jobs.values())
+    # It pushes nothing, and the checkout keeps no credential.
+    assert "git push" not in text and "gh pr" not in text and "gh api" not in text
+    assert all(s.get("with", {}).get("persist-credentials") is False for j in jobs.values() for s in j["steps"] if "actions/checkout@" in s.get("uses", ""))
+    # The new set is the one validated and replayed, case by case.
+    for name in ("validate", "replay", "eval"):
+        assert "collect" in jobs[name]["needs"], name
+    assert "needs.collect.outputs.cases" in str(jobs["replay"]["strategy"]["matrix"])
+    for name in ("validate", "replay", "eval"):
+        assert any("download-artifact" in s.get("uses", "") and s.get("if") == "needs.collect.result == 'success'"
+                   for s in jobs[name]["steps"]), name
+    # One artifact: the new cases only, the whole cases.json, the run's results; no score against the old baseline.
+    ev = jobs["eval"]["steps"]
+    score = next(s for s in ev if "evals.py score" in s.get("run", ""))
+    assert score.get("if") == "needs.collect.result != 'success'"
+    keep = [s for s in ev if "upload-artifact" in s.get("uses", "") and s.get("if") == "needs.collect.result == 'success'"]
+    assert len(keep) == 1
+    path = keep[0]["with"]["path"]
+    assert all(f in path for f in ("new-cases.json", "cases.json", "results.json"))

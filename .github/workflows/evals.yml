@@ -45,6 +45,16 @@ name: AI evaluation
 # `scripts/evals.py baseline <step> FILE` writes the baseline, in a commit
 # a person reviews; nothing here pushes. A change that should move a score
 # does the same from its run's results (the artifact evals-<step>).
+#
+# By hand with `mode: collect` (#840), for one step, it first writes a new
+# set: `evals.py collect <step> 6`, with the job's read-only token, keeps
+# the set's valid cases first and fills up to six from the history, each
+# valid. That set is validated and replayed as above, and kept, never
+# scored against the old baseline, as the artifact evals-<step>-collect:
+# the new cases only (new-cases.json, those not already in the set),
+# the whole cases.json, and the run's results (results.json) for
+# `evals.py baseline <step> FILE`. Nothing here pushes them: a person
+# commits them in a pull request.
 
 on:
   pull_request:
@@ -76,6 +86,11 @@ on:
           - spec
           - autopilot
           - reply
+      mode:
+        description: "eval: score the set as it is; collect: write a new set of six valid cases, replay it and keep it with its results"
+        type: choice
+        options: [eval, collect]
+        default: eval
 
 permissions:
   contents: read
@@ -130,20 +145,79 @@ jobs:
           echo "cases=$cases" >> "$GITHUB_OUTPUT"
           echo "Steps to evaluate: $steps ($(jq length <<< "$cases") cases)" | tee -a "$GITHUB_STEP_SUMMARY"
 
+  # A new set, by hand (#840): the set's valid cases first, then the
+  # history's, six valid ones; fewer fails the job (the floor is six), after
+  # keeping what it found.
+  collect:
+    name: A new set
+    needs: steps
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'collect' && needs.steps.outputs.steps != '[]' && needs.steps.outputs.steps != '' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    outputs:
+      cases: ${{ steps.collect.outputs.cases }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Collect the cases
+        id: collect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STEP: ${{ inputs.step }}
+        run: |
+          set -euo pipefail
+          git config --global user.name evals
+          git config --global user.email evals@localhost
+          set_=evals/$STEP/cases.json
+          cp "$set_" "$RUNNER_TEMP/old-cases.json"
+          python3 scripts/evals.py collect "$STEP" 6
+          # The new cases only: those whose id the set did not have.
+          jq --slurpfile old "$RUNNER_TEMP/old-cases.json" '[.[] | select(.id as $i | $old[0] | map(.id) | index($i) | not)]' "$set_" > "evals/$STEP/new-cases.json"
+          n=$(jq length "$set_")
+          echo "$n cases in the new set, $(jq length "evals/$STEP/new-cases.json") of them new." | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$n" -lt 6 ]; then
+            echo "::error::$STEP: only $n valid cases, fewer than the six a set holds: nothing is replayed."
+            exit 1
+          fi
+          echo "cases=$(python3 scripts/evals.py matrix "$STEP")" >> "$GITHUB_OUTPUT"
+
+      - name: Keep the new set
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: evals-${{ inputs.step }}-set
+          path: |
+            evals/${{ inputs.step }}/cases.json
+            evals/${{ inputs.step }}/new-cases.json
+          retention-days: 30
+
   # The cases measure the task (#840), before any is paid for: each passes
   # on its merged fix, fails on an assertion at its base, and asserts none
   # of the fix's own literals (`evals.py validate`, no model and no secret).
   # A case that does not fails this job by its name, and no set is replayed.
   validate:
     name: The cases are valid
-    needs: steps
-    if: needs.steps.outputs.cases != '[]' && needs.steps.outputs.cases != '' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
+    needs:
+      - steps
+      - collect  # order: by hand with `mode: collect`, it validates the new set.
+    if: always() && needs.steps.result == 'success' && (needs.collect.result == 'success' || needs.collect.result == 'skipped') && needs.steps.outputs.cases != '[]' && needs.steps.outputs.cases != '' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: The new set
+        if: needs.collect.result == 'success'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: evals-${{ inputs.step }}-set
+          path: evals/${{ inputs.step }}
+
 
       - name: Validate the sets
         env:
@@ -159,19 +233,27 @@ jobs:
     name: Replay (${{ matrix.step }} ${{ matrix.case }})
     needs:
       - steps
+      - collect  # order: by hand with `mode: collect`, its matrix is the new set's.
       - validate  # order: a set is replayed only once its cases are valid.
-    if: needs.steps.outputs.cases != '[]' && needs.steps.outputs.cases != '' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
+    if: always() && needs.validate.result == 'success' && needs.steps.outputs.cases != '[]' && needs.steps.outputs.cases != '' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     # The step's limit for one case, and the job's own (evals.py matrix).
     timeout-minutes: ${{ matrix.minutes }}
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.steps.outputs.cases) }}
+        include: ${{ fromJSON(needs.collect.outputs.cases || needs.steps.outputs.cases) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: The new set
+        if: needs.collect.result == 'success'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: evals-${{ inputs.step }}-set
+          path: evals/${{ inputs.step }}
 
       - name: The Claude Code CLI
         run: npm install -g @anthropic-ai/claude-code@2.1.302
@@ -207,10 +289,11 @@ jobs:
     name: AI evaluation (${{ matrix.step }})
     needs:
       - steps
+      - collect  # order: by hand with `mode: collect`, it merges the new set's results and keeps them.
       - replay  # order: it scores the evals-<step>-case-<n> artifacts the replay jobs upload.
     # It scores whatever its cases' jobs left: a job that ran out of time
     # leaves its case not replayed, which fails the check by its name.
-    if: ${{ !cancelled() && needs.steps.result == 'success' && needs.steps.outputs.steps != '[]' && needs.steps.outputs.steps != '' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ !cancelled() && needs.steps.result == 'success' && needs.collect.result != 'failure' && needs.steps.outputs.steps != '[]' && needs.steps.outputs.steps != '' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -222,6 +305,13 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: The new set
+        if: needs.collect.result == 'success'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: evals-${{ inputs.step }}-set
+          path: evals/${{ inputs.step }}
+
       # None at all (every job of the step failed) is every case not
       # replayed, which the score says by name: it never stops here.
       - name: The cases' results
@@ -231,13 +321,20 @@ jobs:
           pattern: evals-${{ matrix.step }}-case-*
           path: ${{ runner.temp }}/cases
 
+      - name: The results, in the set's order
+        env:
+          STEP: ${{ matrix.step }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/cases"
+          find "$RUNNER_TEMP/cases" -name results.json -print0 | xargs -0 python3 scripts/evals.py merge "$STEP" > "$RUNNER_TEMP/results.json"
+
       - name: Score against the baseline
+        if: needs.collect.result != 'success'
         env:
           STEP: ${{ matrix.step }}
         run: |
           set -uo pipefail
-          mkdir -p "$RUNNER_TEMP/cases"
-          find "$RUNNER_TEMP/cases" -name results.json -print0 | xargs -0 python3 scripts/evals.py merge "$STEP" > "$RUNNER_TEMP/results.json" || exit 1
           python3 scripts/evals.py score "$STEP" "$RUNNER_TEMP/results.json" | tee -a "$GITHUB_STEP_SUMMARY"
           exit "${PIPESTATUS[0]}"
 
@@ -247,4 +344,23 @@ jobs:
         with:
           name: evals-${{ matrix.step }}
           path: ${{ runner.temp }}/results.json
+          retention-days: 30
+
+      # By hand with `mode: collect`: the new set and its run, for a pull
+      # request to commit (`evals.py baseline <step> results.json`).
+      - name: The run's results beside the new set
+        if: needs.collect.result == 'success'
+        env:
+          STEP: ${{ matrix.step }}
+        run: cp "$RUNNER_TEMP/results.json" "evals/$STEP/results.json"
+
+      - name: Keep the new set and its results
+        if: needs.collect.result == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: evals-${{ matrix.step }}-collect
+          path: |
+            evals/${{ matrix.step }}/new-cases.json
+            evals/${{ matrix.step }}/cases.json
+            evals/${{ matrix.step }}/results.json
           retention-days: 30
