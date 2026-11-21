@@ -395,6 +395,39 @@ def verdict(case, review):
     return not serious
 
 
+def reason(case, review):
+    """Why the review found a flag case or not, from its verified output
+    (#930 C3): found; a blocker or major in the case's file outside the
+    fixed lines, with how far; one there the verifier rejected; no finding
+    in the file; not reviewed. '' for a clean case."""
+    if case.get("expect") != "flag":
+        return ""
+    if not isinstance(review, dict):
+        return "not reviewed"
+    if verdict(case, review):
+        return "found"
+    line = as_line(case.get("line"))
+    fixed = case.get("fixed") or ([[line, line]] if line is not None else [])
+    mine = [f for f in review.get("findings") or [] if isinstance(f, dict) and f.get("file") == case.get("path") and not f.get("pre_existing")]
+    inside = lambda f: any(lo <= (as_line(f.get("line")) or 0) <= hi for lo, hi in fixed)
+    if any(f.get("rejected") and inside(f) for f in mine):
+        return "rejected by verification"
+    kept = [as_line(f.get("line")) for f in mine if f.get("severity") in ("blocker", "major")]
+    away = [min(lo - n if n < lo else n - hi for lo, hi in fixed) for n in kept if n is not None and fixed]
+    if away:
+        d = min(away)
+        return f"outside the fixed lines, {d} line{'' if d == 1 else 's'} away"
+    if kept:
+        return "outside the fixed lines, with no line"
+    if any(f.get("rejected") for f in mine):
+        return "rejected by verification"
+    return "no finding in the file"
+
+
+# Each play's reason, by case id, as run_case leaves it (#930 C3).
+WHY = {}
+
+
 def review_workflow():
     # DX_EVAL_REVIEW_WORKFLOW stands in for claude-review.yml in the tests.
     return os.environ.get("DX_EVAL_REVIEW_WORKFLOW") or os.path.join(ROOT, ".github", "workflows", "claude-review.yml")
@@ -581,7 +614,9 @@ def run_case(case, central, work, steps=None):
     if git("checkout", "-q", "-f", "-B", f"eval/{case['pr']}", case["head"]).returncode != 0:
         return None
     case_work = tempfile.mkdtemp(prefix="dx-case-", dir=work)
-    return verdict(case, play_review(case, repo_dir, case_work, steps))
+    review = play_review(case, repo_dir, case_work, steps)
+    WHY[case["id"]] = reason(case, review)
+    return verdict(case, review)
 
 
 def short(items):
@@ -603,9 +638,13 @@ def merge(runs):
     for run in runs:
         for r in run:
             if r["id"] not in at:
-                at[r["id"]] = {"id": r["id"], "expect": r["expect"], "plays": []}
+                at[r["id"]] = {"id": r["id"], "expect": r["expect"], "plays": [], "why": []}
                 out.append(at[r["id"]])
-            at[r["id"]]["plays"] += list(r.get("plays") or [])
+            plays = list(r.get("plays") or [])
+            at[r["id"]]["plays"] += plays
+            # Each play's reason; a run from before #930 has none.
+            why = list(r.get("why") or [])
+            at[r["id"]]["why"] += (why + [""] * len(plays))[:len(plays)]
     return out
 
 
@@ -670,15 +709,37 @@ def worse(now, base, share=None):
     return "; ".join(why)
 
 
+def play_reason(r, i):
+    """The reason of play i of a result: the one it kept, else what its
+    result says."""
+    why = (r.get("why") or [])
+    if i < len(why) and why[i]:
+        return why[i]
+    p = (r.get("plays") or [None])[i]
+    return "not reviewed" if p is None else ("found" if p else "missed") if r.get("expect") == "flag" else ""
+
+
+def reasons(r):
+    """A flag case's reasons over its plays, each once with how many plays
+    gave it: 'found (2), no finding in the file (1)'."""
+    if r.get("expect") != "flag":
+        return ""
+    seen = {}
+    for i in range(len(r.get("plays") or [])):
+        w = play_reason(r, i)
+        seen[w] = seen.get(w, 0) + 1
+    return ", ".join(f"{w} ({n})" for w, n in seen.items())
+
+
 def table(results, now, base):
-    out = ["| Case | Expects | Plays | Result |", "| --- | --- | --- | --- |"]
+    out = ["| Case | Expects | Plays | Result | Why |", "| --- | --- | --- | --- | --- |"]
     words = {"flag": ("found", "missed"), "clean": ("clean", "blocked")}
     for r in results:
         yes, no = words.get(r["expect"], ("as expected", "not"))
         plays = ", ".join("not reviewed" if p is None else yes if p else no for p in r.get("plays") or [])
         m = median(r)
         res = "could not review" if m is None else ("as expected" if m else "**missed**" if r["expect"] == "flag" else "**blocked**")
-        out.append(f"| {r['id']} | {r['expect']} | {plays} | {res} |")
+        out.append(f"| {r['id']} | {r['expect']} | {plays} | {res} | {reasons(r)} |")
     out += ["", f"Found {now['found']} of {now['flag']} known bugs (baseline {base.get('found', '?')} of {base.get('flag', '?')}); "
             f"blocked {now['blocked']} of {now['clean']} clean pull requests (baseline {base.get('blocked', '?')}); {now['unreviewed']} not reviewed."]
     return "\n".join(out)
@@ -733,7 +794,13 @@ def self_test():
     now = score(res)
     check("score: each case's median; found, blocked, unreviewed", now, {"found": 1, "flag": 2, "blocked": 1, "clean": 1, "unreviewed": 1, "plays": PLAYS})
     check("median: 2 reviewed plays that split find no bug and block nothing", (median({"expect": "flag", "plays": [True, None, False]}), median({"expect": "clean", "plays": [True, None, False]})), (False, True))
-    check("merge: the plays of each run, case by case", merge([[{"id": "1", "expect": "flag", "plays": [True]}], [{"id": "1", "expect": "flag", "plays": [False]}]]), [{"id": "1", "expect": "flag", "plays": [True, False]}])
+    check("merge: the plays of each run, case by case", merge([[{"id": "1", "expect": "flag", "plays": [True]}], [{"id": "1", "expect": "flag", "plays": [False], "why": ["no finding in the file"]}]]), [{"id": "1", "expect": "flag", "plays": [True, False], "why": ["", "no finding in the file"]}])
+    rc = {"expect": "flag", "path": "a.php", "line": 5, "fixed": [[5, 6]]}
+    check("reason: found, outside with its distance, rejected, none in the file, not reviewed",
+          [reason(rc, r) for r in ({"findings": [{"severity": "major", "file": "a.php", "line": 6}]}, {"findings": [{"severity": "major", "file": "a.php", "line": 9}]},
+                                   {"findings": [{"severity": "minor", "file": "a.php", "line": 5, "rejected": "w"}]}, {"findings": [{"severity": "major", "file": "b.php", "line": 5}]}, None)],
+          ["found", "outside the fixed lines, 3 lines away", "rejected by verification", "no finding in the file", "not reviewed"])
+    check("reasons: each once, with its plays", reasons({"expect": "flag", "plays": [True, False, None], "why": ["found", "no finding in the file", ""]}), "found (1), no finding in the file (1), not reviewed (1)")
     check("short: fewer than MIN_CASES of a kind", (short(res), short([{"expect": k} for k in ("flag", "clean") for _ in range(MIN_CASES)])), (f"2 flag cases, fewer than {MIN_CASES}; 2 clean cases, fewer than {MIN_CASES}", ""))
     check("unplayed: a case not played PLAYS times", unplayed(res + [{"id": "5", "expect": "flag", "plays": [True]}]), ["5"])
     check("found_floor: a share of the flag cases, rounded up, never below one", [found_floor(f, sh) for f, sh in ((10, 0.3), (10, 0), (11, 0.3), (0, 0.3))], [3, 1, 4, 1])
@@ -743,7 +810,7 @@ def self_test():
     check("worse: two fewer bugs found is", worse({**now, "found": 0}, {"found": 2, "flag": 2, "blocked": 0}).startswith("it found 0 of 2"), True)
     check("worse: two more clean ones blocked is", "it blocked 2" in worse({**now, "blocked": 2}, {"found": 1, "flag": 2, "blocked": 0}), True)
     check("worse: more than one case unreviewed is", ("could not be reviewed" in worse({"found": 1, "flag": 1, "blocked": 0, "clean": 8, "unreviewed": 2}, {"found": 1, "flag": 1}), worse({"found": 1, "flag": 1, "blocked": 0, "clean": 9, "unreviewed": 1}, {"found": 1, "flag": 1})), (True, ""))
-    check("table: says what was missed, and each play", ("**missed**" in table(res, now, {}), "| 1 | flag | found, found, missed | as expected |" in table(res, now, {})), (True, True))
+    check("table: says what was missed, and each play", ("**missed**" in table(res, now, {}), "| 1 | flag | found, found, missed | as expected | found (2), missed (1) |" in table(res, now, {})), (True, True))
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
@@ -783,14 +850,19 @@ def main(argv):
         if check(cases):
             return 1
         plays = [int(argv[2])] if len(argv) == 3 else list(range(1, PLAYS + 1))
-        results = [{"id": c["id"], "expect": c["expect"], "plays": []} for c in cases]
+        results = [{"id": c["id"], "expect": c["expect"], "plays": [], "why": []} for c in cases]
         for n in plays:
             # Each play on its own clones: a fresh checkout and last.json.
             work = tempfile.mkdtemp(prefix=f"dx-eval-{n}-")
             for c, r in zip(cases, results):
+                WHY.pop(c["id"], None)
                 ok = run_case(c, ROOT, work)
-                print(f"  play {n}, {c['id']}: {ok}", file=sys.stderr)
+                why = WHY.pop(c["id"], None)
+                if why is None:
+                    why = "not reviewed" if ok is None and c["expect"] == "flag" else ""
+                print(f"  play {n}, {c['id']}: {ok}{' (' + why + ')' if why else ''}", file=sys.stderr)
                 r["plays"].append(ok)
+                r["why"].append(why)
         print(json.dumps(results, indent=2))
         return 0
     if argv[:1] in (["score"], ["baseline"]) and len(argv) >= 2:

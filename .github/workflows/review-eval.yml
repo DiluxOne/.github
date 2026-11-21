@@ -35,9 +35,13 @@ name: Review evaluation
 # repositories are never cases: their code would show in this public
 # repository's logs.
 #
-# A change that should move the score writes the new baseline from this
-# run's results (the artifacts): `scripts/review-eval.py baseline FILE...`,
-# in the same pull request, which a person merges. By hand with `mode:
+# The table gives each flag case its reason per play (#930): found, a
+# finding in the file outside the fixed lines and how far, one rejected by
+# verification, no finding in the file, or not reviewed. The summary ends
+# with this run's results as a baseline, between `--- baseline review ---`
+# and `--- end ---`. A change that should move the score commits that new
+# baseline (or writes it from the artifacts, `scripts/review-eval.py
+# baseline FILE...`), in the same pull request, which a person merges. By hand with `mode:
 # collect`, it first writes a new set (`review-eval.py collect`, the
 # workflow's read-only token), plays it whole, and keeps the new
 # cases.json and baseline.json as the `review-eval-set` artifact, for a
@@ -183,7 +187,13 @@ jobs:
           set -uo pipefail
           # A play that left no results fails the score: never a pass on fewer plays.
           python3 scripts/review-eval.py score "$RUNNER_TEMP"/plays/results-{1,2,3}.json | tee -a "$GITHUB_STEP_SUMMARY"
-          exit "${PIPESTATUS[0]}"
+          code="${PIPESTATUS[0]}"
+          # This run's results as a baseline, for a pull request to commit
+          # (#930); none below the found floor, nor from a partial run.
+          { echo; echo '```'; echo '--- baseline review ---'
+            python3 scripts/review-eval.py baseline "$RUNNER_TEMP"/plays/results-{1,2,3}.json 2>&1 || true
+            echo '--- end ---'; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "$code"
 
       - name: The new set's baseline
         if: needs.collect.result == 'success'
