@@ -1,0 +1,214 @@
+name: AI evaluation
+
+# Not reusable. Every AI step is measured (#735): a change to a step (its
+# workflow, the prompts it reads, its model in policy/autonomy.yml, its set
+# under evals/<step>/) is scored before it merges. scripts/evals.py says
+# which paths count for which step (`evals.py steps`), and this workflow's
+# `paths:` are their union (tests/workflows/test_evals.py holds them equal):
+# a pull request that touches none runs nothing, and one that touches one
+# step's paths runs that step's set alone. Each case of
+# evals/<step>/cases.json, a real one of the public repositories, is
+# replayed in a job of its own, with its step's time (`evals.py matrix`,
+# `evals.py run <step> <case>`), with the step as this pull request has it,
+# and graded deterministically where a grade exists; then one job per step
+# merges its cases' results (`evals.py merge`) and scores them against
+# evals/<step>/baseline.json (`evals.py score`): worse by more than one case
+# (by rate, passed / cases, so a set of another size compares fairly) fails the check "AI evaluation (<step>)", and the table says which cases.
+# A case left not replayed (its job ran out of time or failed) fails the
+# check by its name, as the runner's failure, never the step's score. The
+# review is one of the steps, but its set is run by its own workflow,
+# review-eval.yml (scripts/review-eval.py, 3 plays per case, #847), whose
+# `paths:` are the review's; this one never runs it.
+#
+# Paid: each case is one model run (the autopilot's, a whole work round).
+# It runs only on a pull request from a branch of this repository (a fork's
+# code never runs with the keys), and by hand for one step. The first job
+# lists the steps with no secret; private repositories are never cases.
+#
+# The slack is none when the baseline is not above it (autopilot's 1 of 6
+# fails at 0). A baseline that cannot be read, is not JSON or has the
+# wrong shape fails the check, and so does a missing or pending one for a
+# step in evals.py's BASELINED (spec, autopilot; and the review's, in
+# review-eval.yml). Only a step never
+# baselined with no baseline (missing, or pending) passes with a warning, and
+# its summary and log carry the whole run's results between the lines
+# `--- baseline <step> ---` and `--- end ---`: saved as FILE,
+# `scripts/evals.py baseline <step> FILE` writes the baseline, in a commit
+# a person reviews; nothing here pushes. A change that should move a score
+# does the same from its run's results (the artifact evals-<step>).
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/issue-triage.yml
+      - scripts/triage-brief.sh
+      - policy/autonomy.yml
+      - scripts/evals.py
+      - .github/workflows/evals.yml
+      - evals/triage/**
+      - .github/workflows/issue-repro.yml
+      - scripts/repro-ways.py
+      - evals/repro/**
+      - .github/workflows/autopilot.yml
+      - scripts/autopilot.py
+      - evals/spec/**
+      - evals/autopilot/**
+      - .github/workflows/review-reply.yml
+      - evals/reply/**
+  workflow_dispatch:
+    inputs:
+      step:
+        description: The step whose set runs
+        required: true
+        type: choice
+        options:
+          - triage
+          - repro
+          - spec
+          - autopilot
+          - reply
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evals-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  steps:
+    name: Which steps
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      steps: ${{ steps.list.outputs.steps }}
+      cases: ${{ steps.list.outputs.cases }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: The steps the change touches
+        id: list
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          STEP: ${{ inputs.step }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          DEFAULT_POLICY: policy/review-policy.default.yml
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = workflow_dispatch ]; then
+            # A step with no set yet runs nothing, and says so.
+            : > "$RUNNER_TEMP/steps.txt"
+            if [ -f "evals/$STEP/cases.json" ]; then printf '%s\n' "$STEP" > "$RUNNER_TEMP/steps.txt"; else echo "::notice::$STEP has no set yet (evals/$STEP/cases.json)."; fi
+          else
+            # No file listed is "could not tell" (this only runs when one
+            # matched `paths:`): evals.py steps then fails, and pipefail
+            # fails the check rather than skip every set.
+            python3 scripts/pr-files.py | python3 scripts/evals.py steps > "$RUNNER_TEMP/steps.txt"
+          fi
+          steps=$(jq -Rnc '[inputs | select(length > 0)]' < "$RUNNER_TEMP/steps.txt")
+          # One replay job per case, so each case gets its job's whole time.
+          cases=$(python3 scripts/evals.py matrix < "$RUNNER_TEMP/steps.txt")
+          echo "steps=$steps" >> "$GITHUB_OUTPUT"
+          echo "cases=$cases" >> "$GITHUB_OUTPUT"
+          echo "Steps to evaluate: $steps ($(jq length <<< "$cases") cases)" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  replay:
+    name: Replay (${{ matrix.step }} ${{ matrix.case }})
+    needs: steps
+    if: needs.steps.outputs.cases != '[]' && needs.steps.outputs.cases != '' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    # The step's limit for one case, and the job's own (evals.py matrix).
+    timeout-minutes: ${{ matrix.minutes }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.steps.outputs.cases) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: The Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code@2.1.302
+
+      # The replay reads each case's pinned issue title and body from its
+      # cases.json and never calls gh for the issue (b2a2e8c). The job's own
+      # token stays read-only, and the model never gets it (evals.py drops
+      # it from the CLI's environment).
+      - name: Replay the case
+        env:
+          STEP: ${{ matrix.step }}
+          CASE: ${{ matrix.case }}
+          GH_TOKEN: ${{ github.token }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
+          DX_BOT_LOGIN: ${{ vars.DX_BOT_LOGIN }}
+          DX_BOT_ID: ${{ vars.DX_BOT_ID }}
+        run: |
+          set -euo pipefail
+          git config --global user.name "$DX_BOT_LOGIN"
+          git config --global user.email "$DX_BOT_ID+$DX_BOT_LOGIN@users.noreply.github.com"
+          python3 scripts/evals.py run "$STEP" "$CASE" > "$RUNNER_TEMP/results.json"
+
+      # Named by the case's place in its set: a case's id is no artifact name.
+      - name: Keep the case's result
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: evals-${{ matrix.step }}-case-${{ matrix.n }}
+          path: ${{ runner.temp }}/results.json
+          retention-days: 30
+
+  eval:
+    name: AI evaluation (${{ matrix.step }})
+    needs:
+      - steps
+      - replay  # order: it scores the evals-<step>-case-<n> artifacts the replay jobs upload.
+    # It scores whatever its cases' jobs left: a job that ran out of time
+    # leaves its case not replayed, which fails the check by its name.
+    if: ${{ !cancelled() && needs.steps.result == 'success' && needs.steps.outputs.steps != '[]' && needs.steps.outputs.steps != '' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        step: ${{ fromJSON(needs.steps.outputs.steps) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # None at all (every job of the step failed) is every case not
+      # replayed, which the score says by name: it never stops here.
+      - name: The cases' results
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: evals-${{ matrix.step }}-case-*
+          path: ${{ runner.temp }}/cases
+
+      - name: Score against the baseline
+        env:
+          STEP: ${{ matrix.step }}
+        run: |
+          set -uo pipefail
+          mkdir -p "$RUNNER_TEMP/cases"
+          find "$RUNNER_TEMP/cases" -name results.json -print0 | xargs -0 python3 scripts/evals.py merge "$STEP" > "$RUNNER_TEMP/results.json" || exit 1
+          python3 scripts/evals.py score "$STEP" "$RUNNER_TEMP/results.json" | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "${PIPESTATUS[0]}"
+
+      - name: Keep the results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: evals-${{ matrix.step }}
+          path: ${{ runner.temp }}/results.json
+          retention-days: 30
