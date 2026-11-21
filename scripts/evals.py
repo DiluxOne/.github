@@ -277,8 +277,9 @@ def score(step, results):
 
 
 def slack(n):
-    """The slack below a baseline of N: SLACK, or none when N is not above
-    it (a baseline of one case with a slack of one could never fail)."""
+    """The slack below a baseline that passed N cases: SLACK, or none when N
+    is not above it (a baseline that passed one case or none, with a slack
+    of one, could never fail)."""
     return SLACK if n > SLACK else 0
 
 
@@ -291,7 +292,8 @@ def worse(step, now, base):
         return review_eval().worse(now, base)
     # By rate (passed / cases), so a change that adds or removes cases is
     # compared fairly: below (baseline passed - slack) / baseline cases, the
-    # slack still one case of the baseline's set (none below one case).
+    # slack still one case of the baseline's set (none when the baseline
+    # passed one case or none).
     floor = base["passed"] - slack(base["passed"]) if base.get("cases") else 0
     if floor > 0 and (now["passed"] * base["cases"] < floor * now["cases"] or not now["cases"]):
         why.append(f"{now['passed']} of {now['cases']} cases passed, the baseline {base['passed']} of {base['cases']}")

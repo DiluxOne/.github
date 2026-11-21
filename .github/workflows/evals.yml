@@ -140,9 +140,10 @@ jobs:
       - name: The Claude Code CLI
         run: npm install -g @anthropic-ai/claude-code@2.1.302
 
-      # The issues of the cases are public: the job's own token reads them.
-      # The model never gets it (evals.py drops it from the CLI's
-      # environment).
+      # The replay reads each case's pinned issue title and body from its
+      # cases.json and never calls gh for the issue (b2a2e8c). The job's own
+      # token stays read-only, and the model never gets it (evals.py drops
+      # it from the CLI's environment).
       - name: Replay the case
         env:
           STEP: ${{ matrix.step }}
