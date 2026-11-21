@@ -724,7 +724,9 @@ jobs:
       # #699 C5: a finding someone who decides settled (above), on a review
       # that blocked at the current head, re-runs that head's review job, so
       # its verdict reads the settlement (claude-review.yml reuses no verdict
-      # older than one). A token minted after the model ran, used only here.
+      # older than one), once the review's run has finished (#912: it waits
+      # up to 6 minutes, then warns). A token minted after the model ran,
+      # used only here.
       - name: Token for the review's re-run
         if: steps.post.outputs.settled == 'true'
         id: rerunner
@@ -761,16 +763,41 @@ jobs:
           if [ "$(jq -r --arg h "$HEAD" 'if .sha == $h and .blocking == true then "yes" else "no" end' <<<"${record:-null}" 2>/dev/null || echo no)" != yes ]; then
             echo "The review did not block at ${HEAD:0:7}: nothing to run again."; exit 0
           fi
-          # The newest run whose review checked the head, by its check run.
-          # shellcheck disable=SC2016 # jq, not shell.
-          run=$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD/check-runs" --paginate \
-            --jq '.check_runs[] | select(.name == "Claude review" or (.name | endswith(" / Claude review"))) | select(.status == "completed") | ((.details_url // "") | capture("/runs/(?<id>[0-9]+)") | .id)' \
-            | sort -n | tail -1)
-          [ -n "$run" ] || { echo "No finished review of ${HEAD:0:7} to run again."; exit 0; }
+          # The newest run whose review checked the head, by its check run,
+          # once both the check and its whole run are completed (#912):
+          # GitHub refuses to re-run a run still in progress, and the
+          # review's run goes on after its check (auto-merge, waiting,
+          # pipeline). Polled every 15 seconds, 6 minutes at most (24 waits,
+          # the POST's retries included), inside the job's timeout.
+          left=24
+          run="" state=""
+          while :; do
+            # shellcheck disable=SC2016 # jq, not shell.
+            newest=$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD/check-runs" --paginate \
+              --jq '.check_runs[] | select(.name == "Claude review" or (.name | endswith(" / Claude review"))) | "\((.details_url // "") | capture("/runs/(?<id>[0-9]+)") | .id) \(.status)"' \
+              | sort -n | tail -1)
+            [ -n "$newest" ] || { echo "No review of ${HEAD:0:7} to run again."; exit 0; }
+            run=${newest%% *}
+            state="check ${newest#* }"
+            if [ "$state" = "check completed" ]; then
+              state="run $(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run" --jq .status || echo unknown)"
+              [ "$state" != "run completed" ] || break
+            fi
+            if [ "$left" -le 0 ]; then
+              echo "::warning::The review's run $run is not finished ($state): it is not run again."; exit 0
+            fi
+            left=$((left - 1))
+            sleep 15
+          done
           # The API, not `gh run rerun`: an organisation's required workflow
           # has no file here for gh to find.
-          if gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$run/rerun-failed-jobs" >/dev/null; then
-            echo "The review of ${HEAD:0:7} runs again (run $run): $LOGIN settled a finding."
-          else
-            echo "::warning::The review's run $run could not be run again."
-          fi
+          retries=3
+          until gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$run/rerun-failed-jobs" >/dev/null; do
+            if [ "$left" -le 0 ] || [ "$retries" -le 0 ]; then
+              echo "::warning::The review's run $run ($state) could not be run again."; exit 0
+            fi
+            retries=$((retries - 1))
+            left=$((left - 1))
+            sleep 15
+          done
+          echo "The review of ${HEAD:0:7} runs again (run $run): $LOGIN settled a finding."
