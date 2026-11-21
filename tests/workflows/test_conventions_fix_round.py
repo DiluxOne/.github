@@ -147,6 +147,8 @@ def reworded(tmp_path, same_tree=True, reword_ok="true", lease_holds=True):
     git(work, "bundle", "create", "-q", ".dx-out/work.bundle", "HEAD")
     git(work, "checkout", "-q", "--detach", there)
     files = {f".dx-central/scripts/{n}": FAKE for n in ("autopilot.py", "api-commit.py")}
+    # A central autopilot.py that knows `describe` (#924), so the step runs it.
+    files[".dx-central/scripts/autopilot.py"] = FAKE + "\n\ndef describe_body():\n    pass\n"
     sha = there if lease_holds else "f" * 40
     env = {"BRANCH": "fix/1-a", "DEFAULT": "main", "ENGINE": "false", "PR": "8", "NUMBER": "1", "REWORD_OK": reword_ok,
            "DX_BOT_LOGIN": "dilux-bot[bot]", "DX_BOT_ID": "1", "FAKE_AUTOPILOT_READY_GOES_RC": "0"}
@@ -160,6 +162,12 @@ def test_a_reworded_branch_with_the_same_tree_goes_with_a_lease(tmp_path):
     assert ran.code == 0, ran.stdout + ran.stderr
     assert ["api-commit.py", "push", "fix/1-a", "--force", "--onto", base] in ran.calls
     assert ["gh", "api", "repos/o/r/branches/fix/1-a", "--jq", ".commit.sha"] in ran.calls
+    # #924: the description is rewritten before the reworded history is
+    # pushed, so the review that push starts reads the new one.
+    describe = ["autopilot.py", "apply", ".dx-out/outbox.jsonl", "+describe"]
+    push = ["api-commit.py", "push", "fix/1-a", "--force", "--onto", base]
+    assert ran.calls.count(describe) == 1, ran.calls
+    assert ran.calls.index(describe) < ran.calls.index(push)
 
 
 def test_a_reworded_branch_with_another_tree_is_not_pushed(tmp_path):

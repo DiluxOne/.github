@@ -1830,6 +1830,10 @@ jobs:
               echo "::error::The agent's commits change .github/workflows: nothing is pushed."; exit 1
             fi
             git checkout -q -B "$BRANCH" "$new"
+            # Before any push of the round, the reworded history's too, so
+            # the review that push starts reads the new description (#924).
+            if [ "$REWORD" != true ] && [ "$(git rev-parse HEAD)" = "$(git rev-parse "origin/$BRANCH")" ]; then describe true; else describe false; fi
+            described=true
             if [ "$REWORD" = true ]; then
               # The lease: GitHub's branch is still the head this round
               # read, or nothing is written over.
@@ -1840,8 +1844,6 @@ jobs:
               python3 .dx-central/scripts/api-commit.py push "$BRANCH" --force --onto "$(git merge-base "origin/$BRANCH" "origin/$DEFAULT")"
               git fetch -q origin "$BRANCH"
             fi
-            if [ "$(git rev-parse HEAD)" = "$(git rev-parse "origin/$BRANCH")" ]; then describe true; else describe false; fi
-            described=true
             # #820: a round that ends ready pushes once, after the pull
             # request is marked ready: `finish ready` (in `apply` below)
             # pushes these commits with the empty ready commit on top, so one
