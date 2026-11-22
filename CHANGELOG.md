@@ -2,6 +2,16 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
+## [7.20.4](https://github.com/DiluxOne/.github/releases/tag/v7.20.4) · 2026-11-22
+
+### Fixes
+
+- the review misses 7 of 10 known bugs in their own file ([#955](https://github.com/DiluxOne/.github/pull/955))
+
+### Tests
+
+- the gh-wait.sh self-test fails on a second boundary ([#959](https://github.com/DiluxOne/.github/pull/959))
+
 ## [7.20.3](https://github.com/DiluxOne/.github/releases/tag/v7.20.3) · 2026-11-22
 
 ### Fixes
@@ -10,6 +20,10 @@ Every version of the engine (the workflows, scripts, policy and kinds other repo
 - the engine stops on a person where nothing needs one ([#935](https://github.com/DiluxOne/.github/pull/935))
 - release scenario low-risk-merges fails ([#937](https://github.com/DiluxOne/.github/pull/937))
 - a fixed triage in the test repository's scenarios ([#947](https://github.com/DiluxOne/.github/pull/947))
+
+### Maintenance
+
+- release v7.20.3 ([#952](https://github.com/DiluxOne/.github/pull/952))
 
 ## [7.20.2](https://github.com/DiluxOne/.github/releases/tag/v7.20.2) · 2026-11-22
 
