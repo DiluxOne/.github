@@ -120,6 +120,9 @@ jobs:
     environment: release
     permissions:
       contents: read
+    outputs:
+      # The sha `v7-next` points at: with main's, the candidate's key (#929).
+      next: ${{ steps.candidate.outputs.next }}
     steps:
       - name: App token (contents and workflows, this repository)
         id: app
@@ -140,7 +143,11 @@ jobs:
           fetch-depth: 0
           token: ${{ steps.app.outputs.token }}
 
+      # A v7-next already built on this commit, with the same tree, is kept
+      # (release-lane.py same_candidate, #929): the same candidate, whose
+      # earlier passes still count.
       - name: The release candidate, and v7-next at it
+        id: candidate
         env:
           PLAN: ${{ needs.plan.outputs.plan }}
           # scripts/api-commit.py makes the candidate's commit through the
@@ -153,7 +160,8 @@ jobs:
           git config user.name "$DX_BOT_LOGIN"
           git config user.email "$DX_BOT_ID+$DX_BOT_LOGIN@users.noreply.github.com"
           printf '%s' "$PLAN" > "$RUNNER_TEMP/plan.json"
-          python3 scripts/release-lane.py candidate --plan "$RUNNER_TEMP/plan.json"
+          next=$(python3 scripts/release-lane.py candidate --plan "$RUNNER_TEMP/plan.json")
+          echo "next=$next" >> "$GITHUB_OUTPUT"
 
   # The callers move to v7-next once, the groups of scenarios play at once
   # (one job each), and the callers come back once every group ended.
@@ -167,8 +175,10 @@ jobs:
     environment: release
     permissions:
       contents: read
+      actions: read # the earlier runs' scenarios-results of this workflow (#929)
     outputs:
       groups: ${{ steps.groups.outputs.groups }}
+      passed: ${{ steps.groups.outputs.passed }}
       moved: ${{ steps.move.outputs.moved }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -181,10 +191,22 @@ jobs:
         run: echo "repo=$(python3 scripts/org.py test-repo)" >> "$GITHUB_OUTPUT"
 
       # The groups of tests/release/scenarios.yml: every scenario in its own
-      # (release-scenarios.py groups, #694).
+      # (release-scenarios.py groups, #694), but those that passed on this
+      # same candidate (main's sha and v7-next's) in an earlier run of the
+      # lane (release-scenarios.py passed, #929): their passes count, and
+      # only the others play. A new candidate matches no earlier run.
       - name: The groups of scenarios
         id: groups
-        run: echo "groups=$(python3 scripts/release-scenarios.py groups)" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.plan.outputs.sha }}
+          NEXT: ${{ needs.candidate.outputs.next }}
+        run: |
+          set -euo pipefail
+          passed="$RUNNER_TEMP/passed.json"
+          python3 scripts/release-scenarios.py passed --repo "$GITHUB_REPOSITORY" --sha "$SHA" --next "$NEXT" --run-id "$GITHUB_RUN_ID" --out "$passed"
+          echo "passed=$(cat "$passed")" >> "$GITHUB_OUTPUT"
+          echo "groups=$(python3 scripts/release-scenarios.py groups --passed "$passed")" >> "$GITHUB_OUTPUT"
 
       # The test identity is its token's owner (#739, option B): the
       # organisation variable DX_TEST_LOGIN, which the workflows that decide
@@ -230,16 +252,23 @@ jobs:
           permission-actions: read
 
       # No scenario plays unless the callers reached v7-next (`moved`); one
-      # that did not is a failing `callers` row the decision reads.
+      # that did not is a failing `callers` row the decision reads. With no
+      # group left to play (#929), no caller moves: `--record-only` records
+      # what `back` puts back, and nothing plays.
       - name: The callers at v7-next
         id: move
         env:
           DX_CALLERS_TOKEN: ${{ steps.app.outputs.token }}
           OWNER: ${{ github.repository_owner }}
           TEST_REPO: ${{ steps.test.outputs.repo }}
+          LEFT: ${{ steps.groups.outputs.groups }}
         run: |
           set -uo pipefail
           mkdir -p "$RUNNER_TEMP/move"
+          if [ "$LEFT" = "[]" ]; then
+            python3 scripts/release-scenarios.py move --record-only --repo "$OWNER/$TEST_REPO" --ref v7-next --moved "$RUNNER_TEMP/move/moved.json" --out "$RUNNER_TEMP/move/results.md"
+            exit 0
+          fi
           if python3 scripts/release-scenarios.py move --repo "$OWNER/$TEST_REPO" --ref v7-next --moved "$RUNNER_TEMP/move/moved.json" --out "$RUNNER_TEMP/move/results.md"; then
             echo "moved=true" >> "$GITHUB_OUTPUT"
           fi
@@ -256,7 +285,7 @@ jobs:
   play:
     name: Scenarios ${{ matrix.group.id }}
     needs: [plan, move]
-    if: needs.move.outputs.moved == 'true'
+    if: needs.move.outputs.moved == 'true' && needs.move.outputs.groups != '[]'
     # GitHub's runners, never the organisation's (#707): a play job only
     # runs `gh` and polls, while the test repository's jobs it waits for run
     # on DX_RUNNER_HEAVY; up to 25 play jobs there left those jobs queued
@@ -387,7 +416,7 @@ jobs:
 
   act:
     name: Release, bug or issue
-    needs: [plan, move, play, back]
+    needs: [plan, candidate, move, play, back]
     # A job of the scenarios that failed is a bug to open, never a lane that
     # stops with none (#644): this job runs once the callers' move ended,
     # failed or not, and whatever the play and back jobs ended in. One that
@@ -449,6 +478,11 @@ jobs:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           PLAN: ${{ needs.plan.outputs.plan }}
           SCENARIO_GROUPS: ${{ needs.move.outputs.groups }}
+          # What passed on this candidate in an earlier lane (#929), and the
+          # candidate's key, which the results this run leaves carry.
+          PASSED: ${{ needs.move.outputs.passed }}
+          SHA: ${{ needs.plan.outputs.sha }}
+          NEXT: ${{ needs.candidate.outputs.next }}
           MOVE: ${{ needs.move.result }}
           PLAY: ${{ needs.play.result }}
           BACK: ${{ needs.back.result }}
@@ -467,8 +501,13 @@ jobs:
           # failing row for a group with no file, a scenario with no row, or
           # a job that did not succeed, with this run (#644).
           results="$RUNNER_TEMP/results.md"
+          printf '%s' "${PASSED:-[]}" > "$RUNNER_TEMP/passed.json"
           python3 scripts/release-scenarios.py merge --dir "$RUNNER_TEMP/scenarios" --groups "$SCENARIO_GROUPS" --job "move=$MOVE" --job "play=$PLAY" --job "back=$BACK" --run "$RUN_URL" --out "$results" \
-            --minutes "$SCENARIOS_TIMEOUT" --play-minutes "$PLAY_TIMEOUT" >> "$GITHUB_STEP_SUMMARY" || true
+            --minutes "$SCENARIOS_TIMEOUT" --play-minutes "$PLAY_TIMEOUT" --passed "$RUNNER_TEMP/passed.json" >> "$GITHUB_STEP_SUMMARY" || true
+          # The table and the candidate's key, for the next lane on it (#929).
+          mkdir -p "$RUNNER_TEMP/lane"
+          cp "$results" "$RUNNER_TEMP/lane/results.md"
+          jq -n --arg sha "$SHA" --arg next "$NEXT" '{sha: $sha, next: $next}' > "$RUNNER_TEMP/lane/key.json"
           # Exit 1 with its JSON when v7 moved but the Release failed: the
           # outputs are written first, so the watch still runs.
           status=0
@@ -478,6 +517,16 @@ jobs:
             for key in "do" version previous moved_at; do echo "$key=$(jq -r --arg k "$key" '.[$k] // ""' <<<"$out")" >> "$GITHUB_OUTPUT"; done
           fi
           exit "$status"
+
+      # What this lane passed on its candidate (#929): the next lane on the
+      # same one plays only the rest (release-scenarios.py passed).
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: scenarios-results
+          path: ${{ runner.temp }}/lane/
+          if-no-files-found: ignore
+          overwrite: true
 
   watch:
     name: Watch the repositories for 30 minutes

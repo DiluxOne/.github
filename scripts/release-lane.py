@@ -17,7 +17,9 @@ in the test repository; a breaking change waits on a person.
         scenarios would otherwise try vN's), checked to differ from main in
         nothing else, made through the API with GH_TOKEN (scripts/api-
         commit.py, so GitHub signs it: never `git commit` and a push from
-        the runner, #610), and the lightweight `vN-next` tag moved to it
+        the runner, #610), and the lightweight `vN-next` tag moved to it;
+        a `vN-next` already on such a commit of main's HEAD with the same
+        tree is kept, nothing moved (#929). Prints `vN-next`'s sha
   release-lane.py decide --plan F --results F [--run URL]
         from the plan and the scenarios' results (scripts/release-scenarios.py
         run): `release`, `bug` (one failed: nothing tagged, nothing moved,
@@ -120,6 +122,20 @@ def only_refs_differ(main_files, candidate_files, major):
     return out
 
 
+def same_candidate(root, major, tree, run=sh):
+    """The commit `vN-next` points at when it is the candidate this
+    checkout would build (its parent HEAD, its tree `tree`), else ""."""
+    try:
+        kept = run("git", "-C", root, "rev-parse", "-q", "--verify", f"refs/tags/{major}-next^{{commit}}").strip()
+        if not kept:
+            return ""
+        same = (run("git", "-C", root, "rev-parse", f"{kept}^{{tree}}").strip() == tree
+                and run("git", "-C", root, "rev-parse", f"{kept}^").strip() == run("git", "-C", root, "rev-parse", "HEAD").strip())
+    except RuntimeError:
+        return ""
+    return kept if same else ""
+
+
 def candidate(central, major, root=".", run=sh):
     files = {}
     for path in sorted(glob.glob(os.path.join(root, ".github", "workflows", "*.yml"))):
@@ -143,6 +159,12 @@ def candidate(central, major, root=".", run=sh):
     # runs from the checkout, which in release-lane.yml is `root`.
     run("git", "-C", root, "add", "-u")
     tree = run("git", "-C", root, "write-tree").strip()
+    # #929: a `vN-next` already built on this commit, with this tree, is
+    # the same candidate: kept, no tag moved, so the scenarios it passed
+    # (keyed on main's sha and `vN-next`'s) still count for it.
+    kept = same_candidate(root, major, tree, run)
+    if kept:
+        return kept
     sha = run("git", "-C", root, "commit-tree", tree, "-p", "HEAD", "-m", f"chore: release candidate, inner calls at @{major}-next").strip()
     run("git", "-C", root, "reset", "-q", "--soft", sha)
     run(sys.executable, os.path.join(HERE, "api-commit.py"), "push", CANDIDATE, "--onto", "HEAD~1", "--force")
@@ -784,7 +806,20 @@ def check_workflow(check, path=os.path.join(ROOT, ".github", "workflows", "relea
     check("#707 workflow: play runs on GitHub's runners, never DX_RUNNER_HEAVY, where the test repository's jobs it waits for run",
           play.get("runs-on"), "ubuntu-latest")
     needs = lambda job: [jobs.get(job, {}).get("needs")] if isinstance(jobs.get(job, {}).get("needs"), str) else jobs.get(job, {}).get("needs") or []
-    check("workflow: play needs move, and plays only once the callers moved", ("move" in needs("play"), play.get("if")), (True, "needs.move.outputs.moved == 'true'"))
+    check("workflow: play needs move, and plays only once the callers moved, and only a group left to play (#929)", ("move" in needs("play"), play.get("if")),
+          (True, "needs.move.outputs.moved == 'true' && needs.move.outputs.groups != '[]'"))
+    # #929: the candidate's key reaches the groups and the act steps, and
+    # the act job leaves its table for the next lane on the same candidate.
+    gstep = next((st for st in jobs.get("move", {}).get("steps") or [] if st.get("id") == "groups"), {})
+    astep = next((st for st in jobs.get("act", {}).get("steps") or [] if st.get("id") == "act"), {})
+    key = {"SHA": "${{ needs.plan.outputs.sha }}", "NEXT": "${{ needs.candidate.outputs.next }}"}
+    check("#929 workflow: the groups and act steps read the candidate's key, main's sha and v7-next's",
+          ([(gstep.get("env") or {}).get(k) for k in key], [(astep.get("env") or {}).get(k) for k in key]), (list(key.values()), list(key.values())))
+    check("#929 workflow: the move job reads its own repository's earlier runs, and nothing more",
+          (jobs.get("move", {}).get("permissions"), (gstep.get("env") or {}).get("GH_TOKEN")), ({"contents": "read", "actions": "read"}, "${{ github.token }}"))
+    check("#929 workflow: act uploads scenarios-results whatever it decided",
+          [(st.get("with") or {}).get("name") for st in jobs.get("act", {}).get("steps") or [] if "upload-artifact" in str(st.get("uses")) and st.get("if") == "always()"],
+          ["scenarios-results"])
     psteps = play.get("steps") or []
     check("workflow: play mints no App token: the test identity's tokens alone (#694: its fork token, for the scenario from a fork)",
           ([st for st in psteps if "create-github-app-token" in str(st.get("uses"))], [v for st in psteps for k, v in (st.get("env") or {}).items() if "token" in str(v).lower() or "TOKEN" in k]),
@@ -870,6 +905,18 @@ def self_test():
         check("candidate: no branch is pushed from the runner (#610)", [c for c in words if c[:1] == ["git"] and "push" in c and any(a.startswith("refs/heads/") or a.startswith("HEAD:") for a in c)], [])
         check("candidate: its commit goes through the API, signed (#610)", [c[2:] for c in words if c[1:2] and c[1].endswith("api-commit.py")], [["push", CANDIDATE, "--onto", "HEAD~1", "--force"]])
         check("candidate: v7-next is moved at the signed commit", fake.has("git", "-C", root, "push", "-f", "origin", "refs/tags/v7-next"), True)
+        # #929: v7-next already on a commit of this HEAD with this tree is kept.
+        def main_again():
+            with open(os.path.join(root, ".github", "workflows", "a.yml"), "w", encoding="utf-8") as fh:
+                fh.write("on:\n  workflow_call:\n" + text)
+        main_again()
+        same = Fake({"write-tree": "T\n", "v7-next^{commit}": "K\n", "K^{tree}": "T\n", "rev-parse K^": "M\n", "rev-parse HEAD": "M\n"})
+        check("#929 candidate: the same candidate keeps v7-next, pushes nothing and prints it",
+              (candidate(central, "v7", root=root, run=same), [c for c in same.calls if "push" in c]), ("K", []))
+        other = Fake({"write-tree": "T\n", "v7-next^{commit}": "K\n", "K^{tree}": "U\n", "rev-parse K^": "M\n", "rev-parse HEAD": "M\n"})
+        main_again()
+        candidate(central, "v7", root=root, run=other)
+        check("#929 candidate: another tree is a new candidate, v7-next moved to it", other.has("git", "-C", root, "push", "-f", "origin", "refs/tags/v7-next"), True)
 
     passed = [{"id": "issue-complete", "ok": True, "why": [], "run": "https://github.com/o/t/actions/runs/1"},
               {"id": "spec-to-draft", "ok": True, "why": [], "run": "https://github.com/o/t/actions/runs/2"}]

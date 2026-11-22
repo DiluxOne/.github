@@ -104,9 +104,19 @@ after GitHub's back-off within the scenario's limit, then named.
         prints each scenario's limit in minutes and how often it polls,
         [{id, minutes, poll}] as JSON; exits 1 naming a fixed wait or a
         limit past 15 minutes (#694)
-  release-scenarios.py groups
+  release-scenarios.py groups [--passed FILE]
         prints the groups, [{id, scenarios}] as JSON, the release lane's
-        `play` matrix; exits 1 naming what `partition` finds
+        `play` matrix; exits 1 naming what `partition` finds. With
+        --passed, the scenarios FILE names dropped, then empty groups (#929)
+  release-scenarios.py passed --repo R --sha MAIN --next V7NEXT --out FILE
+                              [--run-id ID]
+        what passed on this candidate before (#929): the completed earlier
+        runs of release-lane.yml (GH_TOKEN, `actions: read`), newest
+        first, up to EARLIER_RUNS, until the first whose
+        `scenarios-results` artifact has the key (MAIN, V7NEXT); its
+        passing scenarios, each with the run it first passed in, written
+        to FILE as [{id, in}] ([] for a new candidate, or when they cannot
+        be read); exit 0
   release-scenarios.py move --repo OWNER/NAME --moved MOVED --out FILE
                             [--ref v7-next] [--minutes N]
         the callers moved to the ref, as `run` does (with
@@ -152,7 +162,9 @@ after GitHub's back-off within the scenario's limit, then named.
         #690), then the pairs no row's runs triggered (#843,
         `run_coverage`: "Pairs no scenario triggered: …", a warning that
         fails nothing, never counting `covers:`, which `coverage` reads as
-        each scenario's plan); exits 1 when a row fails
+        each scenario's plan); exits 1 when a row fails. With --passed FILE
+        (what `passed` wrote, #929), a passing row `pass (in <run>)` for
+        each scenario that passed on the same candidate, so it still counts
   release-scenarios.py run --repo OWNER/NAME [--ref v7-next] [--only ID ...]
                            [--out FILE] [--minutes N]
         moves the test repository's callers to the ref through a pull
@@ -860,6 +872,9 @@ def table(results):
         if r.get("ok") and r.get("flaky"):
             # #843: it failed, then passed on its retry.
             why = f" (flaky: {'; '.join(r.get('first_why') or []) or 'failed once'})"
+        if r.get("ok") and r.get("in"):
+            # #929: a pass an earlier lane on the same candidate played.
+            why = f" (in {r['in']})"
         lines.append(f"| `{r['id']}` | {'pass' if r['ok'] else 'fail'}{why} | {r.get('run') or ''} |")
     return "\n".join(lines) + "\n"
 
@@ -1856,6 +1871,12 @@ def point_callers(repo, ref, run=gh, central=None, back=None, sleep=time.sleep, 
     return [{"name": name, "before": text} for name, text, _ in changes]
 
 
+def recorded_callers(repo, ref, run=gh, central=None):
+    """What `back` must put back when no caller moves (#929, `move
+    --record-only`): nothing yet."""
+    return []
+
+
 def put_back(repo, ref, moved, callers=gh, central=None, sleep=time.sleep, minutes=20):
     """The callers `point_callers` moved (`moved`) put back from `ref`,
     through another merged pull request: [] once they are, else one failing
@@ -1951,6 +1972,68 @@ def groups(scenarios):
     under its own directory, `core_writes`, so none waits on another). [{id,
     scenarios}]. Pure."""
     return [{"id": s.get("id"), "scenarios": [s.get("id")]} for s in scenarios]
+
+
+def drop_passed(gs, passed):
+    """The groups `gs` with the scenarios of `passed` ([{id, in}], #929:
+    what passed on the same candidate) dropped, then any group left empty.
+    Pure."""
+    done = {p.get("id") for p in passed or [] if isinstance(p, dict)}
+    left = [dict(g, scenarios=[sid for sid in g["scenarios"] if sid not in done]) for g in gs]
+    return [g for g in left if g["scenarios"]]
+
+
+# The artifact a lane's act job leaves (#929): its merged table, and the key
+# of the candidate it tried (main's sha, `v7-next`'s), in key.json.
+RESULTS = "scenarios-results"
+# How many of the lane's earlier runs `earlier_passes` reads, newest first.
+EARLIER_RUNS = 10
+
+
+def passes_of(rows, ids, url):
+    """[{id, in}] of the scenarios among `ids` whose row in `rows` passed:
+    each in the run it first passed in (its own `in`, else `url`). Pure."""
+    out = []
+    for r in rows:
+        if isinstance(r, dict) and r.get("ok") is True and r.get("id") in ids and r["id"] not in {p["id"] for p in out}:
+            out.append({"id": r["id"], "in": str(r.get("in") or url)})
+    return out
+
+
+def earlier_passes(repo, sha, nxt, run_id, ids, run=gh, limit=EARLIER_RUNS):
+    """What passed on this candidate before (#929): the completed earlier
+    runs of release-lane.yml in `repo` (not `run_id`), newest first, read
+    until the first whose `scenarios-results` has the key (`sha`, `nxt`),
+    and its passing rows of the scenarios `ids` (`passes_of`). [] when
+    none matches, or when the key is not whole: a new candidate plays
+    everything. A run with no such artifact is skipped."""
+    import tempfile
+    if not sha or not nxt:
+        return []
+    got = json.loads(run("api", f"repos/{repo}/actions/workflows/release-lane.yml/runs?status=completed&per_page={limit + 1}") or "{}")
+    runs = [r for r in (got.get("workflow_runs") or []) if str(r.get("id")) != str(run_id)][:limit]
+    for r in runs:
+        with tempfile.TemporaryDirectory() as d:
+            try:
+                run("run", "download", str(r["id"]), "--repo", repo, "--name", RESULTS, "--dir", d)
+                with open(os.path.join(d, "key.json"), encoding="utf-8") as fh:
+                    key = json.load(fh)
+            except (RuntimeError, OSError, ValueError):
+                continue
+            if not isinstance(key, dict) or (key.get("sha"), key.get("next")) != (sha, nxt):
+                continue
+            return passes_of(read_results(os.path.join(d, "results.md")), set(ids), str(r.get("html_url") or r["id"]))
+    return []
+
+
+def read_passed(path):
+    """The [{id, in}] `passed` wrote to `path`; [] when none."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            got = json.load(fh)
+    except (OSError, ValueError):
+        return []
+    return [p for p in got if isinstance(p, dict) and isinstance(p.get("id"), str) and isinstance(p.get("in"), str)] if isinstance(got, list) else []
 
 
 def core_writes(s, pack):
@@ -2345,7 +2428,7 @@ def read_results(path):
     return json.loads(m.group(1)) if m else []
 
 
-def merge(gs, files, jobs, run="", minutes=0, play_minutes=0):
+def merge(gs, files, jobs, run="", minutes=0, play_minutes=0, passed=()):
     """One table of every scenario's result, from what the lane's jobs
     wrote (`files`: {"move"|"back"|<group id>: rows, or None for a file
     that is missing}) and how they ended (`jobs`: {name: result}): the
@@ -2358,6 +2441,9 @@ def merge(gs, files, jobs, run="", minutes=0, play_minutes=0):
     `play_minutes`, the play job's timeout-minutes and its play step's, are
     named in the rows a timeout may explain (#690): GitHub cancels a job
     past its own without cancelling the run, and fails a step past its own.
+    `passed` ([{id, in}], #929): a passing row, `in` its earlier run, for
+    each scenario that passed on the same candidate and has no row here;
+    with them, no groups left and a skipped play job fail nothing.
     Pure."""
     rows = []
     timeout = f" (its play step at {play_minutes} minutes, its job at {minutes}: timeout-minutes in release-lane.yml)" if minutes else ""
@@ -2382,12 +2468,15 @@ def merge(gs, files, jobs, run="", minutes=0, play_minutes=0):
             out["first_why"] = [str(w) for w in r["first_why"]]
         if isinstance(r.get("triggered"), list):
             out["triggered"] = [str(p) for p in r["triggered"]]
+        if out["ok"] and r.get("in"):
+            out["in"] = str(r["in"])
         return out
     if files.get("move") is None:
         fail("move", "the move job left no results", "harness")
     else:
         rows += [own(r, "harness") for r in files["move"] if isinstance(r, dict)]
-    if not gs:
+    passed = [p for p in passed or [] if isinstance(p, dict) and p.get("id")]
+    if not gs and not passed:
         fail("groups", "no groups of scenarios to read: none played", "harness")
     for g in gs:
         got = files.get(g["id"])
@@ -2405,12 +2494,17 @@ def merge(gs, files, jobs, run="", minutes=0, play_minutes=0):
                 rows.append(by_id[sid])
             else:
                 fail(sid, f"no result in the results of its group {g['id']}", "harness")
+    have = {r["id"] for r in rows}
+    for p in passed:
+        if p["id"] not in have:
+            rows.append({"id": str(p["id"]), "ok": True, "why": [], "run": str(p.get("in") or ""), "in": str(p.get("in") or "")})
+            have.add(p["id"])
     if files.get("back") is None:
         fail("back", "the back job left no results: the callers may be left at the ref", "harness")
     else:
         rows += [own(r, "harness") for r in files["back"] if isinstance(r, dict)]
     for name, result in jobs.items():
-        if result == "success":
+        if result == "success" or (name == "play" and result == "skipped" and not gs and passed):
             continue
         if name == "play" and minutes and result == "cancelled":
             fail(name, f"a play job ran past its timeout of {minutes} minutes and was cancelled (timeout-minutes in release-lane.yml)", "infrastructure")
@@ -2434,14 +2528,14 @@ def read_groups(text):
     return gs if ok else []
 
 
-def merge_dir(path, gs, jobs, run="", minutes=0, play_minutes=0):
+def merge_dir(path, gs, jobs, run="", minutes=0, play_minutes=0, passed=()):
     """`merge` of the artifacts downloaded under `path`, each in its own
     directory (`scenarios-<name>/results.md`)."""
     files = {}
     for name in ["move", "back"] + [g["id"] for g in gs]:
         f = os.path.join(path, f"scenarios-{name}", "results.md")
         files[name] = read_results(f) if os.path.exists(f) else None
-    return merge(gs, files, jobs, run, minutes, play_minutes)
+    return merge(gs, files, jobs, run, minutes, play_minutes, passed)
 
 
 DEFAULTS = ("main", "master")
@@ -4204,6 +4298,34 @@ def self_test():
            sorted(k for k in real.get("statically") or {} if k.startswith("flow:")), hands_problems(real["scenarios"])),
           (sorted(f"flow:{f}" for f in ("marker-g1-start", "edit-starts", "conventions-fix", "hint-no-needs-human", "settled-rerun", "release-bug-reproduced")),
            ["flow:conventions-fix", "flow:marker-g1-start", "flow:settled-rerun"], ["flow:edit-starts", "flow:hint-no-needs-human", "flow:release-bug-reproduced"], []))
+    # #929 C1: what passed on the same candidate does not play again, and counts.
+    gs929 = [{"id": "a", "scenarios": ["a"]}, {"id": "b", "scenarios": ["b"]}]
+    rows929 = [{"id": "a", "ok": True, "run": "r1"}, {"id": "b", "ok": False, "run": "r2"}, {"id": "callers", "ok": True}, {"id": "c", "ok": True, "in": "lane-1"}]
+    check("#929 C1: passes_of keeps the passing scenarios, each in the run it first passed in",
+          passes_of(rows929, {"a", "b", "c"}, "lane-2"), [{"id": "a", "in": "lane-2"}, {"id": "c", "in": "lane-1"}])
+    check("#929 C1: drop_passed drops them, then the groups left empty", drop_passed(gs929, [{"id": "a", "in": "x"}]), [{"id": "b", "scenarios": ["b"]}])
+    m929 = merge([{"id": "b", "scenarios": ["b"]}], {"move": [], "back": [], "b": [{"id": "b", "ok": True}]}, {"move": "success", "play": "success", "back": "success"},
+                 passed=[{"id": "a", "in": "lane-1"}])
+    check("#929 C1: merge adds a passing row for an earlier pass, naming its run", ([(r["id"], r["ok"], r.get("in")) for r in m929], "pass (in lane-1)" in table(m929)),
+          ([("b", True, None), ("a", True, "lane-1")], True))
+    check("#929 C1: nothing left to play, a skipped play job and no groups fail nothing",
+          [r["id"] for r in merge([], {"move": [], "back": []}, {"move": "success", "play": "skipped", "back": "success"}, passed=[{"id": "a", "in": "l"}]) if not r["ok"]], [])
+    calls929 = []
+
+    def lane_gh(*a, input=None):
+        calls929.append(a)
+        if a[0] == "api":
+            return json.dumps({"workflow_runs": [{"id": 9, "html_url": "u9"}, {"id": 8, "html_url": "u8"}, {"id": 7, "html_url": "u7"}]})
+        d = a[a.index("--dir") + 1]
+        if a[2] == "8":
+            raise GhError("no artifact", 1, "", "no valid artifacts")
+        key = {"sha": "S", "next": "N" if a[2] == "7" else "OLD"}
+        open(os.path.join(d, "key.json"), "w").write(json.dumps(key))
+        write_results([{"id": "a", "ok": True, "run": ""}], os.path.join(d, "results.md"), echo=False)
+        return ""
+    check("#929 C1: earlier_passes reads the runs newest first, skips this run and one with no artifact, and takes the first with the key",
+          (earlier_passes("o/r", "S", "N", "9", ["a"], lane_gh), [a[2] for a in calls929 if a[:2] == ("run", "download")]), ([{"id": "a", "in": "u7"}], ["8", "7"]))
+    check("#929 C1: no key, no earlier passes", earlier_passes("o/r", "S", "", "9", ["a"], lambda *a, input=None: 1 / 0), [])
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
@@ -4243,14 +4365,37 @@ def main(argv):
             print(line, file=sys.stderr)
         print(json.dumps(scenario_plan(scenarios), separators=(",", ":")))
         return 1 if wrong else 0
-    if argv[:1] == ["groups"] and len(argv) == 1:
+    if argv[:1] == ["groups"] and (len(argv) == 1 or (len(argv) == 3 and argv[1] == "--passed")):
         scenarios = load_yaml(os.path.join(ROOT, SCENARIOS)).get("scenarios") or []
         gs, wrong = groups(scenarios), partition(scenarios, groups(scenarios), test_pack())
         for line in wrong:
             print(line, file=sys.stderr)
         if wrong:
             return 1
+        if len(argv) == 3:
+            gs = drop_passed(gs, read_passed(argv[2]))
         print(json.dumps(gs, separators=(",", ":")))
+        return 0
+    if argv[:1] == ["passed"]:
+        import argparse
+        p = argparse.ArgumentParser(prog="release-scenarios.py passed")
+        p.add_argument("--repo", required=True)
+        p.add_argument("--sha", default="")
+        p.add_argument("--next", default="")
+        p.add_argument("--run-id", default=os.environ.get("GITHUB_RUN_ID", ""))
+        p.add_argument("--out", required=True)
+        a = p.parse_args(argv[1:])
+        ids = [s.get("id") for s in load_yaml(os.path.join(ROOT, SCENARIOS)).get("scenarios") or []]
+        try:
+            got = earlier_passes(a.repo, a.sha, a.next, a.run_id, ids)
+        except (RuntimeError, ValueError) as e:
+            # Could not read them: every scenario plays, as on a new candidate.
+            print(f"::warning::the earlier runs on this candidate could not be read, every scenario plays: {e}", file=sys.stderr)
+            got = []
+        os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
+        with open(a.out, "w", encoding="utf-8") as fh:
+            json.dump(got, fh, separators=(",", ":"))
+        print(f"{len(got)} scenario(s) passed on this candidate before: {', '.join(p['id'] for p in got) or 'none'}", file=sys.stderr)
         return 0
     if argv[:1] in (["move"], ["play"]):
         import argparse
@@ -4261,10 +4406,16 @@ def main(argv):
         p.add_argument("--minutes", type=int, default=20)
         if argv[0] == "move":
             p.add_argument("--moved", required=True)
+            p.add_argument("--record-only", action="store_true")
         else:
             p.add_argument("--group", required=True)
         a = p.parse_args(argv[1:])
-        if argv[0] == "move":
+        if argv[0] == "move" and a.record_only:
+            # #929: nothing left to play, so no caller moves; what `back`
+            # puts back is recorded all the same.
+            write_moved(recorded_callers(a.repo, a.ref, callers_gh()), a.moved)
+            results = []
+        elif argv[0] == "move":
             results = move_callers(a.repo, a.ref, callers_gh(), minutes=a.minutes, record=lambda m: write_moved(m, a.moved))[1]
         else:
             results = play_watched(load_yaml(os.path.join(ROOT, SCENARIOS)), a.group, a.repo, a.ref, a.minutes, a.out)
@@ -4280,9 +4431,10 @@ def main(argv):
         p.add_argument("--out", required=True)
         p.add_argument("--minutes", type=int, default=0)
         p.add_argument("--play-minutes", type=int, default=0)
+        p.add_argument("--passed", default="")
         a = p.parse_args(argv[1:])
         jobs = dict(j.split("=", 1) if "=" in j else (j, "") for j in a.job)
-        results = merge_dir(a.dir, read_groups(a.groups), jobs, a.run, a.minutes, a.play_minutes)
+        results = merge_dir(a.dir, read_groups(a.groups), jobs, a.run, a.minutes, a.play_minutes, read_passed(a.passed) if a.passed else ())
         # #843: what the runs triggered, never what `covers:` says; a
         # warning that fails nothing.
         write_results(results, a.out, run_coverage(results, played(ROOT, test_pack())))
