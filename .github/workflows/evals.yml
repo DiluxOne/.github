@@ -1,15 +1,14 @@
 name: AI evaluation
 
-# Not reusable. Every AI step is measured (#735): a change to a step (its
-# workflow, the prompts it reads, its model in policy/autonomy.yml, its set
-# under evals/<step>/) is scored before it merges. scripts/evals.py says
-# which paths count for which step (`evals.py steps`), and this workflow's
-# `paths:` are their union (tests/workflows/test_evals.py holds them equal):
-# a pull request that touches none runs nothing, and one that touches one
-# step's paths runs that step's set alone. Each case of
+# Not reusable. Every AI step is measured (#735), once a week and by hand
+# (#941): the weekly run plays every step with a set; a maintainer runs it for one step when a change to that step (its workflow,
+# the prompts it reads, its model in policy/autonomy.yml, its set under
+# evals/<step>/) should be scored. It never runs on a pull request: replaying
+# whole autopilot rounds on every push spent most of the engine's model use.
+# scripts/evals.py says which paths count for which step (`evals.py steps`). Each case of
 # evals/<step>/cases.json, a real one of the public repositories, is
 # replayed in a job of its own, with its step's time (`evals.py matrix`,
-# `evals.py run <step> <case>`), with the step as this pull request has it,
+# `evals.py run <step> <case>`), with the step as the branch run has it,
 # and graded deterministically where a grade exists; then one job per step
 # merges its cases' results (`evals.py merge`) and scores them against
 # evals/<step>/baseline.json (`evals.py score`): worse by more than one case
@@ -18,7 +17,7 @@ name: AI evaluation
 # check by its name, as the runner's failure, never the step's score. The
 # review is one of the steps, but its set is run by its own workflow,
 # review-eval.yml (scripts/review-eval.py, 3 plays per case, #847), whose
-# `paths:` are the review's; this one never runs it.
+# by hand or weekly too (#941); this one never runs it.
 #
 # Before any case is replayed, `evals.py validate` (#840) holds every case
 # of the sets to the rule of docs/testing-and-quality.md: it passes on its
@@ -31,8 +30,9 @@ name: AI evaluation
 #
 # Paid: each case is one model run (the autopilot's, a whole work round
 # and the review and fix rounds after it).
-# It runs only on a pull request from a branch of this repository (a fork's
-# code never runs with the keys), and by hand for one step. The first job
+# It runs once a week on main and by hand, for one step, on a branch of
+# this repository (a fork's code never runs with the keys). The autopilot's
+# replay runs one fix round, not the production's five (EVAL_ROUNDS, #941). The first job
 # lists the steps with no secret; private repositories are never cases.
 #
 # The slack is none when the baseline is not above it (autopilot's 1 of 6
@@ -58,23 +58,9 @@ name: AI evaluation
 # commits them in a pull request.
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/issue-triage.yml
-      - scripts/triage-brief.sh
-      - policy/autonomy.yml
-      - scripts/evals.py
-      - .github/workflows/evals.yml
-      - evals/triage/**
-      - .github/workflows/issue-repro.yml
-      - scripts/repro-ways.py
-      - evals/repro/**
-      - .github/workflows/autopilot.yml
-      - scripts/autopilot.py
-      - evals/spec/**
-      - evals/autopilot/**
-      - .github/workflows/review-reply.yml
-      - evals/reply/**
+  # Once a week (#941), and by hand for one step; never on a pull request.
+  schedule:
+    - cron: '41 6 * * 1'
   workflow_dispatch:
     inputs:
       step:
@@ -103,7 +89,7 @@ concurrency:
 jobs:
   steps:
     name: Which steps
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -117,7 +103,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: The steps the change touches
+      - name: The steps to run
         id: list
         env:
           GH_TOKEN: ${{ github.token }}
@@ -129,15 +115,15 @@ jobs:
           DEFAULT_POLICY: policy/review-policy.default.yml
         run: |
           set -euo pipefail
-          if [ "$EVENT" = workflow_dispatch ]; then
-            # A step with no set yet runs nothing, and says so.
+          if [ "$EVENT" = schedule ]; then
+            # The weekly run (#941): every step with a set, but the review,
+            # whose set review-eval.yml runs.
+            for f in evals/*/cases.json; do d=${f#evals/}; d=${d%%/*}; [ "$d" = review ] || printf '%s\n' "$d"; done > "$RUNNER_TEMP/steps.txt"
+          else
+            # By hand: the step named. A step with no set yet runs nothing,
+            # and says so.
             : > "$RUNNER_TEMP/steps.txt"
             if [ -f "evals/$STEP/cases.json" ]; then printf '%s\n' "$STEP" > "$RUNNER_TEMP/steps.txt"; else echo "::notice::$STEP has no set yet (evals/$STEP/cases.json)."; fi
-          else
-            # No file listed is "could not tell" (this only runs when one
-            # matched `paths:`): evals.py steps then fails, and pipefail
-            # fails the check rather than skip every set.
-            python3 scripts/pr-files.py | python3 scripts/evals.py steps > "$RUNNER_TEMP/steps.txt"
           fi
           steps=$(jq -Rnc '[inputs | select(length > 0)]' < "$RUNNER_TEMP/steps.txt")
           # One replay job per case, so each case gets its job's whole time.
@@ -152,7 +138,7 @@ jobs:
   collect:
     name: A new set
     needs: steps
-    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'collect' && needs.steps.outputs.steps != '[]' && needs.steps.outputs.steps != '' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'collect' && needs.steps.outputs.steps != '[]' && needs.steps.outputs.steps != '' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
     runs-on: ubuntu-latest
     timeout-minutes: 240
     outputs:
@@ -204,7 +190,7 @@ jobs:
     needs:
       - steps
       - collect  # order: by hand with `mode: collect`, it validates the new set.
-    if: always() && needs.steps.result == 'success' && (needs.collect.result == 'success' || needs.collect.result == 'skipped') && needs.steps.outputs.cases != '[]' && needs.steps.outputs.cases != '' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
+    if: always() && needs.steps.result == 'success' && (needs.collect.result == 'success' || needs.collect.result == 'skipped') && needs.steps.outputs.cases != '[]' && needs.steps.outputs.cases != '' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -236,7 +222,7 @@ jobs:
       - steps
       - collect  # order: by hand with `mode: collect`, its matrix is the new set's.
       - validate  # order: a set is replayed only once its cases are valid.
-    if: always() && needs.validate.result == 'success' && needs.steps.outputs.cases != '[]' && needs.steps.outputs.cases != '' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
+    if: always() && needs.validate.result == 'success' && needs.steps.outputs.cases != '[]' && needs.steps.outputs.cases != '' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
     runs-on: ubuntu-latest
     # The step's limit for one case, and the job's own (evals.py matrix).
     timeout-minutes: ${{ matrix.minutes }}
@@ -296,7 +282,7 @@ jobs:
     # It scores whatever its cases' jobs left: a job that ran out of time
     # leaves its case not replayed, which fails the check by its name. A set
     # that failed validate stops it first (skipped only when it has no case).
-    if: ${{ !cancelled() && needs.steps.result == 'success' && needs.collect.result != 'failure' && needs.steps.outputs.steps != '[]' && needs.steps.outputs.steps != '' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ !cancelled() && needs.steps.result == 'success' && needs.collect.result != 'failure' && needs.steps.outputs.steps != '[]' && needs.steps.outputs.steps != '' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:

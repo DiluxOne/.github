@@ -156,15 +156,16 @@ def test_c2_the_steps_listed_are_those_with_a_set():
     assert mod.steps_here(["review-profiles/general.md"]) == []
 
 
-def test_c2_evals_yml_runs_on_the_union_of_the_paths():
+def test_c1_941_the_evaluations_never_run_on_a_pull_request():
+    # #941: replaying whole autopilot rounds and 60 reviews on every push
+    # spent most of the engine's model use; both run once a week and by hand.
     mod = evals()
     wf = yaml.safe_load((need(".github/workflows/evals.yml")).read_text(encoding="utf-8"))
     on = wf.get("on") or wf.get(True)
-    assert sorted(on["pull_request"]["paths"]) == sorted(mod.all_paths())
+    assert set(on) == {"workflow_dispatch", "schedule"}
     assert "review" not in on["workflow_dispatch"]["inputs"]["step"]["options"]
-    # The review's paths are review-eval.yml's, policy/autonomy.yml among them.
     review = yaml.safe_load((ROOT / ".github" / "workflows" / "review-eval.yml").read_text(encoding="utf-8"))
-    assert sorted((review.get("on") or review.get(True))["pull_request"]["paths"]) == sorted(mod.paths_of("review"))
+    assert set(review.get("on") or review.get(True)) == {"workflow_dispatch", "schedule"}
     assert "policy/autonomy.yml" in mod.paths_of("review")
 
 
@@ -174,10 +175,11 @@ def test_c2_evals_yml_runs_the_listed_steps_with_the_runner():
     jobs = wf["jobs"]
     assert "evals.py steps" in text and "evals.py run" in text and "evals.py score" in text
     run = [j for j in jobs.values() if "strategy" in j][0]
-    assert all("head.repo.full_name == github.repository" in str(j.get("if")) for j in jobs.values())
+    # #941: by hand or on the weekly schedule, never on a pull request, so
+    # a fork's code never runs with the keys.
+    assert all("github.event_name == 'schedule'" in str(j.get("if")) for j in jobs.values())
     assert all("fromJSON" in str(j["strategy"]["matrix"]) for j in jobs.values() if "strategy" in j)
-    # A fork's code never runs with the keys.
-    assert "head.repo.full_name == github.repository" in str(run.get("if"))
+    assert "pull_request" not in (wf.get("on") or wf.get(True))
     assert wf["permissions"] == {"contents": "read"}
 
 
@@ -397,9 +399,9 @@ def test_c2_the_autopilot_replay_plans_the_merged_tests_from_the_real_base(tmp_p
 
 
 def test_c2_an_empty_file_list_fails_steps_not_selects_nothing():
-    # pr-files.py prints nothing when it could not list the files; the
-    # workflow only starts when `paths:` matched one, so "none" is "could
-    # not tell", and the check must fail rather than score nothing.
+    # evals.py steps given no file is "could not tell": it fails rather than
+    # select nothing (the workflow no longer maps a pull request's files,
+    # #941, but the command stays for choosing what to run by hand).
     import subprocess
     import sys
     out = subprocess.run([sys.executable, str(need("scripts/evals.py")), "steps"], input="\n", capture_output=True, text=True)
@@ -407,7 +409,7 @@ def test_c2_an_empty_file_list_fails_steps_not_selects_nothing():
     ok = subprocess.run([sys.executable, str(need("scripts/evals.py")), "steps"], input="README.md\n", capture_output=True, text=True)
     assert ok.returncode == 0 and ok.stdout.strip() == ""
     text = (need(".github/workflows/evals.yml")).read_text(encoding="utf-8")
-    assert "set -euo pipefail" in text and "pr-files.py | python3 scripts/evals.py steps" in text
+    assert "set -euo pipefail" in text and "pr-files.py" not in text
 
 
 # C3: the review's gate is review-eval.yml's, exactly: a slack of one case
@@ -489,9 +491,6 @@ def test_c2_the_runner_counts_for_every_step(path):
     # Every step evals.yml runs; the review's runner is review-eval.py.
     mod = evals()
     assert mod.steps_of([path]) == [s for s in SIX if s != "review"]
-    wf = yaml.safe_load((need(".github/workflows/evals.yml")).read_text(encoding="utf-8"))
-    on = wf.get("on") or wf.get(True)
-    assert path in on["pull_request"]["paths"]
 
 
 # Each spec and autopilot case pins its issue: the replay never reads it live.
