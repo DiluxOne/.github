@@ -536,13 +536,14 @@ def ask(prompt, args, cwd, timeout):
 def pr_text(repo, pr):
     """The pull request's description and the acceptance criteria of the one
     issue it closes, as claude-review.yml's brief step reads them (GH_TOKEN,
-    read); ('', '') when they cannot be read."""
+    read); no criteria when it closes no single issue. RuntimeError when
+    they cannot be read: never a review on a brief that lost them."""
     if not os.environ.get("GH_TOKEN"):
-        return "", ""
+        raise RuntimeError(f"{repo}#{pr}: no GH_TOKEN to read its description and criteria")
     try:
         got = json.loads(gh("pr", "view", str(pr), "--repo", repo, "--json", "body,closingIssuesReferences"))
-    except (OSError, ValueError, subprocess.CalledProcessError):
-        return "", ""
+    except (OSError, ValueError, subprocess.CalledProcessError) as e:
+        raise RuntimeError(f"{repo}#{pr}: cannot read the pull request: {e}")
     body = got.get("body") or ""
     closes = [i.get("number") for i in got.get("closingIssuesReferences") or []]
     if len(closes) != 1:
@@ -550,9 +551,11 @@ def pr_text(repo, pr):
     try:
         issue = gh("issue", "view", str(closes[0]), "--repo", repo, "--json", "body", "--jq", ".body")
         crit = subprocess.run(["python3", os.path.join(HERE, "issue-schema.py"), "criteria"], input=issue, capture_output=True, text=True)
-    except (OSError, subprocess.CalledProcessError):
-        return body, ""
-    return body, crit.stdout if crit.returncode == 0 else ""
+    except (OSError, subprocess.CalledProcessError) as e:
+        raise RuntimeError(f"{repo}#{pr}: cannot read issue #{closes[0]}: {e}")
+    if crit.returncode != 0:
+        raise RuntimeError(f"{repo}#{pr}: cannot read the criteria of issue #{closes[0]}: {crit.stderr.strip()}")
+    return body, crit.stdout
 
 
 def policy_of(case, repo_dir, work):
@@ -707,15 +710,21 @@ def score(results):
 
 def found_share(path=None):
     """The policy's `review-eval.found-floor`, the share of the flag cases
-    the review must find whatever the baseline (#930 C2); 0 when it is
-    missing or not a share, which still leaves the floor at one case."""
+    the review must find whatever the baseline (#930 C2). A policy that
+    cannot be read, or that holds no share there, raises ValueError: the
+    gate fails by name, never on a floor guessed at one case."""
     import yaml
+    path = path or POLICY
     try:
-        with open(path or POLICY, encoding="utf-8") as fh:
-            got = ((yaml.safe_load(fh) or {}).get("review-eval") or {}).get("found-floor")
-    except (OSError, ValueError, AttributeError, yaml.YAMLError):
-        return 0
-    return got if isinstance(got, (int, float)) and not isinstance(got, bool) and 0 <= got <= 1 else 0
+        with open(path, encoding="utf-8") as fh:
+            pol = yaml.safe_load(fh) or {}
+    except (OSError, yaml.YAMLError) as e:
+        raise ValueError(f"review-eval.found-floor: cannot read {path}: {e}")
+    got = ((pol.get("review-eval") if isinstance(pol, dict) else None) or {})
+    got = got.get("found-floor") if isinstance(got, dict) else None
+    if not isinstance(got, (int, float)) or isinstance(got, bool) or not 0 <= got <= 1:
+        raise ValueError(f"review-eval.found-floor of {path} is not a share of 0 to 1: {got!r}")
+    return got
 
 
 def found_floor(flag, share):
@@ -892,7 +901,12 @@ def main(argv):
             work = tempfile.mkdtemp(prefix=f"dx-eval-{n}-")
             for c, r in zip(cases, results):
                 WHY.pop(c["id"], None)
-                ok = run_case(c, ROOT, work)
+                try:
+                    ok = run_case(c, ROOT, work)
+                except RuntimeError as e:
+                    # Criteria it cannot read stop the play by name (#930).
+                    print(f"review-eval.py: {e}", file=sys.stderr)
+                    return 1
                 why = WHY.pop(c["id"], None)
                 if why is None:
                     why = "not reviewed" if ok is None and c["expect"] == "flag" else ""
@@ -914,12 +928,18 @@ def main(argv):
             print(f"review-eval.py: not played {PLAYS} times: {', '.join(unplayed(results))}", file=sys.stderr)
             return 1
         now = score(results)
+        # A floor that cannot be read fails by name, never a guessed one.
+        try:
+            share = found_share()
+        except ValueError as e:
+            print(f"review-eval.py: {e}", file=sys.stderr)
+            return 1
         if argv[0] == "baseline":
             if now["unreviewed"]:
                 print(f"review-eval.py: {now['unreviewed']} cases were not reviewed; a baseline is written only from a whole run", file=sys.stderr)
                 return 1
             # A baseline below the floor would gate nothing (#930 C2).
-            low = below_floor(now)
+            low = below_floor(now, share)
             if low:
                 print(f"review-eval.py: {low}; no baseline is written below it", file=sys.stderr)
                 return 1
@@ -940,7 +960,7 @@ def main(argv):
             print(f"\n**No baseline** of {PLAYS} plays at {BASELINE}: write one with `review-eval.py baseline`.")
             return 1
         print(table(results, now, base))
-        why = worse(now, base)
+        why = worse(now, base, share)
         if why:
             print(f"\n**Worse than the baseline:** {why}.")
         return 1 if why else 0

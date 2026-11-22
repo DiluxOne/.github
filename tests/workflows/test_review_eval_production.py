@@ -82,8 +82,14 @@ def scratch(tmp_path, monkeypatch):
     monkeypatch.setenv("DX_EVAL_GIT", str(tmp_path / "git"))
     monkeypatch.setenv("DX_EVAL_CLAUDE", str(fake))
     monkeypatch.setenv("FAKE_LOG", str(log))
-    # No GitHub here: the closing issue's criteria are none.
-    monkeypatch.setenv("GH_TOKEN", "")
+    # No GitHub here: a stand-in gh says the pull request closes no issue,
+    # so its criteria are none.
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    (bin_ / "gh").write_text('#!/bin/sh\necho \'{"body": "", "closingIssuesReferences": []}\'\n')
+    (bin_ / "gh").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("GH_TOKEN", "t")
     case = {"id": "o/r#7:flag", "repo": "o/r", "pr": 7, "title": "fix: three", "base": base, "head": head,
             "expect": "flag", "path": "a.py", "line": 3, "hunk": [1, 4], "fix": head, "fixed": [[3, 3]]}
     return case, log, tmp_path

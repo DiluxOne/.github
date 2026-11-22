@@ -192,6 +192,8 @@ def run_score(tmp_path, step, results, base):
     shutil.copy(ROOT / "org.yml", root / "org.yml")
     (root / "policy").mkdir()
     shutil.copy(ROOT / "policy" / "issue-schema.yml", root / "policy" / "issue-schema.yml")
+    # The review's found floor: review-eval.py fails without it (#930).
+    shutil.copy(ROOT / "policy" / "review-policy.default.yml", root / "policy" / "review-policy.default.yml")
     (root / "evals" / step).mkdir(parents=True)
     if base is not None:
         # A string is the file's raw text (a corrupt one); anything else, its JSON.
