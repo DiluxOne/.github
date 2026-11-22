@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 962,
+  "prd_sha256": "43601e4cebfb21ce0a833369a0b25f03d691ce6504a0549f5bbdeb9562739fc1",
+  "prd": "### Problem\n\n`scripts/gh-wait.sh --test` writes into the real rate-limit note of the job it runs in. Its cases that give up (a reset after the deadline) inherit the job's `DX_RATE_NOTE` from the environment, which `gh-wait.sh --install` sets in every autopilot job, so when the autopilot runs `make pre-pr` (which runs the self-test through pytest) the job believes GitHub's API rate limit is spent: its `rate-limited` job sleeps up to 75 minutes and writes `rate_limited=<the fake reset>` on the issue's board. Since #954's repro test runs the self-test with a fake clock starting at epoch 1800000000, that reset is in January 2027, so the hourly sweep never asks the continue: #956 has stood still since 2026-11-22 19:46 UTC with its board saying `rate_limited: 1800000904` (run 45050008184). Before #954 the same leak wrote a reset 15 minutes ahead, which explains the engine's \"left to the rate limit\" jobs that waited about 11 minutes each with no real limit.\n\n### Scope\n\n- The self-test never reads nor writes the caller's `DX_RATE_NOTE` or `DX_RATE_DEADLINE`.\n- A test that runs the self-test with a `DX_RATE_NOTE` set and checks the file is untouched.\n\n### Out of scope\n\n- The board of #956 (the maintainer clears it by hand once this is merged).\n- gh-wait.sh outside its self-test.\n\n### Acceptance criteria\n\n- C1: Given `DX_RATE_NOTE` and `DX_RATE_DEADLINE` set in the environment, when `scripts/gh-wait.sh --test` runs, then the note file is not created nor changed and the self-test passes.\n- C2: Given the repro test of #954 with its fake clock, when it runs in a job with `DX_RATE_NOTE` set, then that file is not created nor changed.\n\n### Criticality\n\nCritical",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-22T20:01:17Z",
+  "policy": "DiluxOne/.github@bd328947d8352c84c5e3938ad5c6516fb6a40c0e",
+  "how": "own-bug"
+}
