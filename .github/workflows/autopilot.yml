@@ -2088,7 +2088,8 @@ jobs:
           # #928 C1: the head at which `make pre-pr` passed in full in this
           # run (the agent's own check, or `verify`'s), empty when it did
           # not: a draft with every box ticked that is green there, the end
-          # marks ready itself.
+          # marks ready itself. Compared by tree with the pull request's
+          # head, since the push makes the commits again (new SHAs).
           PREPR_PASSED: ${{ (needs.work.outputs.checked == 'true' || needs.verify.outputs.verdict == 'pass') && needs.work.outputs.head || '' }}
           RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
           REPO_AUTONOMY: ${{ runner.temp }}/repo-autonomy.yml

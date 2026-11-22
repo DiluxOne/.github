@@ -8,6 +8,7 @@ with gh stood in and the fixture boards (RECEIPTS_FIXTURE)."""
 import importlib.util
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -48,7 +49,7 @@ class World:
     """Issue #7 of o/r and its autopilot draft #8, every box ticked, in a
     continue run (2 of 5): gh stood in, logging what is written."""
 
-    def __init__(self, tmp_path, monkeypatch, body=TICKED, passed_at=HEAD):
+    def __init__(self, tmp_path, monkeypatch, body=TICKED, passed_at=HEAD, head=HEAD):
         self.fx = tmp_path / "fx"
         self.fx.mkdir()
         self.calls, self.state = [], {"body": body, "draft": True}
@@ -71,7 +72,7 @@ class World:
             if a[:2] == ["issue", "view"]:
                 return json.dumps({"body": "", "labels": [{"name": "accepted"}], "comments": []})
             if a[:2] == ["pr", "view"]:
-                return json.dumps({"body": self.state["body"], "isDraft": self.state["draft"], "headRefOid": HEAD})
+                return json.dumps({"body": self.state["body"], "isDraft": self.state["draft"], "headRefOid": head})
             if a[:2] == ["pr", "edit"] and "--body-file" in a:
                 self.state["body"] = input_text
             if a[:2] == ["pr", "ready"]:
@@ -134,6 +135,53 @@ def test_c1_a_pass_at_another_head_does_not_mark_it_ready(tmp_path, monkeypatch)
     w.end()
     assert not any(c.startswith("pr ready 8") for c in w.calls)
     assert w.verdict() == ["continue"]
+
+
+def signed_again(tmp_path):
+    """A repository where the work job's head (`local`) and the head the
+    push left on GitHub (`pushed`, the same commit made again through the
+    API so GitHub signs it) differ in SHA and share a tree, and a third
+    commit (`other`) whose tree differs."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1", "HOME": str(tmp_path), "PATH": "/usr/bin:/bin"}
+
+    def g(*a, **extra):
+        return subprocess.run(["git", "-C", str(repo), "-c", "user.name=a", "-c", "user.email=a@x", *a], check=True,
+                              capture_output=True, text=True, env=dict(env, **extra)).stdout.strip()
+    g("init", "-q")
+    (repo / "f").write_text("one\n")
+    g("add", "f")
+    g("commit", "-qm", "work", GIT_AUTHOR_DATE="2026-01-01T00:00:00Z", GIT_COMMITTER_DATE="2026-01-01T00:00:00Z")
+    local = g("rev-parse", "HEAD")
+    pushed = g("commit-tree", "-m", "work", "HEAD^{tree}", GIT_COMMITTER_DATE="2026-01-02T00:00:00Z")
+    (repo / "f").write_text("two\n")
+    g("commit", "-qam", "other")
+    return repo, local, pushed, g("rev-parse", "HEAD")
+
+
+def test_c1_a_round_that_pushed_still_ends_ready(tmp_path, monkeypatch):
+    # The push makes the commits again through the API (api-commit.py), so
+    # the pull request's head is a new SHA with the tree `make pre-pr`
+    # passed at: the end compares trees, not SHAs.
+    repo, local, pushed, _ = signed_again(tmp_path)
+    assert local != pushed
+    monkeypatch.chdir(repo)
+    w = World(tmp_path, monkeypatch, passed_at=local, head=pushed)
+    w.end()
+    assert w.state["draft"] is False, w.calls
+    assert w.verdict() == ["ready"]
+
+
+def test_c1_the_same_tree_rule(tmp_path):
+    ap = autopilot()
+    repo, local, pushed, other = signed_again(tmp_path)
+    assert ap.same_tree(local, pushed, cwd=repo) is True
+    assert ap.same_tree(local, local, cwd=repo) is True
+    assert ap.same_tree(local, other, cwd=repo) is False
+    # A head this clone does not have, or none: not passed there.
+    assert ap.same_tree(local, "c" * 40, cwd=repo) is False
+    assert ap.same_tree("", pushed, cwd=repo) is False
 
 
 def test_c1_a_refused_ready_says_why_and_keeps_todays_verdict(tmp_path, monkeypatch):

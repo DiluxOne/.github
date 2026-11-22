@@ -1344,6 +1344,25 @@ def continue_as(is_draft, record, head, conflicts=False):
     return "fix" if review_count.blocking(record) else "continue"
 
 
+def same_tree(passed_at, head, cwd=None):
+    """Whether `make pre-pr`'s pass at `passed_at` holds at `head` (#928
+    C1): the same commit, or one with the same tree. The push makes the
+    work job's commits again through the API so GitHub signs them
+    (api-commit.py): new SHAs, the trees it checked. A head this clone does
+    not have, or none, is not one it passed at."""
+    if not passed_at or not head:
+        return False
+    if passed_at == head:
+        return True
+    trees = []
+    for sha in (passed_at, head):
+        out = subprocess.run(["git", "rev-parse", "--verify", "-q", f"{sha}^{{tree}}"], capture_output=True, text=True, cwd=cwd)
+        if out.returncode:
+            return False
+        trees.append(out.stdout.strip())
+    return trees[0] == trees[1]
+
+
 def end_ready(mode, pr, draft_, stopped, asked, done, total, prepr_passed):
     """Whether the end marks the draft ready itself (#928 C1): every box
     ticked, `make pre-pr` passed in full at its head in this run
@@ -6882,9 +6901,10 @@ def main(argv):
             draft_ = info["isDraft"]
             done, total = progress(info["body"])
             # #928 C1: `make pre-pr` passed in full in this run (the agent's
-            # own check, or `verify`'s), at the head the pull request has.
+            # own check, or `verify`'s), at the tree the pull request's head
+            # has: the push gave its commits new SHAs.
             passed_at = os.environ.get("PREPR_PASSED", "").strip()
-            prepr_passed = bool(passed_at) and passed_at == info["headRefOid"]
+            prepr_passed = same_tree(passed_at, info["headRefOid"])
             pushed = bool(os.environ.get("HEAD_BEFORE")) and info["headRefOid"] != os.environ.get("HEAD_BEFORE")
             # #699 C3: a fix round of a failed conventions check that set
             # the title alone pushed nothing, and did its work.
