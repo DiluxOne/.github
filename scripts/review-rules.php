@@ -2076,7 +2076,8 @@ function rr_fingerprint( array $lines ): string {
 
 /**
  * The repository's suppressions file: a `suppressions:` list of
- * { file, sniff, fingerprint, reason }.
+ * { file, sniff, fingerprint, reason }. The security gate's entries
+ * ({ rule, file, fingerprint, reason }, #956) are left out.
  *
  * @return list<array{file: string, sniff: string, fingerprint: string, reason: string, line: int}>
  */
@@ -2101,6 +2102,12 @@ function rr_suppression_entries( string $path ): array {
 	preg_match_all( '/^\s*-\s/m', $source, $starts, PREG_OFFSET_CAPTURE );
 
 	foreach ( $data['suppressions'] as $n => $entry ) {
+		// The security gate's entry (#956, scripts/security-gate.py): a
+		// `rule:` and no `sniff:`, none of these rules' to check.
+		if ( is_array( $entry ) && isset( $entry['rule'] ) && ! isset( $entry['sniff'] ) ) {
+			continue;
+		}
+
 		foreach ( array( 'file', 'sniff', 'fingerprint', 'reason' ) as $key ) {
 			if ( ! is_array( $entry ) || '' === trim( (string) ( $entry[ $key ] ?? '' ) ) ) {
 				throw new RR_Rules_Error( "$path, entry " . ( $n + 1 ) . ": `$key` is missing or empty." );
