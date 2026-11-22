@@ -64,7 +64,9 @@ identity:
 # no check of it (#860: autopilot.py check_evidence `fixed`, criteria_unmet).
 # The review there is fixed too (#943, scripts/fixed-review.py): a scenario
 # that does not say `review: model` in tests/release/scenarios.yml gets the
-# policy floor's risk, not blocking, with no model.
+# policy floor's risk, not blocking, with no model. So is its triage (#946,
+# scripts/fixed-triage.py): a scenario's issue, with no `triage: model`, is
+# an enhancement, or an unconfirmed bug of the logic layer for a `fix` title.
 autopilot: fixed-change
 fixed-change:
   # A pull request made only of files under this file's directory keeps its
