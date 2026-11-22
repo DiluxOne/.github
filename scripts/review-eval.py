@@ -12,8 +12,8 @@ The cases are real pull requests of the organisation's public repositories
          thread that is only outdated or resolved, its hunk never changed,
          is no case (#844), nor one whose fix is a docs, ci, chore, style
          or test commit, or docs alone (#847). The review must raise a
-         blocker or major inside `fixed` again: another line of the file
-         is a miss.
+         blocker or major in the file again, inside `hunk` or within NEAR
+         lines of `fixed` (#930): a farther line is a miss.
   clean  the last commit of a merged pull request on which the review left
          no thread at all. The review must not block it.
 
@@ -385,15 +385,36 @@ def verdict(case, review):
     serious = [f for f in review.get("findings") or [] if isinstance(f, dict)
                and f.get("severity") in ("blocker", "major") and not f.get("pre_existing")]
     if case["expect"] == "flag":
-        # Inside the hunk the fix changed in the case's file, not its file:
-        # another line of it, or a finding with no line, is a miss (C2,
-        # #844, #847). A case with no `fixed` has its line alone.
-        line = as_line(case.get("line"))
-        if line is None:
+        # In the case's file, inside the hunk the fix changed or within NEAR
+        # lines of the lines it changed (#930: #811 was missed 9 lines
+        # away); another file, a finding with no line or a farther one is a
+        # miss (C2, #844, #847). A case with no `fixed` has its line alone.
+        if as_line(case.get("line")) is None:
             return False
-        fixed = case.get("fixed") or [[line, line]]
-        return any(f.get("file") == case["path"] and any(lo <= (as_line(f.get("line")) or 0) <= hi for lo, hi in fixed) for f in serious)
+        return any(f.get("file") == case["path"] and near_fix(case, as_line(f.get("line"))) for f in serious)
     return not serious
+
+
+def fixed_lines(case):
+    """The case's fixed line ranges, or its line alone when it has none."""
+    line = as_line(case.get("line"))
+    return case.get("fixed") or ([[line, line]] if line is not None else [])
+
+
+def away(case, n):
+    """How many lines n is from the case's fixed lines (0 inside them)."""
+    return min(max(lo - n, n - hi, 0) for lo, hi in fixed_lines(case))
+
+
+def near_fix(case, n):
+    """Whether line n counts for the case: inside the fix's hunk, or within
+    NEAR lines of its fixed lines (#930)."""
+    if n is None or not fixed_lines(case):
+        return False
+    hunk = case.get("hunk")
+    if isinstance(hunk, (list, tuple)) and len(hunk) == 2 and hunk[0] <= n <= hunk[1]:
+        return True
+    return away(case, n) <= NEAR
 
 
 def reason(case, review):
@@ -407,16 +428,14 @@ def reason(case, review):
         return "not reviewed"
     if verdict(case, review):
         return "found"
-    line = as_line(case.get("line"))
-    fixed = case.get("fixed") or ([[line, line]] if line is not None else [])
+    fixed = fixed_lines(case)
     mine = [f for f in review.get("findings") or [] if isinstance(f, dict) and f.get("file") == case.get("path") and not f.get("pre_existing")]
-    inside = lambda f: any(lo <= (as_line(f.get("line")) or 0) <= hi for lo, hi in fixed)
-    if any(f.get("rejected") and inside(f) for f in mine):
+    if any(f.get("rejected") and near_fix(case, as_line(f.get("line"))) for f in mine):
         return "rejected by verification"
     kept = [as_line(f.get("line")) for f in mine if f.get("severity") in ("blocker", "major")]
-    away = [min(lo - n if n < lo else n - hi for lo, hi in fixed) for n in kept if n is not None and fixed]
-    if away:
-        d = min(away)
+    far = [away(case, n) for n in kept if n is not None and fixed]
+    if far:
+        d = min(far)
         return f"outside the fixed lines, {d} line{'' if d == 1 else 's'} away"
     if kept:
         return "outside the fixed lines, with no line"
@@ -799,10 +818,10 @@ def self_test():
     picked = pick({"o/a": ([{"id": "a1"}, {"id": "a2"}], []), "o/b": ([{"id": "b1"}], [])}, 2)
     check("pick: round the repositories", [c["id"] for c in picked], ["a1", "b1"])
     case_f = {"expect": "flag", "path": "a.php", "line": 3}
-    check("verdict: inside the hunk the fix changed, never beside it", [verdict({"expect": "flag", "path": "a.php", "line": 2, "fixed": [[4, 6]]}, {"findings": [{"severity": "major", "file": "a.php", "line": n}]}) for n in (2, 3, 4, 6, 7)], [False, False, True, True, False])
+    check("verdict: inside the fix's hunk or within NEAR lines of its fixed lines, never farther", [verdict({"expect": "flag", "path": "a.php", "line": 30, "hunk": [25, 35], "fixed": [[40, 42]]}, {"findings": [{"severity": "major", "file": "a.php", "line": n}]}) for n in (24, 26, 30, 41, 52, 53)], [False, True, True, True, True, False])
     check("verdict: flag found on its line", verdict(case_f, {"findings": [{"severity": "major", "file": "a.php", "line": 3}]}), True)
     check("verdict: a case with no line finds nothing", verdict({"expect": "flag", "path": "a.php"}, {"findings": [{"severity": "major", "file": "a.php"}]}), False)
-    check("verdict: another line of the file, or no line, is missed", (verdict(case_f, {"findings": [{"severity": "major", "file": "a.php", "line": 4}]}), verdict(case_f, {"findings": [{"severity": "major", "file": "a.php"}]})), (False, False))
+    check("verdict: a line of the file farther than NEAR, or no line, is missed", (verdict(case_f, {"findings": [{"severity": "major", "file": "a.php", "line": 14}]}), verdict(case_f, {"findings": [{"severity": "major", "file": "a.php"}]})), (False, False))
     check("verdict: flag missed (a minor, another file, a pre-existing one)", verdict(case_f, {"findings": [{"severity": "minor", "file": "a.php"}, {"severity": "major", "file": "b.php"}, {"severity": "blocker", "file": "a.php", "pre_existing": True}]}), False)
     check("verdict: clean kept clean; clean blocked", (verdict({"expect": "clean"}, {"findings": [{"severity": "minor"}]}), verdict({"expect": "clean"}, {"findings": [{"severity": "major"}]})), (True, False))
     check("verdict: no review is unknown", verdict(case_f, None), None)
@@ -814,9 +833,9 @@ def self_test():
     check("merge: the plays of each run, case by case", merge([[{"id": "1", "expect": "flag", "plays": [True]}], [{"id": "1", "expect": "flag", "plays": [False], "why": ["no finding in the file"]}]]), [{"id": "1", "expect": "flag", "plays": [True, False], "why": ["", "no finding in the file"]}])
     rc = {"expect": "flag", "path": "a.php", "line": 5, "fixed": [[5, 6]]}
     check("reason: found, outside with its distance, rejected, none in the file, not reviewed",
-          [reason(rc, r) for r in ({"findings": [{"severity": "major", "file": "a.php", "line": 6}]}, {"findings": [{"severity": "major", "file": "a.php", "line": 9}]},
+          [reason(rc, r) for r in ({"findings": [{"severity": "major", "file": "a.php", "line": 6}]}, {"findings": [{"severity": "major", "file": "a.php", "line": 19}]},
                                    {"findings": [{"severity": "minor", "file": "a.php", "line": 5, "rejected": "w"}]}, {"findings": [{"severity": "major", "file": "b.php", "line": 5}]}, None)],
-          ["found", "outside the fixed lines, 3 lines away", "rejected by verification", "no finding in the file", "not reviewed"])
+          ["found", "outside the fixed lines, 13 lines away", "rejected by verification", "no finding in the file", "not reviewed"])
     check("reasons: each once, with its plays", reasons({"expect": "flag", "plays": [True, False, None], "why": ["found", "no finding in the file", ""]}), "found (1), no finding in the file (1), not reviewed (1)")
     check("short: fewer than MIN_CASES of a kind", (short(res), short([{"expect": k} for k in ("flag", "clean") for _ in range(MIN_CASES)])), (f"2 flag cases, fewer than {MIN_CASES}; 2 clean cases, fewer than {MIN_CASES}", ""))
     check("unplayed: a case not played PLAYS times", unplayed(res + [{"id": "5", "expect": "flag", "plays": [True]}]), ["5"])

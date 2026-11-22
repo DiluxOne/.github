@@ -414,8 +414,10 @@ def test_c2_an_empty_file_list_fails_steps_not_selects_nothing():
 def old_review_worse(now, base):
     """review-eval.py's worse() as review-eval.yml ran it before #735."""
     why = []
-    # And, since #930, the found floor whatever the baseline: 3 of 10.
-    if now["found"] < max(1, math.ceil(round(0.3 * now["flag"], 9))):
+    # And, since #930, the found floor whatever the baseline, the policy's
+    # review-eval.found-floor share of the flag cases.
+    share = yaml.safe_load((ROOT / "policy" / "review-policy.default.yml").read_text(encoding="utf-8"))["review-eval"]["found-floor"]
+    if now["found"] < max(1, math.ceil(round(share * now["flag"], 9))):
         why.append("floor")
     if base.get("flag") and now["found"] < base["found"] - 1:
         why.append("found")

@@ -4,11 +4,12 @@ name: Review evaluation
 # phase 13): the review's prompts, profiles, brief, model or verification.
 # Every case of evals/review/cases.json, real pull requests of the public
 # repositories (a bug the review found and was fixed, which it must find
-# again in the hunk its fix changed; a clean one it must not block), is reviewed again with
-# the rules of this pull request the way production reviews a pull request
-# (#930): the brief for its pull request in full mode, claude-review.yml's
-# own review and verify steps (their prompts and args, read from it), and
-# the verified output (scripts/review-eval.py run). The play's read-only
+# again in the hunk its fix changed or within 10 lines of the lines it
+# changed; a clean one it must not block), is reviewed again with the rules
+# of this pull request the way production reviews a pull request (#930):
+# the brief for its pull request in full mode, claude-review.yml's own
+# review and verify steps (their prompts and args, read from it), and the
+# verified output (scripts/review-eval.py run). The play's read-only
 # token reads each case's closing issue for its criteria. It is scored
 # against evals/review/baseline.json
 # (scripts/review-eval.py). Worse by more than one case on either side

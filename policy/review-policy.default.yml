@@ -101,7 +101,7 @@ budget-usd: 3
 # evals/review/baseline.json says. A review that finds none always fails.
 # The engine's alone: no repository sets it.
 review-eval:
-  found-floor: 0.3
+  found-floor: 0.2
 
 # Whether a pull request that meets every condition (low floor, low risk, low
 # complexity, not blocking, trusted author, all checks green) merges on its

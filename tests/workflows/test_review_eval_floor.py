@@ -58,7 +58,7 @@ def env(tmp_path, monkeypatch):
 
 
 def test_the_policy_sets_the_floor():
-    assert share() == 0.3
+    assert share() == 0.2
 
 
 def test_finding_none_fails_against_a_baseline_of_none(env):

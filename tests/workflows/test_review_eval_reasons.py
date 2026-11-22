@@ -27,7 +27,7 @@ def finding(line, sev="major", file="a.py", **k):
 
 @pytest.mark.parametrize("review,want", [
     ({"findings": [finding(11)]}, "found"),
-    ({"findings": [finding(4), finding(15)]}, "outside the fixed lines, 3 lines away"),
+    ({"findings": [finding(30), finding(25)]}, "outside the fixed lines, 13 lines away"),
     ({"findings": [finding(11, "minor", rejected="the caller checks it")]}, "rejected by verification"),
     ({"findings": [finding(11, file="b.py"), finding(11, "minor")]}, "no finding in the file"),
     ({"findings": []}, "no finding in the file"),
@@ -42,7 +42,7 @@ def test_each_reason(review, want):
 def test_the_reason_agrees_with_the_verdict():
     m = mod()
     assert hasattr(m, "reason"), "review-eval.py has no reason()"
-    for review in ({"findings": [finding(11)]}, {"findings": [finding(4)]}, None):
+    for review in ({"findings": [finding(11)]}, {"findings": [finding(40)]}, None):
         assert (m.reason(CASE, review) == "found") == bool(m.verdict(CASE, review))
 
 
