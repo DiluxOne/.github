@@ -11,7 +11,11 @@ name: Autopilot in step with main
 # set before the continue, makes it a free run, #563, #802). A draft only behind main,
 # with no conflicting hunk, is updated the same way (#563): a step with no
 # model, so no run is spent on it; a draft in conflict is left alone: its
-# own run merges main first. A pull request whose state GitHub has not worked out yet is left
+# own run merges main first. A pull request whose issue has an autopilot run
+# queued or in progress is not updated (#934, scripts/autopilot.py
+# runs-busy, with the token's actions: read): the run's apply step would
+# find its branch moved and lose the round; it is left for the next pass,
+# and so is one whose runs cannot be read. A pull request whose state GitHub has not worked out yet is left
 # to the next sweep. An issue that waits for another autopilot pull request
 # on the engine's core (`core_wait` on its board, #563, #802) gets its
 # `autopilot:continue` once no open one touches the core its Spec touches:
@@ -102,6 +106,7 @@ jobs:
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ steps.where.outputs.name }}
+          permission-actions: read # the issue's autopilot runs in progress (#934)
           permission-contents: write # update-branch
           permission-issues: write # autopilot:continue on the issue
           permission-pull-requests: write
@@ -178,6 +183,17 @@ jobs:
             echo "$repo#$n: ${what:-nothing}: ${out#*$'\t'}"
             case $what in
               update)
+                # #934: never under the issue's autopilot run (queued or in
+                # progress): its apply step would find the branch moved and
+                # the round would be lost. Left for the next pass; a read
+                # that fails counts as busy too.
+                if [ -n "$issue" ]; then
+                  busy=$(GITHUB_REPOSITORY="$repo" NUMBER="$issue" python3 .dx-central/scripts/autopilot.py runs-busy) || busy="(unreadable)"
+                  if [ -n "$busy" ]; then
+                    echo "$repo#$n: left for the next pass: its issue's autopilot run $(tr '\n' ' ' <<<"$busy" | sed 's/ *$//') is in progress"
+                    continue
+                  fi
+                fi
                 gh api -X PUT "repos/$repo/pulls/$n/update-branch" -f expected_head_sha="$(jq -r .headRefOid <<<"$pr")" >/dev/null \
                   || echo "::warning::$repo#$n: main could not be merged into it." ;;
               continue)
