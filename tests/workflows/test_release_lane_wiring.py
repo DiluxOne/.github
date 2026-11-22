@@ -18,7 +18,8 @@ def jobs():
 
 def test_the_callers_tokens_may_read_the_checks_workflow_runs():
     tokens = [s for job in ("move", "play", "back") for s in jobs()[job]["steps"] if "create-github-app-token" in s.get("uses", "")]
-    assert [t["id"] for t in tokens] == ["app", "back"]
+    # #929: the play job's, on a re-run alone, moves the callers again.
+    assert [t["id"] for t in tokens] == ["app", "callers", "back"]
     for t in tokens:
         w = t["with"]
         assert w["permission-checks"] == "read"
