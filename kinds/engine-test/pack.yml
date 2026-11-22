@@ -62,6 +62,9 @@ identity:
 # no required check runs it (`scenarios/**` is among `test-first.not-tests`),
 # so G7 meets it by being written and changed by the pull request, and asks
 # no check of it (#860: autopilot.py check_evidence `fixed`, criteria_unmet).
+# The review there is fixed too (#943, scripts/fixed-review.py): a scenario
+# that does not say `review: model` in tests/release/scenarios.yml gets the
+# policy floor's risk, not blocking, with no model.
 autopilot: fixed-change
 fixed-change:
   # A pull request made only of files under this file's directory keeps its
