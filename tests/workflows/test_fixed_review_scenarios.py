@@ -16,7 +16,9 @@ ISSUE = ("<!-- dx-scenario: {sid} -->\n### Problem\n\nx\n\n### Acceptance criter
 
 def test_c1_a_scenario_that_does_not_test_the_review_gets_no_model():
     import importlib.util
-    spec = importlib.util.spec_from_file_location("fixed_review", ROOT / "scripts" / "fixed-review.py")
+    path = ROOT / "scripts" / "fixed-review.py"
+    assert path.exists(), "no scripts/fixed-review.py"
+    spec = importlib.util.spec_from_file_location("fixed_review", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 
@@ -43,6 +45,7 @@ def test_c2_a_scenario_that_tests_the_review_keeps_the_model():
 def test_c1_the_model_step_skips_on_a_fixed_answer_and_the_verdict_reads_it():
     wf = yaml.safe_load((ROOT / ".github" / "workflows" / "claude-review.yml").read_text(encoding="utf-8"))
     steps = {s.get("id"): s for s in wf["jobs"]["review"]["steps"] if s.get("id")}
+    assert "fixedrev" in steps, "no fixed review step"
     assert "steps.fixedrev.outputs.hit != 'true'" in steps["claude"]["if"]
     assert "steps.fixedrev.outputs.answer" in steps["verdict"]["env"]["OUT"]
     assert "steps.fixedrev.outputs.hit == 'true'" in steps["verify-task"]["if"]
