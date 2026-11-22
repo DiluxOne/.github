@@ -1328,8 +1328,16 @@ def continue_as(is_draft, record, head, conflicts=False):
     return "fix" if review_count.blocking(record) else "continue"
 
 
+def end_ready(mode, pr, draft_, stopped, asked, done, total, prepr_passed):
+    """Whether the end marks the draft ready itself (#928 C1): every box
+    ticked, `make pre-pr` passed in full at its head in this run
+    (`prepr_passed`), and its agent neither stopped nor asked. A fix round
+    works on a pull request already ready: not this rule's. Pure."""
+    return bool(mode != "fix" and pr and draft_ and not stopped and not asked and total and done == total and prepr_passed)
+
+
 def end_verdict(mode, pr, draft_, stopped, done, total, limit_hit, runs, cap, pushed=False, asked=False, nudged=False, lost=False, frees=0,
-                prepr_failed=False, engine=False, repeated=False):
+                prepr_failed=False, engine=False, repeated=False, prepr_passed=False):
     """ready | stopped | asked | continue | silent. A run never ends without
     one of the first four: silent is the workflow saying so for the agent.
     A draft with every box ticked that ended without `finish` continues once
@@ -1341,7 +1349,9 @@ def end_verdict(mode, pr, draft_, stopped, done, total, limit_hit, runs, cap, pu
     the cap too. One whose `make pre-pr` failed on a command the runner
     lacks (#682, `engine`) stops: no fix round can install it; so does a
     fix round that failed as the round before it (`repeated`), rather than
-    start another."""
+    start another. A green draft with every box ticked (#928 C1,
+    `end_ready`) is ready, before the continue and the silent rules: the
+    end marks it ready."""
     if stopped:
         return "stopped"
     if asked:
@@ -1350,6 +1360,8 @@ def end_verdict(mode, pr, draft_, stopped, done, total, limit_hit, runs, cap, pu
         return "stopped"
     if (lost or prepr_failed) and mode != "fix" and pr and draft_ and frees <= cap and runs < cap:
         return "continue"
+    if end_ready(mode, pr, draft_, stopped, asked, done, total, prepr_passed and not prepr_failed):
+        return "ready"
     if mode == "fix":
         return "ready" if pushed else "silent"
     if pr and not draft_:
@@ -6028,6 +6040,115 @@ def superseded_of(repo, pr):
     return superseded(run, run_head, head, review, runs)
 
 
+def mark_ready(repo, pr, number, text):
+    """The pull request marked ready (#928 C1: one path for `finish ready`
+    and the end): every box ticked, its Credits block, "How I tested it"
+    (`text`) set, a reproduced bug's test checked, the ready push that
+    starts the review, the board refreshed. "" once ready, else why not
+    (it stays, or is again, a draft)."""
+    body = pr_json(repo, pr, "body")["body"]
+    done, total = progress(body)
+    if total == 0 or done < total:
+        return f"Not ready: {total - done} of {total} criteria are not ticked (or the checklist is gone). Tick them, or finish stop."
+    if not credits.has_block(body):
+        return NO_CREDITS
+    if not (text or "").strip():
+        return "Not ready: write how you tested it into a file and pass it: finish ready <file>."
+    # A reproduced bug is ready only once its test passes in the
+    # sandbox at HEAD, as it failed before. Which test, and whether
+    # one is needed, come from the PRD at its seal and the issue's
+    # labels, never from what the agent passes.
+    issue = json.loads(gh("issue", "view", str(number), "--repo", repo, "--json", "body,labels"))
+    tmp = os.path.join(os.environ.get("RUNNER_TEMP", "/tmp"), f"finish-body-{number}.md")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(issue.get("body") or "")
+    seal = subprocess.run([sys.executable, os.path.join(HERE, "receipts.py"), "verify-prd"], capture_output=True, text=True,
+                          env=dict(os.environ, NUMBER=str(number), BODY=tmp, GITHUB_REPOSITORY=repo)).stdout.strip()
+    need, test = repro_needed(issue.get("body") or "", [l["name"] for l in issue.get("labels") or []], seal)
+    if need and not test:
+        return f"Not ready: {need}."
+    # #820: the agent's commits not yet pushed go in one push with
+    # the ready commit, after the pull request is marked ready.
+    ahead = unpushed(os.environ.get("BRANCH", ""))
+    if test:
+        # The test at the commit about to be the pull request's head
+        # must be the one that failed, as G7 will ask. That it passes
+        # there is the agent's proof in the sandbox (agent_helper),
+        # and the pull request's own checks run it again with the
+        # suite; nothing from the branch runs in this job, which
+        # holds the key.
+        if ahead:
+            pushed = ahead[0][0]
+        else:
+            pushed = pr_json(repo, pr, "headRefOid")["headRefOid"]
+            subprocess.run(["git", "fetch", "-q", "origin", pushed], capture_output=True)
+        blob = subprocess.run(["git", "show", f"{pushed}:{test}"], capture_output=True)
+        if blob.returncode != 0 or hashlib.sha256(blob.stdout).hexdigest() != repro.evidence(issue.get("body") or "")["sha256"]:
+            return f"Not ready: the reproduction test {test} at {pushed[:12]} is not the one that failed (its SHA-256 differs from the sealed PRD's)."
+        ev = repro.evidence(issue.get("body") or "")
+        again = (f"and gate G7 runs it again the `{ev['way']}` way it was written, at the head, before it merges"
+                 if ev.get("spec") else "and this pull request's checks run it with the rest of the suite")
+        where = "the agent's last commit, pushed with the ready commit" if ahead else "the pull request's head"
+        text = text.rstrip() + f"\n\nThe reproduction test `{test}` at {pushed[:12]}, {where}, is the one that failed on the default branch (its SHA-256 is the sealed PRD's). The agent ran it in the sandbox (a clean copy of its commit; no network, no secrets) before finishing, {again}.\n"
+    set_body(repo, pr, set_tested(body, text))
+    gh("pr", "ready", str(pr), "--repo", repo)
+    try:
+        if ahead:
+            # One push: the agent's commits and the empty ready
+            # commit on top (#820), so one review run starts.
+            subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", READY_COMMIT], check=True, capture_output=True)
+            try:
+                if push_branch(repo, pr, number) != 0:
+                    raise RuntimeError("api-commit.py could not push the branch")
+            except (RuntimeError, OSError, ValueError, KeyError):
+                # The ready commit goes only with the ready: `apply`
+                # pushes the agent's commits without it.
+                if unpushed(os.environ.get("BRANCH", "")):
+                    subprocess.run(["git", "reset", "-q", "--soft", "HEAD~1"], capture_output=True)
+                raise
+            head = git_out("rev-parse", "HEAD")
+            if not wait_shown(repo, pr, head):
+                print(f"::warning::#{pr} does not show {head} after a minute.")
+        else:
+            review_push(repo, pr)
+    except (RuntimeError, OSError, ValueError, KeyError, subprocess.CalledProcessError) as exc:
+        # Ready without that push is never reviewed: back to a draft,
+        # so finishing again (or a continue run) redoes both.
+        gh("pr", "ready", str(pr), "--repo", repo, "--undo")
+        return f"Not ready: the push that starts the review failed ({str(exc)[:200]}); #{pr} is a draft again. Run finish ready again."
+    print(f"#{pr} is ready for review.")
+    refresh_board(repo, number)
+    return ""
+
+
+OUTBOX_FILE = ".dx-out/outbox.jsonl"
+NOT_READY_MARK = "<!-- dx-autopilot-not-ready -->"
+
+
+def end_tested(outbox, run_url, tail_file, head):
+    """"How I tested it" for the end's own ready (#928 C1): the agent's,
+    when it left one in its outbox, else what the end knows: `make pre-pr`
+    passed in full at the head in this run, its link, and the last lines
+    of its output when `verify` kept them."""
+    texts = [it.get("text", "") for it in read_outbox(outbox)[0] if it.get("kind") == "ready"]
+    if texts and texts[-1].strip():
+        return texts[-1]
+    text = f"`make pre-pr`, every check the pull request and the merge queue run, passed in full at {head[:12]} in [the autopilot's run]({run_url})."
+    tail = ""
+    if tail_file and os.path.exists(tail_file):
+        tail = "\n".join(open(tail_file, encoding="utf-8", errors="replace").read().strip().splitlines()[-20:])
+    if tail.strip():
+        text += f"\n\nIts last lines:\n\n```\n{tail.replace('```', '` ` `')}\n```"
+    return text + "\n"
+
+
+def not_ready_comment(why, run_url):
+    """What the end says when its own ready is refused (#928 C1): a round
+    never ends green and silent."""
+    return (f"{NOT_READY_MARK}\n**Every criterion is ticked and `make pre-pr` passed, but the pull request is not ready.** {why.strip()}\n\n"
+            f"What it did is in [the run]({run_url}).\n\n{AI_LINE}")
+
+
 def stop_comment(why):
     return f"{STOP}\n**The autopilot stopped here.** {why.strip()}\n\nA person takes it from here (`needs-human`): a maintainer's answer here, a hint in words, brings it back, or they take it over.\n\n{AI_LINE}"
 
@@ -6095,7 +6216,7 @@ def main(argv):
     if argv[:1] == ["verify"]:
         # #673, with no key. `verify need`, in the work job: `true` when the
         # agent finished ready and its check did not pass at the head it
-        # left (DX_IO). `verify run OUT`, in the verify job: `make pre-pr`
+        # left (DX_IO); `verify passed`, `true` when it did (#928 C1). `verify run OUT`, in the verify job: `make pre-pr`
         # at HEAD up to DX_DEADLINE, its result and output in OUT (marked
         # `timeout` first, so a step killed on its limit reads as one).
         # `verify result OUT`: the verdict (GITHUB_OUTPUT `verdict`) and the
@@ -6107,9 +6228,15 @@ def main(argv):
             print("true" if verify_needed(read_outbox(os.path.join(io, OUTBOX))[0], prepr.has_target(prepr.makefile(".")), read_mark(io),
                                           git_out("rev-parse", "HEAD")) else "false")
             return 0
+        if sub == ["passed"]:
+            # #928 C1: `true` when the agent's own `make pre-pr` passed at
+            # the head it left (DX_IO), so the end may mark it ready.
+            mark = read_mark(os.environ.get(IO_ENV, ""))
+            print("true" if isinstance(mark, dict) and mark.get("rc") == 0 and mark.get("head") == git_out("rev-parse", "HEAD") else "false")
+            return 0
         out = argv[2] if len(argv) > 2 else ""
         if sub not in (["run"], ["result"]) or not out:
-            print("verify need | verify run OUT | verify result OUT", file=sys.stderr)
+            print("verify need | verify passed | verify run OUT | verify result OUT", file=sys.stderr)
             return 64
         os.makedirs(out, exist_ok=True)
         result_file, log = os.path.join(out, VERIFY_RESULT), os.path.join(out, VERIFY_LOG)
@@ -6256,85 +6383,11 @@ def main(argv):
     if argv[:1] == ["finish"]:
         how = argv[1] if len(argv) > 1 else ""
         if how == "ready":
-            body = pr_json(repo, pr, "body")["body"]
-            done, total = progress(body)
-            if total == 0 or done < total:
-                print(f"Not ready: {total - done} of {total} criteria are not ticked (or the checklist is gone). Tick them, or finish stop.")
-                return 1
-            if not credits.has_block(body):
-                print(NO_CREDITS)
-                return 1
             text = open(argv[2], encoding="utf-8").read() if len(argv) > 2 and os.path.exists(argv[2]) else ""
-            if not text.strip():
-                print("Not ready: write how you tested it into a file and pass it: finish ready <file>.")
+            why = mark_ready(repo, pr, number, text)
+            if why:
+                print(why)
                 return 1
-            # A reproduced bug is ready only once its test passes in the
-            # sandbox at HEAD, as it failed before. Which test, and whether
-            # one is needed, come from the PRD at its seal and the issue's
-            # labels, never from what the agent passes.
-            issue = json.loads(gh("issue", "view", str(number), "--repo", repo, "--json", "body,labels"))
-            tmp = os.path.join(os.environ.get("RUNNER_TEMP", "/tmp"), f"finish-body-{number}.md")
-            with open(tmp, "w", encoding="utf-8") as fh:
-                fh.write(issue.get("body") or "")
-            seal = subprocess.run([sys.executable, os.path.join(HERE, "receipts.py"), "verify-prd"], capture_output=True, text=True,
-                                  env=dict(os.environ, NUMBER=str(number), BODY=tmp, GITHUB_REPOSITORY=repo)).stdout.strip()
-            need, test = repro_needed(issue.get("body") or "", [l["name"] for l in issue.get("labels") or []], seal)
-            if need and not test:
-                print(f"Not ready: {need}.")
-                return 1
-            # #820: the agent's commits not yet pushed go in one push with
-            # the ready commit, after the pull request is marked ready.
-            ahead = unpushed(os.environ.get("BRANCH", ""))
-            if test:
-                # The test at the commit about to be the pull request's head
-                # must be the one that failed, as G7 will ask. That it passes
-                # there is the agent's proof in the sandbox (agent_helper),
-                # and the pull request's own checks run it again with the
-                # suite; nothing from the branch runs in this job, which
-                # holds the key.
-                if ahead:
-                    pushed = ahead[0][0]
-                else:
-                    pushed = pr_json(repo, pr, "headRefOid")["headRefOid"]
-                    subprocess.run(["git", "fetch", "-q", "origin", pushed], capture_output=True)
-                blob = subprocess.run(["git", "show", f"{pushed}:{test}"], capture_output=True)
-                if blob.returncode != 0 or hashlib.sha256(blob.stdout).hexdigest() != repro.evidence(issue.get("body") or "")["sha256"]:
-                    print(f"Not ready: the reproduction test {test} at {pushed[:12]} is not the one that failed (its SHA-256 differs from the sealed PRD's).")
-                    return 1
-                ev = repro.evidence(issue.get("body") or "")
-                again = (f"and gate G7 runs it again the `{ev['way']}` way it was written, at the head, before it merges"
-                         if ev.get("spec") else "and this pull request's checks run it with the rest of the suite")
-                where = "the agent's last commit, pushed with the ready commit" if ahead else "the pull request's head"
-                text = text.rstrip() + f"\n\nThe reproduction test `{test}` at {pushed[:12]}, {where}, is the one that failed on the default branch (its SHA-256 is the sealed PRD's). The agent ran it in the sandbox (a clean copy of its commit; no network, no secrets) before finishing, {again}.\n"
-            set_body(repo, pr, set_tested(body, text))
-            gh("pr", "ready", str(pr), "--repo", repo)
-            try:
-                if ahead:
-                    # One push: the agent's commits and the empty ready
-                    # commit on top (#820), so one review run starts.
-                    subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", READY_COMMIT], check=True, capture_output=True)
-                    try:
-                        if push_branch(repo, pr, number) != 0:
-                            raise RuntimeError("api-commit.py could not push the branch")
-                    except (RuntimeError, OSError, ValueError, KeyError):
-                        # The ready commit goes only with the ready: `apply`
-                        # pushes the agent's commits without it.
-                        if unpushed(os.environ.get("BRANCH", "")):
-                            subprocess.run(["git", "reset", "-q", "--soft", "HEAD~1"], capture_output=True)
-                        raise
-                    head = git_out("rev-parse", "HEAD")
-                    if not wait_shown(repo, pr, head):
-                        print(f"::warning::#{pr} does not show {head} after a minute.")
-                else:
-                    review_push(repo, pr)
-            except (RuntimeError, OSError, ValueError, KeyError, subprocess.CalledProcessError) as exc:
-                # Ready without that push is never reviewed: back to a draft,
-                # so finishing again (or a continue run) redoes both.
-                gh("pr", "ready", str(pr), "--repo", repo, "--undo")
-                print(f"Not ready: the push that starts the review failed ({str(exc)[:200]}); #{pr} is a draft again. Run finish ready again.")
-                return 1
-            print(f"#{pr} is ready for review.")
-            refresh_board(repo, number)
             return 0
         if how == "ask":
             question = " ".join(argv[2:]).strip()
@@ -6766,10 +6819,15 @@ def main(argv):
         draft_, done, total, pushed = True, 0, 0, False
         lost, frees, held_back, free = False, 0, False, False
         prepr_verdict = verdict_of(os.environ.get("PREPR"))
+        prepr_passed = False
         if pr:
             info = pr_json(repo, pr, "body,isDraft,headRefOid")
             draft_ = info["isDraft"]
             done, total = progress(info["body"])
+            # #928 C1: `make pre-pr` passed in full in this run (the agent's
+            # own check, or `verify`'s), at the head the pull request has.
+            passed_at = os.environ.get("PREPR_PASSED", "").strip()
+            prepr_passed = bool(passed_at) and passed_at == info["headRefOid"]
             pushed = bool(os.environ.get("HEAD_BEFORE")) and info["headRefOid"] != os.environ.get("HEAD_BEFORE")
             # #699 C3: a fix round of a failed conventions check that set
             # the title alone pushed nothing, and did its work.
@@ -6807,7 +6865,19 @@ def main(argv):
         # failed the same way stops instead of starting another.
         before = previous_signature(comments, started) if held_back and prepr_verdict in ("fail", TIMEOUT) else ""
         repeated = bool(before) and before == failure_signature(shown_tail(tail))
-        v = end_verdict(mode, pr, draft_, stopped, done, total, limit, runs, cap, pushed, asked, nudged, lost, frees, held_back, engine, repeated)
+        v = end_verdict(mode, pr, draft_, stopped, done, total, limit, runs, cap, pushed, asked, nudged, lost, frees, held_back, engine, repeated,
+                        prepr_passed)
+        refused_ready = ""
+        if v == "ready" and end_ready(mode, pr, draft_, stopped, asked, done, total, prepr_passed):
+            # #928 C1: green, every box ticked, and still a draft: the end
+            # marks it ready the way `finish ready` does. When that path
+            # refuses, it says why and keeps the verdict it had.
+            refused_ready = mark_ready(repo, pr, number, end_tested(os.environ.get("OUTBOX", OUTBOX_FILE), run_url, tail_file, passed_at))
+            if refused_ready:
+                print(refused_ready)
+                gh("pr", "comment", str(pr), "--repo", repo, "--body", not_ready_comment(refused_ready, run_url))
+                v = end_verdict(mode, pr, draft_, stopped, done, total, limit, runs, cap, pushed, asked, nudged, lost, frees, held_back, engine,
+                                repeated)
         if lost:
             print("Its runner was lost: the run does not count towards the cap (#479).")
         if pr and free and not lost and not held_back:
@@ -6839,7 +6909,7 @@ def main(argv):
             gh("issue", "edit", str(number), "--repo", repo, "--add-label", "autopilot:continue")
             # Once the continue is on its way: a comment that counts it
             # never stands for one that did not start.
-            if total and done == total and not held_back:
+            if total and done == total and not held_back and not refused_ready:
                 gh("pr", "comment", str(pr), "--repo", repo, "--body", unfinished_comment(run_url))
             said()
         elif v == "silent":

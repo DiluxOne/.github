@@ -111,7 +111,12 @@ name: Autopilot
 # command is not found is `verify`'s `engine` verdict: the run is free, the
 # comment says what the runner lacks, and it stops with no fix round. A
 # fix round that fails as the round before did (the comment's hidden
-# `dx-prepr-sig:`) stops too, rather than start another. The
+# `dx-prepr-sig:`) stops too, rather than start another. A draft with
+# every box ticked whose `make pre-pr` passed in full at its head in this
+# run (the agent's own check, or `verify`'s) is marked ready by the end
+# rule itself, through `finish ready`'s path, when the agent did not
+# finish (#928 C1); when that path refuses, the end says why on the pull
+# request and continues as before, so no round ends green and silent. The
 # questions it needs answered are asked while it writes the Spec.
 #   mode: fix       called from org-pull-request.yml, and in the
 #                   organisation's own repository from its
@@ -1446,6 +1451,8 @@ jobs:
       # step, at the head the agent left (its commits' bundle).
       verify: ${{ steps.left.outputs.verify }}
       head: ${{ steps.left.outputs.head }}
+      # #928 C1: whether the agent's own `make pre-pr` passed at that head.
+      checked: ${{ steps.left.outputs.checked }}
       base: ${{ steps.task.outputs.base }}
     steps:
       # The working tree, with the job's token, which only reads; nothing
@@ -1656,6 +1663,9 @@ jobs:
           # skipped, and the run takes no longer than before.
           echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "verify=$(python3 .dx-central/scripts/autopilot.py verify need || echo false)" >> "$GITHUB_OUTPUT"
+          # #928 C1: the agent's own `make pre-pr` passed at this head, so
+          # the end may mark the pull request ready though it did not finish.
+          echo "checked=$(python3 .dx-central/scripts/autopilot.py verify passed || echo false)" >> "$GITHUB_OUTPUT"
           # Best effort: the log wherever it is (the action's output, the
           # file it writes, or the CLI's session when the step was killed).
           WORK_LOG=$(python3 .dx-central/scripts/autopilot.py work-log) || WORK_LOG=""
@@ -2072,6 +2082,11 @@ jobs:
           # build on the branch as GitHub has it: the run is free.
           REFUSED: ${{ steps.applied.outputs.refused }}
           PREPR_TAIL: .dx-verify/tail.txt
+          # #928 C1: the head at which `make pre-pr` passed in full in this
+          # run (the agent's own check, or `verify`'s), empty when it did
+          # not: a draft with every box ticked that is green there, the end
+          # marks ready itself.
+          PREPR_PASSED: ${{ (needs.work.outputs.checked == 'true' || needs.verify.outputs.verdict == 'pass') && needs.work.outputs.head || '' }}
           RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
           REPO_AUTONOMY: ${{ runner.temp }}/repo-autonomy.yml
         run: |
