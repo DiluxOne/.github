@@ -118,7 +118,7 @@ after GitHub's back-off within the scenario's limit, then named.
         to FILE as [{id, in}] ([] for a new candidate, or when they cannot
         be read); exit 0
   release-scenarios.py move --repo OWNER/NAME --moved MOVED --out FILE
-                            [--ref v7-next] [--minutes N]
+                            [--ref v7-next] [--minutes N] [--record-only]
         the callers moved to the ref, as `run` does (with
         DX_CALLERS_TOKEN), what moved written to MOVED as soon as the
         pointing is over, and to FILE the failing `callers` row when they
@@ -126,7 +126,12 @@ after GitHub's back-off within the scenario's limit, then named.
         there that would still run off the ref: its default branch still
         requiring org-pull-request.yml (a `workflows` rule), or a
         .github/workflows/*.yml calling the engine off the ref (exits 1
-        then: no group plays, and `back` puts back what moved)
+        then: no group plays, and `back` puts back what moved). MOVED
+        names too every caller already at the ref, with its text before
+        the lane's pull request that moved it there (#929, `leftovers`),
+        so `back` puts back the ref from before any lane. With
+        --record-only (#929: nothing left to play), no caller moves and
+        MOVED records those alone
   release-scenarios.py play --repo OWNER/NAME --group ID --out FILE
                             [--ref v7-next] [--minutes N]
         the group's scenarios, one after another in its order, with the
@@ -1820,6 +1825,45 @@ def merge_when_checked(repo, number, url, head, run=gh, sleep=time.sleep, minute
         waited += POLL
 
 
+def lane_title(ref, back=False):
+    """The title of the lane's callers pull request (and so of its squashed
+    commit, with ` (#N)`). Pure."""
+    return f"ci: the engine's callers {'back from' if back else 'at'} {ref}"
+
+
+def before_lane(repo, name, ref, base, run=gh):
+    """The text caller `name` had before the last merged lane pull request
+    that moved it to `ref` (#929): the parent of the newest commit of
+    `base` that touched it titled `lane_title(ref)`, read at that commit.
+    None when there is none (it is at `ref` by a person's hand)."""
+    from urllib.parse import quote
+    path = f".github/workflows/{name}"
+    title = re.compile(re.escape(lane_title(ref)) + r"( \(#\d+\))?$")
+    for c in json.loads(run("api", f"repos/{repo}/commits?sha={quote(base)}&path={quote(path)}&per_page=30") or "[]"):
+        first = str(((c or {}).get("commit") or {}).get("message") or "").split("\n", 1)[0]
+        parents = (c or {}).get("parents") or []
+        if title.match(first) and parents:
+            return text_at(repo, path, parents[0]["sha"], run)
+    return None
+
+
+def leftovers(repo, ref, at, run=gh, central=None, base=None):
+    """The callers a lane left at `ref` (#929: a `back` that failed, a run
+    killed while moving them), so `back` puts them where the lane found
+    them: [{name, before}] of each caller in `at` ({name: text}, every
+    engine call already at `ref`) whose text before the lane's pull request
+    (`before_lane`) differs."""
+    if not at:
+        return []
+    base = base or run("api", f"repos/{repo}", "--jq", ".default_branch").strip()
+    out = []
+    for name, text in at.items():
+        prior = before_lane(repo, name, ref, base, run)
+        if prior is not None and prior != text:
+            out.append({"name": name, "before": prior})
+    return out
+
+
 def wait_merged(repo, number, url, run=gh, sleep=time.sleep, minutes=20):
     """The callers pull request another job opened (#929), waited for until
     it merged, never queued nor closed here: that job queues it. Raises,
@@ -1850,7 +1894,10 @@ def point_callers(repo, ref, run=gh, central=None, back=None, sleep=time.sleep, 
     (#929: the play jobs of a re-run each move the callers again): when
     `ci/callers-<ref>` already has an open pull request, it waits for that
     one to merge (`wait_merged`) instead of deleting its branch, then
-    reads the callers again."""
+    reads the callers again. Every caller it finds already at `ref` is
+    returned too, with the text it had before the lane's pull request that
+    moved it there (#929, `leftovers`), so `back` puts back the ref from
+    before any lane."""
     import base64
     if central is None:
         sys.path.insert(0, HERE)
@@ -1858,8 +1905,11 @@ def point_callers(repo, ref, run=gh, central=None, back=None, sleep=time.sleep, 
         central = org.CENTRAL
     branch = f"ci/callers-{ref}" + ("-back" if back is not None else "")
 
+    at = {}
+
     def read():
         changes = []
+        at.clear()
         for f in json.loads(run("api", f"repos/{repo}/contents/.github/workflows") or "[]"):
             name = str(f.get("name", ""))
             if not name.endswith(".yml") or (back is not None and name not in back):
@@ -1869,17 +1919,19 @@ def point_callers(repo, ref, run=gh, central=None, back=None, sleep=time.sleep, 
             new = back[name] if back is not None else at_ref(text, central, ref)
             if new != text:
                 changes.append((name, text, new))
+            elif back is None and engine_calls(text, central) and not off_ref(text, central, ref):
+                at[name] = text
         return changes
     changes = read()
     if not changes:
-        return []
+        return [] if back is not None else leftovers(repo, ref, at, run, central)
     opened = json.loads(run("pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "number,url") or "[]")
     if opened:
         # Another job is moving them (#929): its pull request, never a second.
         wait_merged(repo, str(opened[0]["number"]), str(opened[0].get("url") or opened[0]["number"]), run, sleep, minutes)
         changes = read()
         if not changes:
-            return []
+            return leftovers(repo, ref, at, run, central)
     base = run("api", f"repos/{repo}", "--jq", ".default_branch").strip()
     try:
         run("api", "-X", "DELETE", f"repos/{repo}/git/refs/heads/{branch}")
@@ -1887,7 +1939,7 @@ def point_callers(repo, ref, run=gh, central=None, back=None, sleep=time.sleep, 
         pass  # no leftover
     head = run("api", f"repos/{repo}/git/ref/heads/{base}", "--jq", ".object.sha").strip()
     run("api", f"repos/{repo}/git/refs", "-f", f"ref=refs/heads/{branch}", "-f", f"sha={head}")
-    title = f"ci: the engine's callers {'back from' if back is not None else 'at'} {ref}"
+    title = lane_title(ref, back is not None)
     commit_files(repo, branch, {f".github/workflows/{name}": new for name, _, new in changes}, title, run)
     url = run("pr", "create", "--repo", repo, "--base", base, "--head", branch, "--title", title, "--body-file", "-",
               input=f"The release lane's scenarios (scripts/release-scenarios.py): {title[4:]}.\n").strip()
@@ -1905,13 +1957,24 @@ def point_callers(repo, ref, run=gh, central=None, back=None, sleep=time.sleep, 
         except RuntimeError:
             pass
         raise
-    return [{"name": name, "before": text} for name, text, _ in changes]
+    return [{"name": name, "before": text} for name, text, _ in changes] + (leftovers(repo, ref, at, run, central, base) if back is None else [])
 
 
 def recorded_callers(repo, ref, run=gh, central=None):
     """What `back` must put back when no caller moves (#929, `move
-    --record-only`): nothing yet."""
-    return []
+    --record-only`): the callers a lane left at `ref` (`leftovers`)."""
+    import base64
+    central = central or central_of()
+    at = {}
+    for f in json.loads(run("api", f"repos/{repo}/contents/.github/workflows") or "[]"):
+        name = str(f.get("name", ""))
+        if not name.endswith(".yml"):
+            continue
+        got = json.loads(run("api", f"repos/{repo}/contents/.github/workflows/{name}") or "{}")
+        text = base64.b64decode(got.get("content") or "").decode()
+        if engine_calls(text, central) and not off_ref(text, central, ref):
+            at[name] = text
+    return leftovers(repo, ref, at, run, central)
 
 
 def put_back(repo, ref, moved, callers=gh, central=None, sleep=time.sleep, minutes=20):
@@ -4463,6 +4526,31 @@ def self_test():
     check("#929 C2: point_callers with another job's pull request open waits for it, deletes no branch, opens nothing",
           (point_callers("o/t", "v7-next", busy, "O/.github", sleep=lambda s: None, minutes=3), len(views),
            [a for a in log929 if a[:3] == ("api", "-X", "DELETE") or a[:2] in (("pr", "create"), ("pr", "merge"), ("pr", "close"))]), ([], 2, []))
+    # #929 C3: a caller an earlier lane left at the ref goes back to what it was before.
+    v7_929 = "jobs:\n  t:\n    uses: O/.github/.github/workflows/x.yml@v7\n"
+    next_929 = at_ref(v7_929, "O/.github", "v7-next")
+
+    def history(title):
+        def fake(*a, input=None):
+            last = str(a[-1])
+            if last == "repos/o/t/contents/.github/workflows":
+                return json.dumps([{"name": "a.yml"}, {"name": "plain.yml"}])
+            if "/contents/.github/workflows/" in last:
+                text = v7_929 if last.endswith("?ref=c1") else (next_929 if "a.yml" in last else "on: push\n")
+                return json.dumps({"content": base64.b64encode(text.encode()).decode()})
+            if a[-2:] == ("--jq", ".default_branch"):
+                return "main\n"
+            if "/commits?" in last:
+                return json.dumps([{"commit": {"message": "docs: other"}, "parents": [{"sha": "c0"}]},
+                                   {"commit": {"message": f"{title}\n\nbody"}, "parents": [{"sha": "c1"}]}])
+            return "[]"
+        return fake
+    check("#929 C3: point_callers records a caller already at the ref as it was before the lane's pull request, opening nothing",
+          point_callers("o/t", "v7-next", history("ci: the engine's callers at v7-next (#41)"), "O/.github"), [{"name": "a.yml", "before": v7_929}])
+    check("#929 C3: move --record-only records the same, moving nothing",
+          recorded_callers("o/t", "v7-next", history("ci: the engine's callers at v7-next (#41)"), "O/.github"), [{"name": "a.yml", "before": v7_929}])
+    check("#929 C3: with no lane pull request in its history (at the ref by hand, or another ref's), nothing is recorded",
+          [point_callers("o/t", "v7-next", history(t), "O/.github") for t in ("ci: something else", "ci: the engine's callers at v7")], [[], []])
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 

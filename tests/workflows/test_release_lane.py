@@ -155,6 +155,12 @@ def rows_text(rows):
     return f"| table |\n\n<!-- dx-scenarios {json.dumps(rows)} -->\n"
 
 
+def rows_of(path):
+    """The rows a results file records (its `dx-scenarios` mark)."""
+    import re
+    return json.loads(re.search(r"<!-- dx-scenarios (.*) -->", Path(path).read_text()).group(1))
+
+
 def lay(tmp_path, written):
     """The artifacts the act job downloads: {artifact name: rows}."""
     for name, rows in written.items():
@@ -178,9 +184,7 @@ def run_act(tmp_path, groups, written, jobs_=None, passed=()):
     ran = run(step(LANE, "act", job="act"), tmp_path, env=env, stubs={"git": ""})
     assert ran.code == 0, ran.stderr
     text = (tmp_path / "temp" / "results.md").read_text()
-    import re
-    rows = json.loads(re.search(r"<!-- dx-scenarios (.*) -->", text).group(1))
-    return json.loads(ran.stdout), rows, text
+    return json.loads(ran.stdout), rows_of(tmp_path / "temp" / "results.md"), text
 
 
 # C1: a lane on a candidate already tried plays only what did not pass there.
@@ -334,3 +338,44 @@ def test_c2_a_re_run_play_job_moves_the_callers_to_v7_next_before_it_plays(tmp_p
                                           "FAKE_SCRIPT_DO": json.dumps({"move": {"rows": [{"id": "callers", "ok": False, "why": ["x"]}], "code": 1}})})
     assert ran.code == 1
     assert "callers" in (tmp_path / "x" / "temp" / "results.md").read_text()
+
+
+# C3: the callers go back to the ref the lane found them at.
+
+CENTRAL = org.CENTRAL
+AT_V7 = f"on:\n  issues:\njobs:\n  t:\n    uses: {CENTRAL}/.github/workflows/issue-triage.yml@v7\n"
+AT_NEXT = AT_V7.replace("@v7\n", "@v7-next\n")
+LANE_PULL = [{"sha": "c2", "commit": {"message": "ci: the engine's callers at v7-next (#41)\n\nThe release lane's scenarios."}, "parents": [{"sha": "c1"}]}]
+
+
+def left_at_next(tmp_path):
+    """A test repository whose caller an earlier lane left at @v7-next: its
+    history has the lane's pull request, and @v7 before it."""
+    checkout(tmp_path)
+    return fake_gh(tmp_path, {"runs": [], "artifacts": {}, "commits": LANE_PULL, "files": {"": {"issues.yml": AT_NEXT}, "c1": {"issues.yml": AT_V7}}})
+
+
+def test_c3_move_records_a_caller_left_at_v7_next_as_it_was_before_the_lane(tmp_path):
+    for left in ('[{"id":"b","scenarios":["b"]}]', "[]"):
+        where = tmp_path / ("play" if left != "[]" else "none")
+        body, env = left_at_next(where)
+        ran = run(step(LANE, "move", job="move"), where, env=dict(env, OWNER="o", TEST_REPO="t", DX_CALLERS_TOKEN="app", LEFT=left), stubs={"gh": body})
+        assert ran.code == 0, ran.stderr
+        moved = json.loads((where / "temp" / "move" / "moved.json").read_text())
+        assert moved == [{"name": "issues.yml", "before": AT_V7}]
+        # Already at v7-next: no pull request opens to move it there.
+        assert "pulls" not in gh_state(where)
+        assert ran.output.get("moved") == ("true" if left != "[]" else None)
+
+
+def test_c3_back_puts_back_the_ref_the_lane_found(tmp_path):
+    body, env = left_at_next(tmp_path)
+    record = tmp_path / "temp" / "move" / "scenarios-move-a1"
+    record.mkdir(parents=True)
+    (record / "moved.json").write_text(json.dumps([{"name": "issues.yml", "before": AT_V7}]))
+    ran = run(step(LANE, "The callers back from v7-next", job="back"), tmp_path, env=dict(env, OWNER="o", TEST_REPO="t", DX_CALLERS_TOKEN="app"), stubs={"gh": body})
+    assert ran.code == 0, ran.stderr
+    st = gh_state(tmp_path)
+    assert st["pulls"] == ["ci/callers-v7-next-back"] and st["merged"] == 1
+    assert st["files"][""]["issues.yml"] == AT_V7
+    assert rows_of(tmp_path / "temp" / "back" / "results.md") == []
