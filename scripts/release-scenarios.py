@@ -1881,6 +1881,11 @@ def wait_merged(repo, number, url, run=gh, sleep=time.sleep, minutes=20):
         waited += POLL
 
 
+# How many polls a callers branch with no pull request and the same head is
+# another job's before it is a leftover to delete (#929).
+STALE = 2
+
+
 def point_callers(repo, ref, run=gh, central=None, back=None, sleep=time.sleep, minutes=20):
     """The test repository's callers at `ref` (`v7-next` while the lane
     tries a candidate, `v7` once the installer plays them), so what plays
@@ -1892,9 +1897,11 @@ def point_callers(repo, ref, run=gh, central=None, back=None, sleep=time.sleep, 
     and it returns once that merged. Nothing to change opens nothing. Returns what it moved,
     each caller's `name` and its text `before`. Safe to call twice at once
     (#929: the play jobs of a re-run each move the callers again): when
-    `ci/callers-<ref>` already has an open pull request, it waits for that
-    one to merge (`wait_merged`) instead of deleting its branch, then
-    reads the callers again. Every caller it finds already at `ref` is
+    `ci/callers-<ref>` already has an open pull request, or its branch
+    already exists (creating it is the lock), it waits for that one to
+    merge (`wait_merged`) instead of deleting its branch, then reads the
+    callers again; a branch with no pull request whose head stays the same
+    for `STALE` polls is a leftover, deleted and made anew. Every caller it finds already at `ref` is
     returned too, with the text it had before the lane's pull request that
     moved it there (#929, `leftovers`), so `back` puts back the ref from
     before any lane."""
@@ -1925,20 +1932,56 @@ def point_callers(repo, ref, run=gh, central=None, back=None, sleep=time.sleep, 
     changes = read()
     if not changes:
         return [] if back is not None else leftovers(repo, ref, at, run, central)
-    opened = json.loads(run("pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "number,url") or "[]")
-    if opened:
-        # Another job is moving them (#929): its pull request, never a second.
-        wait_merged(repo, str(opened[0]["number"]), str(opened[0].get("url") or opened[0]["number"]), run, sleep, minutes)
-        changes = read()
-        if not changes:
-            return leftovers(repo, ref, at, run, central)
     base = run("api", f"repos/{repo}", "--jq", ".default_branch").strip()
-    try:
-        run("api", "-X", "DELETE", f"repos/{repo}/git/refs/heads/{branch}")
-    except RuntimeError:
-        pass  # no leftover
-    head = run("api", f"repos/{repo}/git/ref/heads/{base}", "--jq", ".object.sha").strip()
-    run("api", f"repos/{repo}/git/refs", "-f", f"ref=refs/heads/{branch}", "-f", f"sha={head}")
+
+    def branch_head():
+        try:
+            return run("api", f"repos/{repo}/git/ref/heads/{branch}", "--jq", ".object.sha").strip()
+        except RuntimeError:
+            return None  # gone: a 404
+    # Creating the branch is the lock (#929): two play jobs of a re-run may
+    # both find no pull request open, and only one creates the branch. The
+    # other's 422 "Reference already exists" means another job started (its
+    # pull request soon open: waited for, never a second) or a leftover of
+    # a run that died. A branch is deleted only once it is stale: no pull
+    # request and the same head for `STALE` polls.
+    seen, waited, total = None, 0, 0
+    while True:
+        opened = json.loads(run("pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "number,url") or "[]")
+        if opened:
+            wait_merged(repo, str(opened[0]["number"]), str(opened[0].get("url") or opened[0]["number"]), run, sleep, minutes)
+            changes = read()
+            if not changes:
+                return leftovers(repo, ref, at, run, central)
+            seen, waited = None, 0
+        if seen is None:
+            head = run("api", f"repos/{repo}/git/ref/heads/{base}", "--jq", ".object.sha").strip()
+            try:
+                run("api", f"repos/{repo}/git/refs", "-f", f"ref=refs/heads/{branch}", "-f", f"sha={head}")
+                break
+            except RuntimeError as e:
+                if not re.search(r"Reference already exists", f"{e} {getattr(e, 'stderr', '')}", re.I):
+                    raise
+            seen, waited = branch_head() or "", 0
+        else:
+            now = branch_head()
+            if now is None:
+                seen = None
+                continue
+            if now != seen:
+                seen, waited = now, 0
+            elif waited >= STALE * POLL:
+                try:
+                    run("api", "-X", "DELETE", f"repos/{repo}/git/refs/heads/{branch}")
+                except RuntimeError:
+                    pass  # gone already
+                seen = None
+                continue
+        if total >= minutes * 60:
+            raise RuntimeError(f"the branch {branch} that moves them was held by another job for {minutes} minutes, with no pull request")
+        sleep(POLL)
+        waited += POLL
+        total += POLL
     title = lane_title(ref, back is not None)
     commit_files(repo, branch, {f".github/workflows/{name}": new for name, _, new in changes}, title, run)
     url = run("pr", "create", "--repo", repo, "--base", base, "--head", branch, "--title", title, "--body-file", "-",
@@ -4542,6 +4585,56 @@ def self_test():
     check("#929 C2: point_callers with another job's pull request open waits for it, deletes no branch, opens nothing",
           (point_callers("o/t", "v7-next", busy, "O/.github", sleep=lambda s: None, minutes=3), len(views),
            [a for a in log929 if a[:3] == ("api", "-X", "DELETE") or a[:2] in (("pr", "create"), ("pr", "merge"), ("pr", "close"))]), ([], 2, []))
+
+    def racing(listed_after, creates_ok_after, heads=("old",)):
+        """A fake where creating `ci/callers-v7-next` answers 422 until
+        `creates_ok_after` creates, and its pull request is listed only
+        from the `listed_after`th listing on (another job started first)."""
+        log, n = [], {"list": 0, "create": 0, "head": 0}
+
+        def fake(*a, input=None):
+            log.append(a)
+            merged = n["list"] > listed_after
+            if a[:2] == ("pr", "list"):
+                n["list"] += 1
+                return json.dumps([{"number": 31, "url": "https://github.com/o/t/pull/31"}] if n["list"] > listed_after else [])
+            if a[:2] == ("pr", "view"):
+                return json.dumps({"mergedAt": "x"})
+            if a[:2] == ("api", "repos/o/t/git/refs"):
+                n["create"] += 1
+                if n["create"] <= creates_ok_after:
+                    raise GhError("gh api: HTTP 422: Reference already exists", 1, "", "HTTP 422")
+                return "{}"
+            if a[:2] == ("api", "repos/o/t/git/ref/heads/ci/callers-v7-next"):
+                n["head"] += 1
+                return heads[min(n["head"], len(heads)) - 1] + "\n"
+            if a[:2] == ("api", "graphql"):
+                raise RuntimeError("stop here")
+            if a[-1] == "repos/o/t/contents/.github/workflows":
+                return json.dumps([{"name": "a.yml"}])
+            if a[-1] == "repos/o/t/contents/.github/workflows/a.yml":
+                text = base64.b64decode(base929).decode()
+                return json.dumps({"content": base64.b64encode((at_ref(text, "O/.github", "v7-next") if merged else text).encode()).decode()})
+            if a[-2:] == ("--jq", ".default_branch"):
+                return "main\n"
+            if a[-2:] == ("--jq", ".object.sha"):
+                return "basehead\n"
+            return "[]"
+        return fake, log
+
+    def outcome(fake, log):
+        try:
+            got = point_callers("o/t", "v7-next", fake, "O/.github", sleep=lambda s: None, minutes=30)
+        except RuntimeError as e:
+            got = str(e)
+        return (got, sum(a[:3] == ("api", "-X", "DELETE") for a in log), sum(a[:2] == ("api", "repos/o/t/git/refs") for a in log),
+                sum(a[:2] == ("pr", "create") for a in log))
+    check("#929 C2: point_callers whose branch another job just created (422, its pull request not listed yet) waits for that pull request, deletes nothing, opens nothing",
+          outcome(*racing(listed_after=2, creates_ok_after=9)), ([], 0, 1, 0))
+    check("#929 C2: a leftover branch that stays the same with no pull request is deleted once it is stale, then made anew",
+          outcome(*racing(listed_after=99, creates_ok_after=1)), ("stop here", 1, 2, 0))
+    check("#929 C2: a branch that moves while it waits is another job's, never deleted",
+          outcome(*racing(listed_after=3, creates_ok_after=9, heads=("old", "new", "newer", "newest"))), ([], 0, 1, 0))
     # #929 C3: a caller an earlier lane left at the ref goes back to what it was before.
     v7_929 = "jobs:\n  t:\n    uses: O/.github/.github/workflows/x.yml@v7\n"
     next_929 = at_ref(v7_929, "O/.github", "v7-next")

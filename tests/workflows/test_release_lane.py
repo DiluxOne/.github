@@ -219,6 +219,21 @@ def test_c1_the_same_candidate_plays_only_the_scenario_that_did_not_pass(tmp_pat
     assert downloads and all(c[2] == "7" and "scenarios-results" in c for c in downloads)
 
 
+FAILING_GROUPS = """import sys
+if sys.argv[1] == "passed":
+    open(sys.argv[sys.argv.index("--out") + 1], "w").write("[]")
+    sys.exit(0)
+sys.exit(1)
+"""
+
+
+def test_c1_a_groups_command_that_fails_fails_the_step(tmp_path):
+    checkout(tmp_path, {"release-scenarios.py": FAILING_GROUPS})
+    ran = run(step(LANE, "groups", job="move"), tmp_path, env=dict(SHA="S", NEXT="N", GH_TOKEN="t"))
+    assert ran.code != 0
+    assert "groups" not in ran.output
+
+
 def test_c1_a_new_candidate_plays_every_scenario(tmp_path):
     for n, key in enumerate(({"sha": "S", "next": "OTHER"}, {"sha": "OLD", "next": "N"})):
         ran = run_groups(tmp_path / str(n), key)
