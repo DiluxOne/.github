@@ -5630,7 +5630,8 @@ def self_test():
     check("pipeline: the organisation's required jobs", {"conventions", "review"} <= pipeline_jobs(), pipeline_jobs())
     # #842: repos.yml `required-checks`, written exactly as "own checks".
     two = ["Scripts (self-tests)", "test-first / Test first"]
-    check("#842 DiluxOne/.github requires its self-tests and its Test first", required_checks_of(".github") == two, required_checks_of(".github"))
+    check("#842 DiluxOne/.github requires its self-tests and its Test first, and the security gate (#956)",
+          required_checks_of(".github") == two + ["security-gate / Security gate"], required_checks_of(".github"))
     body = own_checks_body(two)
     check("#842 the new \"own checks\": exactly those checks, not strict, on the default branch",
           (body["name"], body["conditions"], body["rules"][0]["parameters"]["strict_required_status_checks_policy"],
