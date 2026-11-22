@@ -1681,6 +1681,29 @@ def sweep_step(pr, issue_labels=(), runs=0, cap=5):
     return "", step["why"]
 
 
+def rate_limit_step(board, labels=(), now=None):
+    """What the hourly sweep does for an accepted issue a run left to the
+    next because GitHub's API rate limit reset after its job's time (#925,
+    the run's `rate-limited` job writes `rate_limited=<reset, epoch
+    seconds>` on its board once that reset passed, scripts/gh-wait.sh
+    having noted it with no API call): `continue` (dilux-bot adds `autopilot:continue`) once the reset
+    passed, "" otherwise. The run it starts clears the key. Pure but for the
+    clock. Returns (what, why)."""
+    board = board if isinstance(board, dict) else {}
+    try:
+        reset = int(board.get("rate_limited") or 0)
+    except (TypeError, ValueError):
+        reset = 0
+    if not reset:
+        return "", "no run was left to the rate limit"
+    if "autopilot:continue" in (labels or ()):
+        return "", "a continue is already asked for"
+    now = time.time() if now is None else now
+    if reset > now:
+        return "", "the API's rate limit has not reset yet"
+    return "continue", "a run stopped on the API's rate limit, which has reset since: the next run takes it"
+
+
 # The autopilot's refusal of an accepted issue for its shape (#699 C2): said
 # once on the issue with this mark, and noted on its board (`shape_refused`)
 # so an edit that makes it pass starts it (issue-triage.yml `edit-start`).
@@ -4060,6 +4083,11 @@ A class on html.
            sweep_step({"number": 9, "isDraft": False, "mergeStateStatus": "DIRTY", "labels": [{"name": "autopilot"}], "author": {"login": BOT_LOGINS[1]}}, ["autopilot:continue"])[0],
            sweep_step({"number": 9, "isDraft": False, "mergeStateStatus": "DIRTY", "labels": [{"name": "autopilot"}, {"name": "needs-human"}], "author": {"login": BOT_LOGINS[1]}})[0]),
           ("", "", "", ""))
+    check("#925: the sweep continues an issue left to the rate limit once it reset, and only then",
+          (rate_limit_step({"rate_limited": 100}, now=200)[0], rate_limit_step({"rate_limited": 300}, now=200)[0],
+           rate_limit_step({}, now=200)[0], rate_limit_step({"rate_limited": 100}, ["autopilot:continue"], now=200)[0],
+           rate_limit_step({"rate_limited": "x"}, now=200)[0]),
+          ("continue", "", "", "", ""))
     check("C13: a draft only behind main is updated by the bot, with no model",
           (swp(mergeStateStatus="BEHIND", isDraft=True), swp(mergeStateStatus="BLOCKED", isDraft=True), swp(mergeStateStatus="BEHIND", isDraft=True, labels=[{"name": "autopilot"}, {"name": "needs-human"}])),
           ("update", "", ""))
@@ -4495,7 +4523,7 @@ Clamp the value in Sum::add.
                agent_env.get("DX_PULLS")],
               [True, True, "${{ github.workspace }}/.dx-io/pulls.json"])
         check("#287: the jobs with the key run no agent, on GitHub's fresh runners",
-              (sorted(keyed), {jobs[j]["runs-on"] for j in keyed if j != "where"}), (["apply", "draft", "prep", "where"], {"ubuntu-latest"}))
+              (sorted(keyed), {jobs[j]["runs-on"] for j in keyed if j != "where"}), (["apply", "draft", "prep", "rate-limited", "where"], {"ubuntu-latest"}))
         steps = lambda job: jobs[job]["steps"]
         sid = lambda job, key: next(i for i, st in enumerate(steps(job)) if st.get("id") == key)
         tree = lambda job: next(st for st in steps(job) if st.get("name") == "The working tree")["run"]
@@ -6554,6 +6582,17 @@ def main(argv):
             return 64
         for r, n, what in core_next(got.get("waiters") or [], got.get("started") or []):
             print(f"{r}\t{n}\t{what}")
+        return 0
+    if argv[:2] == ["sweep", "rate-limited"]:
+        # An accepted issue's board on stdin (#925), its labels in LABELS
+        # (comma-separated): `continue` or nothing, then a tab and why.
+        try:
+            got = json.load(sys.stdin)
+        except ValueError as err:
+            print(f"sweep rate-limited needs the board's JSON on stdin ({err})", file=sys.stderr)
+            return 64
+        what, why = rate_limit_step(got, [l for l in os.environ.get("LABELS", "").split(",") if l])
+        print(f"{what}\t{why}")
         return 0
     if argv[:1] == ["sweep"]:
         # One open autopilot pull request after a merge into main (#561 C2):

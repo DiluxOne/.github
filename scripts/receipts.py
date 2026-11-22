@@ -108,7 +108,8 @@ triage ran, #803: `triage`, {"ran": true, "verdict", "at"} or
 {"ran": false, "why"}, shown as the board's Triage row), with a
 SHA-256 of its content. The flow's counts and waits live there (#802, once
 labels; FLOW_KEYS): a pull request's `runs` and `rounds`, an issue's `asked`,
-`answered`, `catchup` and `core_wait`. It is read only from dilux-bot's own board comment;
+`answered`, `catchup`, `core_wait` and `rate_limited` (#925: the reset of
+GitHub's API rate limit a run could not wait for, scripts/gh-wait.sh). It is read only from dilux-bot's own board comment;
 a block whose hash does not match was edited by hand and reads as the most
 restrictive state: nothing is set on it and nobody is mentioned from it.
 Its `repro` key (#801) is where a bug's reproduction stands, in place of
@@ -443,7 +444,7 @@ def graphql_board(item, bots, read_all=None):
 # it: the run that starts is free), `catchup` (the sweep's continue only
 # catches up with another merge: free too) and `core_wait` (the pull
 # request on the engine's core it waits for).
-FLOW_KEYS = ("runs", "rounds", "asked", "answered", "catchup", "core_wait")
+FLOW_KEYS = ("runs", "rounds", "asked", "answered", "catchup", "core_wait", "rate_limited")
 
 
 def set_keys(state, changes):

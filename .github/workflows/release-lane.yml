@@ -29,7 +29,11 @@ name: Release lane
 # and main is still the commit they tried, merges the release pull request
 # itself once its checks pass (never by auto-merge, which never merges a
 # CHANGELOG.md-only pull request, `risk:high`, #798), tags vX.Y.Z at its merge
-# commit, moves `v7` (lightweight) and publishes the Release (or edits it
+# commit (#925: an earlier lane's release pull request still open is
+# reused, one a person opened there stops it before anything is pushed;
+# one BEHIND main is brought up to date with `gh pr update-branch` and its
+# new head's checks waited for, and vX.Y.Z is then the commit the scenarios
+# tried, once the merge changed CHANGELOG.md alone), moves `v7` (lightweight) and publishes the Release (or edits it
 # when engine-release.yml, on the tag's push, made it first), then closes
 # the lane's open reports of an earlier candidate's failure, naming the
 # version released (a close that fails is a warning, #832). The candidate's
@@ -71,6 +75,13 @@ name: Release lane
 # identity's tokens (DX_TEST_TOKEN, and DX_TEST_FORK_TOKEN, which may fork
 # the test repository, #694) run in the `release` environment, which only
 # main may use.
+#
+# GitHub's API rate limit (#925): each job first puts scripts/gh-wait.sh on
+# its PATH as `gh` (`--install` with the job's timeout-minutes), so a call
+# that finds the App's calls spent waits for the reset, within the job's
+# time less 3 minutes (DX_RATE_DEADLINE), and runs again instead of failing.
+# All but `play`, whose scenario player retries a rate limit itself, within
+# its own deadline (release-scenarios.py, #878).
 
 on:
   workflow_run:
@@ -107,6 +118,13 @@ jobs:
           ref: main
           fetch-depth: 0
           persist-credentials: false
+
+      # GitHub's API rate limit (#925): gh waits for its reset, within this
+      # job's time (scripts/gh-wait.sh), before the job's first gh.
+      - name: The waiting gh (#925)
+        env:
+          TIMEOUT: 10
+        run: test ! -f scripts/gh-wait.sh || bash scripts/gh-wait.sh --install "$TIMEOUT"
 
       - name: What is releasable
         id: plan
@@ -157,6 +175,13 @@ jobs:
           fetch-depth: 0
           token: ${{ steps.app.outputs.token }}
 
+      # GitHub's API rate limit (#925): gh waits for its reset, within this
+      # job's time (scripts/gh-wait.sh), before the job's first gh.
+      - name: The waiting gh (#925)
+        env:
+          TIMEOUT: 10
+        run: test ! -f scripts/gh-wait.sh || bash scripts/gh-wait.sh --install "$TIMEOUT"
+
       # A v7-next already built on this commit, with the same tree, is kept
       # (release-lane.py same_candidate, #929): the same candidate, whose
       # earlier passes still count.
@@ -199,6 +224,13 @@ jobs:
         with:
           ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
+
+      # GitHub's API rate limit (#925): gh waits for its reset, within this
+      # job's time (scripts/gh-wait.sh), before the job's first gh.
+      - name: The waiting gh (#925)
+        env:
+          TIMEOUT: 120
+        run: test ! -f scripts/gh-wait.sh || bash scripts/gh-wait.sh --install "$TIMEOUT"
 
       - name: The test repository
         id: test
@@ -331,6 +363,10 @@ jobs:
           ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
 
+      # No waiting gh here (#925): the player retries a rate limit itself,
+      # within its own --minutes, and records an `infrastructure` row when
+      # the limit outlasts it (#698, #878); a wrapper waiting to the job's
+      # deadline would sleep past the player's and the step's.
       - name: The test repository
         id: test
         run: echo "repo=$(python3 scripts/org.py test-repo)" >> "$GITHUB_OUTPUT"
@@ -422,6 +458,13 @@ jobs:
         with:
           ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
+
+      # GitHub's API rate limit (#925): gh waits for its reset, within this
+      # job's time (scripts/gh-wait.sh), before the job's first gh.
+      - name: The waiting gh (#925)
+        env:
+          TIMEOUT: 120
+        run: test ! -f scripts/gh-wait.sh || bash scripts/gh-wait.sh --install "$TIMEOUT"
 
       - name: The test repository
         id: test
@@ -518,6 +561,13 @@ jobs:
           ref: main
           fetch-depth: 0
           token: ${{ steps.app.outputs.token }}
+
+      # GitHub's API rate limit (#925): gh waits for its reset, within this
+      # job's time (scripts/gh-wait.sh), before the job's first gh.
+      - name: The waiting gh (#925)
+        env:
+          TIMEOUT: 90
+        run: test ! -f scripts/gh-wait.sh || bash scripts/gh-wait.sh --install "$TIMEOUT"
 
       # Every scenarios-* artifact, each in its own directory. A job that
       # failed before it wrote its results leaves none: the merge reads that
@@ -625,6 +675,13 @@ jobs:
           ref: main
           fetch-depth: 0
           token: ${{ steps.app.outputs.token }}
+
+      # GitHub's API rate limit (#925): gh waits for its reset, within this
+      # job's time (scripts/gh-wait.sh), before the job's first gh.
+      - name: The waiting gh (#925)
+        env:
+          TIMEOUT: 45
+        run: test ! -f scripts/gh-wait.sh || bash scripts/gh-wait.sh --install "$TIMEOUT"
 
       - name: Watch, and move v7 back on the first engine failure
         env:
