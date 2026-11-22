@@ -108,6 +108,9 @@ on:
       current:
         description: false when the run's commit is no longer the pull request's head (#888); its review was skipped, and the callers act on no verdict of it.
         value: ${{ jobs.head.outputs.current }}
+      fresh:
+        description: true when this run reviewed the pull request (its mode neither reuse nor capped, #928); a verdict reused from an earlier run leaves it false, so an edit's caller never starts a second fix round on it.
+        value: ${{ jobs.review.outputs.fresh }}
     secrets:
       # The maintainer's Claude subscription (`claude setup-token`); the API
       # key is used only when it is missing.
@@ -253,6 +256,7 @@ jobs:
       description-ok: ${{ steps.verdict.outputs.description_ok }}
       description-mismatch: ${{ steps.verdict.outputs.description_mismatch }}
       auto-merge: ${{ steps.policy.outputs.auto_merge }}
+      fresh: ${{ steps.verdict.outputs.fresh }}
     steps:
       # For the run's cost in its summary (#694, scripts/model-cache.py).
       - name: The job's start
@@ -763,6 +767,9 @@ jobs:
           previous="$RUNNER_TEMP/previous.json"
 
           rank() { case "$1" in low) echo 0;; medium) echo 1;; *) echo 2;; esac; }
+          # #928 C5: whether this run reviewed it, or reused an earlier verdict.
+          fresh=true; if [ "$MODE" = reuse ] || [ "$MODE" = capped ]; then fresh=false; fi
+          echo "fresh=$fresh" >> "$GITHUB_OUTPUT"
           if [ "$MODE" = reuse ] || [ "$MODE" = capped ]; then
             risk=$(jq -r .risk "$previous"); complexity=$(jq -r .complexity "$previous"); blocking=$(jq -r .blocking "$previous")
             # #928 C4: an older record read as the findings decide (#506),

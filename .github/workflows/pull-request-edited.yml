@@ -5,7 +5,11 @@ name: Pull request edited
 # still matches the code) and the auto-merge decision, and, when the title
 # changed, the "Test first" check (#734), as the type decides it. Nothing else:
 # the suites gave the code its verdict already and keep it. Same job ids as pull-request.yml
-# so the rulesets see one set of checks.
+# so the rulesets see one set of checks. A review this run made (a
+# description it had not read, or the `review:full` label) that blocks an
+# autopilot pull request starts its fix round (autopilot-fix, #928), as a
+# push's does in pull-request.yml; a verdict only reused from the push
+# starts none, since the push's run has its round.
 
 on:
   pull_request:
@@ -79,4 +83,26 @@ jobs:
       blocking: ${{ needs.review.outputs.blocking }}
       enabled: ${{ needs.review.outputs.auto-merge }}
       description-ok: ${{ needs.review.outputs.description-ok }}
+    secrets: inherit
+
+  autopilot-fix:
+    # #928 C5: pull-request.yml's guards (dilux-bot's own pull request,
+    # with the `autopilot` label, ready, at its head, in this repository),
+    # on a review that blocks or ended without its verdict, or found the
+    # description wrong, and only one this run made (`fresh`): a verdict
+    # reused from the push's run is the push's round's to fix. The round's
+    # own guards (superseded, the rounds cap) are autopilot.yml's.
+    needs: [conventions, review]
+    if: always() && github.event_name == 'pull_request' && github.repository == 'DiluxOne/.github' && (needs.review.outputs.blocking == 'true' || needs.review.result == 'failure' || needs.review.outputs.description-mismatch == 'true') && needs.review.outputs.fresh == 'true' && needs.review.outputs.current != 'false' && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN
+    # The agent's jobs read the repository with the job's own token (#287).
+    permissions:
+      contents: read
+    uses: ./.github/workflows/autopilot.yml
+    with:
+      mode: fix
+      pr: ${{ format('{0}', github.event.pull_request.number) }}
+      # #924 C3: the review read this description and said it does not
+      # match: the round rewrites it (autopilot.py describe).
+      description-ok: ${{ needs.review.outputs.description-mismatch == 'true' && 'false' || 'true' }}
+      central-ref: main
     secrets: inherit

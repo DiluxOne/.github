@@ -4668,6 +4668,18 @@ Clamp the value in Sum::add.
                "needs.review.outputs.blocking == 'true'" in here_trigger, trigger(here_fix).startswith("("), "!github.event.pull_request.draft" in guards(here_fix),
                sorted(here_fix.get("needs")) == sorted(yaml.safe_load(open(os.path.join(HERE, "..", ".github", "workflows", "pull-request.yml"), encoding="utf-8"))["jobs"]["review"]["needs"] + ["review"])),
               (["conventions", "actionlint", "scripts", "review"], True, [True, True], True, True, True, True))
+        # #928 C5: the edited workflow's round, with this repository's
+        # guards but the edit's own (it runs only on `edited`), on a review
+        # that run made (`fresh`), after the jobs that workflow has.
+        edited_wf = yaml.safe_load(open(os.path.join(HERE, "..", ".github", "workflows", "pull-request-edited.yml"), encoding="utf-8"))["jobs"]
+        edited_fix = edited_wf.get("autopilot-fix") or {}
+        fresh = "needs.review.outputs.fresh == 'true'"
+        check("#928 C5: pull-request-edited.yml's autopilot-fix keeps pull-request.yml's guards, on a fresh review, after its own jobs",
+              (edited_fix.get("uses"), (edited_fix.get("with") or {}).get("mode"), edited_fix.get("permissions"), edited_fix.get("secrets"),
+               sorted(edited_fix.get("needs") or []) == sorted(edited_wf["review"]["needs"] + ["review"]),
+               [g for g in guards(edited_fix) if g != fresh] == [g for g in guards(here_fix) if g != "github.event.action != 'edited'"],
+               fresh in top_and(cond(edited_fix))),
+              ("./.github/workflows/autopilot.yml", "fix", {"contents": "read"}, "inherit", True, True, True))
         # #741 C3: the fix branch of "May it start", run with gh stood in:
         # past the cap, `needs-human` and the comment that says what fails.
         may_run = steps("prep")[sid("prep", "may")]["run"]
