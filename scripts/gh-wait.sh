@@ -167,6 +167,10 @@ install() {
 
 self_test() {
   local t fails=0 out rc
+  # The job's own note and deadline are never the self-test's (#962): a case
+  # that gives up would write the job's note, and the job would believe the
+  # API's rate limit spent.
+  unset DX_RATE_NOTE DX_RATE_DEADLINE
   TMP_DIR=$(mktemp -d)
   trap 'rm -rf "$TMP_DIR"' EXIT
   t=$TMP_DIR
