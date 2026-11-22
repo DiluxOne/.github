@@ -249,12 +249,18 @@ if [ "$full" -eq 0 ] && [ -f "$last_json" ] && [ "$(jq -r '.branch // ""' "$last
 fi
 
 echo; echo "== Brief (profile $profile${kind:+, kind $kind}, $mode)"
+# #956: the security gate's result of the last `make pre-pr`, when it read
+# this very head (pre-pr.py GATE writes it into the git directory).
+security="$(git rev-parse --git-dir)/dx-review/security-gate.json"
+if [ ! -f "$security" ] || [ "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("head", ""))' "$security" 2>/dev/null)" != "$(git rev-parse "$HEAD")" ]; then
+  security=''
+fi
 # owner/name from the origin remote, or the directory's name without one.
 repo=$(git remote get-url origin 2>/dev/null | sed -E 's#(\.git)?$##; s#.*[:/]([^/]+/[^/]+)$#\1#' || true)
 REPO=${repo:-$(basename "$(git rev-parse --show-toplevel)")} \
   TITLE=$title BODY=$body BASE=$BASE HEAD=$HEAD FLOOR=$floor REASONS=$reasons PROFILE=$profile KIND=$kind \
   MODE=$mode RANGE="$last..$HEAD" LAST=$last PREVIOUS_JSON=$last_json \
-  CENTRAL=$CENTRAL WORK=$work OUT="$work/brief.md" bash "$CENTRAL/scripts/review-brief.sh"
+  SECURITY=$security CENTRAL=$CENTRAL WORK=$work OUT="$work/brief.md" bash "$CENTRAL/scripts/review-brief.sh"
 echo "$work/brief.md: $(head -1 "$work/brief.md")"
 
 if [ "$use_claude" -eq 0 ]; then

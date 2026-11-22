@@ -57,6 +57,15 @@ jobs:
     with:
       declaration-at-base: true
 
+  # The "Security gate" check (#956, security-gate.yml), as
+  # org-pull-request.yml runs it everywhere else: no secret, a read-only
+  # token; the review reads its result in its brief.
+  security-gate:
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/security-gate.yml
+
   actionlint:
     name: actionlint
     runs-on: ubuntu-latest
@@ -280,8 +289,9 @@ jobs:
 
   review:
     # order: the conventions, actionlint and scripts gates pass first, so no
-    # review is paid for a pull request they refuse.
-    needs: [conventions, actionlint, scripts]
+    # review is paid for a pull request they refuse; and the security gate
+    # (#956), whose result the review reads in its brief.
+    needs: [conventions, actionlint, scripts, security-gate]
     # #820: not when an autopilot pull request is marked ready: the push
     # that follows, with the ready commit, starts the one review.
     if: ${{ !(github.event.action == 'ready_for_review' && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN) }}
