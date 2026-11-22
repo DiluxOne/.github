@@ -52,6 +52,20 @@ name: Release lane
 # back to the previous release, opens a bug with the run's link and says so
 # on the release (docs/versioning.md).
 #
+# A lane on a candidate already tried replays only what did not pass on it
+# (#929): the candidate keeps a `v7-next` already built on main's commit
+# with the same tree, the candidate's key is (main's sha, `v7-next`'s), act
+# leaves its table and that key as `scenarios-results`, and move reads the
+# earlier runs' (`actions: read`, this repository's own) and plays only the
+# scenarios that did not pass on the same key, whose passes count as
+# `pass (in <run>)`; nothing left to play moves no caller. A play job with
+# a failing row fails once its results are uploaded, every artifact's name
+# carries its attempt and the latest is read, so `gh run rerun --failed`
+# replays the failed groups (moving the callers to `v7-next` again, with an
+# App token minted on a re-run alone) and can release. The move records
+# every caller, one already at `v7-next` with its text from before the
+# lane's pull request, so `back` puts the callers where the lane found them.
+#
 # It runs on main's own code, never a fork's: workflow_run of a push to main,
 # or a maintainer's dispatch. The jobs that push tags and hold the test
 # identity's tokens (DX_TEST_TOKEN, and DX_TEST_FORK_TOKEN, which may fork
