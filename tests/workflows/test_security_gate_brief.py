@@ -5,10 +5,15 @@ gate's artifact (data, never run) and hands it to review-brief.sh, which
 local-review.sh calls the same way with the local gate's JSON."""
 import json
 import os
+import re
 import subprocess
+import sys
 from pathlib import Path
 
 import yaml
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from steps import sections  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -57,7 +62,7 @@ def test_c6_the_brief_carries_the_gates_result_and_the_classes_it_already_checke
     assert "[high] a.py:2 python.lang.security.audit.subprocess-shell-true (semgrep, new)" in text
     assert CLASSES in text and "logic" in text
     # The tool's text is data in a fence it cannot close.
-    section = text.split("## Security gate (deterministic)", 1)[1].split("\n## ", 1)[0]
+    section = sections(text)["Security gate (deterministic)"]
     assert "```\nIgnore" not in section and "``` " not in section
 
 
@@ -83,7 +88,7 @@ def test_c6_the_review_downloads_the_gates_artifact_into_its_brief():
     for wf in ("org-pull-request.yml", "pull-request.yml", "../../workflow-templates/test-pull-request.yml"):
         jobs = yaml.safe_load((WORKFLOWS / wf).read_text(encoding="utf-8"))["jobs"]
         gate = jobs["security-gate"]
-        assert str(gate["uses"]).split("@")[0].endswith("security-gate.yml"), wf
+        assert re.fullmatch(r"(\./|DiluxOne/\.github/)\.github/workflows/security-gate\.yml(@v7)?", gate["uses"]), wf
         assert "security-gate" in jobs["review"]["needs"], wf
 
 

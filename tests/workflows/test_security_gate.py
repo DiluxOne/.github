@@ -8,6 +8,7 @@ The tools are stubs that print the outputs the pinned tools recorded
 and log their calls: no network is needed."""
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -273,7 +274,7 @@ def test_c5_more_than_30_findings_give_the_30_most_severe_and_the_count_of_the_r
     assert len(shown) == 30, out
     assert "15 more not shown" in out
     rank = ["critical", "high", "medium", "low"]
-    levels = [rank.index(line[3:].split("]")[0]) for line in shown]
+    levels = [rank.index(re.match(r"- \[(\w+)\]", line).group(1)) for line in shown]
     assert levels == sorted(levels), "the most severe first"
     every = sorted(rank.index(f["severity"]) for f in many)
     assert levels == every[:30], "the 30 most severe"

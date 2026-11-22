@@ -19,12 +19,12 @@ name: Pull request
 # An autopilot pull request of this repository's own branch that changes
 # the browser layer gets its before and after screenshots when it is
 # marked ready (screenshots, pr-screenshots.yml, #564).
-# The two required checks (#842): "Scripts (self-tests)" and "test-first /
-# Test first" run on every pull request, with no paths filter and no job
-# condition but the event, and the ruleset "own checks" (repos.yml
-# `required-checks`, written by `sync-repos.py own-checks`) requires both:
-# a pull request whose tests are red cannot merge, and one with nothing for
-# them to check sees both report success.
+# The three required checks (#842, #956): "Scripts (self-tests)", "test-first /
+# Test first" and "security-gate / Security gate" run on every pull request,
+# with no paths filter and no job condition but the event, and the ruleset
+# "own checks" (repos.yml `required-checks`, written by `sync-repos.py
+# own-checks`) requires them: a pull request whose tests are red cannot
+# merge, and one with nothing for them to check sees them report success.
 
 on:
   # An edit of the title or description is handled by pull-request-edited.yml.

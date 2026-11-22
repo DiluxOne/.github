@@ -6,7 +6,8 @@ Three pieces hold it: test-first.yml's `verdict` job, the one "Test first"
 check, which reports on every pull request and is red when the tests are;
 pull-request.yml, which runs both jobs on every pull request; and the
 ruleset "own checks" that `sync-repos.py own-checks` writes from repos.yml
-`required-checks`, requiring exactly those two contexts."""
+`required-checks`, requiring exactly those contexts, with the security
+gate's (#956)."""
 import copy
 import importlib.util
 import json
@@ -21,7 +22,7 @@ from steps import evaluate
 
 ROOT = Path(__file__).resolve().parents[2]
 FLOWS = ROOT / ".github" / "workflows"
-REQUIRED = ["Scripts (self-tests)", "test-first / Test first"]
+REQUIRED = ["Scripts (self-tests)", "test-first / Test first", "security-gate / Security gate"]
 
 
 def workflow(name):
@@ -109,6 +110,10 @@ def test_both_required_checks_run_on_every_pull_request():
     called = workflow("test-first.yml")["jobs"]
     contexts = [jobs["scripts"]["name"]] + [f"{jobs['test-first'].get('name', 'test-first')} / {j['name']}"
                                             for j in called.values() if j.get("name") == "Test first"]
+    # #956: the security gate's check, on every pull request too.
+    assert jobs["security-gate"]["if"] == "github.event_name == 'pull_request'"
+    assert jobs["security-gate"]["uses"] == "./.github/workflows/security-gate.yml"
+    contexts += [f"security-gate / {j['name']}" for j in workflow("security-gate.yml")["jobs"].values()]
     assert contexts == REQUIRED
 
 
