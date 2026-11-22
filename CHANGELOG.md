@@ -2,11 +2,28 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
+## [7.20.2](https://github.com/DiluxOne/.github/releases/tag/v7.20.2) · 2026-11-22
+
+### Fixes
+
+- AI evaluations weekly, one fix round per replay ([#942](https://github.com/DiluxOne/.github/pull/942))
+- review eval cannot fail on missed bugs (found 1 of 10) ([#931](https://github.com/DiluxOne/.github/pull/931))
+- wait on the App rate limit and recover stale release PRs ([#926](https://github.com/DiluxOne/.github/pull/926))
+
+### CI
+
+- a fixed review in the test repository's scenarios ([#944](https://github.com/DiluxOne/.github/pull/944))
+- release lane replays only what failed and restores callers ([#932](https://github.com/DiluxOne/.github/pull/932))
+
 ## [7.20.1](https://github.com/DiluxOne/.github/releases/tag/v7.20.1) · 2026-11-21
 
 ### Fixes
 
 - autopilot misses issue answers, long prompts, its description ([#927](https://github.com/DiluxOne/.github/pull/927))
+
+### Maintenance
+
+- release v7.20.1 ([#933](https://github.com/DiluxOne/.github/pull/933))
 
 ## [7.20.0](https://github.com/DiluxOne/.github/releases/tag/v7.20.0) · 2026-11-21
 
