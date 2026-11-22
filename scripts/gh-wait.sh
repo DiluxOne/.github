@@ -185,7 +185,9 @@ FAKE
   chmod 755 "$t/bin/gh"
   check() { if [ "$1" = "$2" ]; then echo "ok: $3"; else echo "FAIL: $3 (got [$1], want [$2])"; fails=$((fails + 1)); fi; }
   local base=(env PATH="$t/bin:$PATH" T="$t" DX_RATE_SLACK=0 LIMIT="API rate limit already exceeded for installation ID 1")
-  rc=0; out=$(printf 'body' | "${base[@]}" RESET=$(( $(date +%s) + 1 )) DX_RATE_DEADLINE=$(( $(date +%s) + 60 )) bash "$SELF" api x --input - 2>/dev/null) || rc=$?
+  # The reset is one second ahead: it may have passed when the wrapper reads
+  # it, and then it backs off instead (#954), one second, not the default 60.
+  rc=0; out=$(printf 'body' | "${base[@]}" RESET=$(( $(date +%s) + 1 )) DX_RATE_BACKOFF=1 DX_RATE_DEADLINE=$(( $(date +%s) + 60 )) bash "$SELF" api x --input - 2>/dev/null) || rc=$?
   check "$rc $out $(cat "$t/n")" "0 ok 2" "a primary limit: waits for the reset and runs it again"
   check "$(tr '\n' ' ' < "$t/stdin")" "body body " "its stdin, replayed"
   rm -f "$t/n" "$t/stdin"
