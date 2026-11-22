@@ -62,7 +62,7 @@ class World:
             if a[:2] == ["pr", "view"]:
                 return json.dumps({"state": "OPEN", "labels": names("8"), "author": {"login": BOT}})
             if a[:3] == ["api", "-X", "DELETE"]:
-                n = a[3].split("/issues/", 1)[1].split("/", 1)[0]
+                n = re.search(r"/issues/(\d+)/", a[3]).group(1)
                 if "needs-human" not in self.labels[n]:
                     raise RuntimeError("gh: Label does not exist (HTTP 404)")
                 if stuck:

@@ -7,9 +7,14 @@ and keeps today's verdict, so no round ends green and silent. Runs `end`
 with gh stood in and the fixture boards (RECEIPTS_FIXTURE)."""
 import importlib.util
 import json
+import re
+import sys
 from pathlib import Path
 
 import yaml
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from steps import outputs  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 HEAD = "a" * 40
@@ -82,9 +87,9 @@ class World:
         return self.ap.main(["end"])
 
     def verdict(self):
-        out = (self.tmp / "out.txt")
-        lines = out.read_text(encoding="utf-8").splitlines() if out.exists() else []
-        return [l.split("=", 1)[1] for l in lines if l.startswith("verdict=")][-1:]
+        out = self.tmp / "out.txt"
+        found = outputs(out.read_text(encoding="utf-8")) if out.exists() else {}
+        return [found["verdict"]] if "verdict" in found else []
 
 
 def test_c1_a_green_round_with_every_box_ticked_ends_ready(tmp_path, monkeypatch):
@@ -98,7 +103,8 @@ def test_c1_a_green_round_with_every_box_ticked_ends_ready(tmp_path, monkeypatch
     # No continue, no needs-human: nobody has to move it.
     assert not any("autopilot:continue" in c or "needs-human" in c for c in w.calls), w.calls
     # The end wrote "How I tested it" from the run, as the agent left none.
-    assert "https://github.com/o/r/actions/runs/1" in w.state["body"].split("<!-- dx-tested -->", 1)[1]
+    tested = re.search(r"<!-- dx-tested -->\n(.*)", w.state["body"], re.S).group(1)
+    assert "https://github.com/o/r/actions/runs/1" in tested and "fills this in" not in tested, tested
 
 
 def test_c1_the_rule_is_pure_and_bounded():
