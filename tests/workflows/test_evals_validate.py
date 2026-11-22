@@ -257,29 +257,31 @@ def loop(monkeypatch, tmp_path, blocking_rounds, review_fails=False):
 
 
 def test_c2_the_replay_runs_the_work_then_the_review_and_its_fix_rounds(monkeypatch, tmp_path):
-    mod, asked, reviews, graded, head, got, tree = loop(monkeypatch, tmp_path, 2)
+    mod, asked, reviews, graded, head, got, tree = loop(monkeypatch, tmp_path, 1)
     has(mod, "review_round")
-    # The work, two fix rounds for the two blocking reviews, and a third review that is clean.
-    assert len(asked) == 3 and len(reviews) == 3
-    assert "draft pull request" in asked[0][0] and "The review of pull request" in asked[1][0] and "round 2 of" in asked[2][0]
+    # The work, then its review blocks and one fix round runs (#941: one round).
+    assert len(asked) == 2 and len(reviews) == 1
+    assert "draft pull request" in asked[0][0] and "The review of pull request" in asked[1][0] and "round 1 of 1" in asked[1][0]
     # The fix rounds' arguments are the workflow's, in mode fix.
     assert asked[0][1] == mod.autopilot_args("work", "20") and asked[1][1] == mod.autopilot_args("work", "10")
     # The fix round reads the review's findings where the production's prompt says.
-    assert "point 2" in (tree / ".dx-io" / "review.md").read_text(encoding="utf-8")
+    assert "point 1" in (tree / ".dx-io" / "review.md").read_text(encoding="utf-8")
     # The production's draft: its branch, and its title and body for the review.
     assert mod.git(str(tree), "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "feat/1-a-thing"
-    assert reviews == ["feat: a thing"] * 3 and "Closes #1" in (tree / ".dx-io" / "pr.md").read_text(encoding="utf-8")
+    assert reviews == ["feat: a thing"] and "Closes #1" in (tree / ".dx-io" / "pr.md").read_text(encoding="utf-8")
     # Graded on the final tree.
     assert graded == [head] and got == {"tests/workflows/test_a.py": "passed"}
 
 
-def test_c2_the_rounds_stop_at_the_productions_limit(monkeypatch, tmp_path):
+def test_c2_the_rounds_stop_at_the_replays_limit(monkeypatch, tmp_path):
+    # #941: one fix round in the replay, not the production's five.
     import yaml
     rounds = yaml.safe_load((ROOT / "policy" / "autonomy.yml").read_text(encoding="utf-8"))["autopilot-rounds"]
     mod, asked, reviews, graded, head, got, tree = loop(monkeypatch, tmp_path, 99)
     has(mod, "max_rounds")
     assert mod.max_rounds() == rounds
-    assert len(asked) == 1 + rounds and f"round {rounds} of {rounds}" in asked[-1][0]
+    assert has(mod, "eval_rounds")() == 1
+    assert len(asked) == 2 and "round 1 of 1" in asked[-1][0]
     assert graded == [head]
 
 
@@ -480,3 +482,10 @@ def test_c1_evals_yml_collects_a_new_set_by_hand_and_pushes_nothing():
     assert len(keep) == 1
     path = keep[0]["with"]["path"]
     assert all(f in path for f in ("new-cases.json", "cases.json", "results.json"))
+
+
+def test_941_an_autopilot_job_has_one_round_and_one_review_of_slack():
+    mod = evals()
+    has(mod, "eval_rounds")
+    a, r = mod.STEPS["autopilot"]["minutes"], mod.STEPS["review"]["minutes"]
+    assert mod.job_minutes("autopilot") == min(mod.MAX_JOB_MINUTES, a * 2 + r * 2 + mod.JOB_MINUTES)
