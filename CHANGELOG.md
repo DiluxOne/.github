@@ -2,6 +2,15 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
+## [7.20.3](https://github.com/DiluxOne/.github/releases/tag/v7.20.3) · 2026-11-22
+
+### Fixes
+
+- sweep updates a draft mid-round and the round is lost ([#948](https://github.com/DiluxOne/.github/pull/948))
+- the engine stops on a person where nothing needs one ([#935](https://github.com/DiluxOne/.github/pull/935))
+- release scenario low-risk-merges fails ([#937](https://github.com/DiluxOne/.github/pull/937))
+- a fixed triage in the test repository's scenarios ([#947](https://github.com/DiluxOne/.github/pull/947))
+
 ## [7.20.2](https://github.com/DiluxOne/.github/releases/tag/v7.20.2) · 2026-11-22
 
 ### Fixes
@@ -14,6 +23,10 @@ Every version of the engine (the workflows, scripts, policy and kinds other repo
 
 - a fixed review in the test repository's scenarios ([#944](https://github.com/DiluxOne/.github/pull/944))
 - release lane replays only what failed and restores callers ([#932](https://github.com/DiluxOne/.github/pull/932))
+
+### Maintenance
+
+- release v7.20.2 ([#940](https://github.com/DiluxOne/.github/pull/940))
 
 ## [7.20.1](https://github.com/DiluxOne/.github/releases/tag/v7.20.1) · 2026-11-21
 
