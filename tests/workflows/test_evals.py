@@ -158,14 +158,14 @@ def test_c2_the_steps_listed_are_those_with_a_set():
 
 def test_c1_941_the_evaluations_never_run_on_a_pull_request():
     # #941: replaying whole autopilot rounds and 60 reviews on every push
-    # spent most of the engine's model use; both run by hand only.
+    # spent most of the engine's model use; both run once a week and by hand.
     mod = evals()
     wf = yaml.safe_load((need(".github/workflows/evals.yml")).read_text(encoding="utf-8"))
     on = wf.get("on") or wf.get(True)
-    assert set(on) == {"workflow_dispatch"}
+    assert set(on) == {"workflow_dispatch", "schedule"}
     assert "review" not in on["workflow_dispatch"]["inputs"]["step"]["options"]
     review = yaml.safe_load((ROOT / ".github" / "workflows" / "review-eval.yml").read_text(encoding="utf-8"))
-    assert set(review.get("on") or review.get(True)) == {"workflow_dispatch"}
+    assert set(review.get("on") or review.get(True)) == {"workflow_dispatch", "schedule"}
     assert "policy/autonomy.yml" in mod.paths_of("review")
 
 
@@ -175,10 +175,11 @@ def test_c2_evals_yml_runs_the_listed_steps_with_the_runner():
     jobs = wf["jobs"]
     assert "evals.py steps" in text and "evals.py run" in text and "evals.py score" in text
     run = [j for j in jobs.values() if "strategy" in j][0]
-    assert all("head.repo.full_name == github.repository" in str(j.get("if")) for j in jobs.values())
+    # #941: by hand or on the weekly schedule, never on a pull request, so
+    # a fork's code never runs with the keys.
+    assert all("github.event_name == 'schedule'" in str(j.get("if")) for j in jobs.values())
     assert all("fromJSON" in str(j["strategy"]["matrix"]) for j in jobs.values() if "strategy" in j)
-    # A fork's code never runs with the keys.
-    assert "head.repo.full_name == github.repository" in str(run.get("if"))
+    assert "pull_request" not in (wf.get("on") or wf.get(True))
     assert wf["permissions"] == {"contents": "read"}
 
 

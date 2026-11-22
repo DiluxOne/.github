@@ -70,8 +70,8 @@ name: Release lane
 # every caller, one already at `v7-next` with its text from before the
 # lane's pull request, so `back` puts the callers where the lane found them.
 #
-# It runs on main's own code, never a fork's: once a day (schedule), or a
-# maintainer's dispatch (#941). The jobs that push tags and hold the test
+# It runs on main's own code, never a fork's: workflow_run of a push to main,
+# or a maintainer's dispatch. The jobs that push tags and hold the test
 # identity's tokens (DX_TEST_TOKEN, and DX_TEST_FORK_TOKEN, which may fork
 # the test repository, #694) run in the `release` environment, which only
 # main may use.
@@ -84,10 +84,10 @@ name: Release lane
 # its own deadline (release-scenarios.py, #878).
 
 on:
-  # Once a day and by hand (#941), not after every merge to main: a lane per
-  # merge played every scenario again for each one.
-  schedule:
-    - cron: '23 6 * * *'
+  workflow_run:
+    workflows: [Pull request]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
 
 permissions: {}
@@ -100,7 +100,9 @@ jobs:
   plan:
     name: Plan
     if: >-
-      github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

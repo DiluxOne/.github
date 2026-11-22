@@ -361,8 +361,11 @@ def job_minutes(step):
     a fix), within a hosted job's limit."""
     if step != "autopilot":
         return STEPS[step]["minutes"] + JOB_MINUTES
-    rounds = max_rounds()
-    return min(MAX_JOB_MINUTES, STEPS[step]["minutes"] * (1 + rounds) + STEPS["review"]["minutes"] * rounds + JOB_MINUTES)
+    rounds = eval_rounds()
+    # One review more than the rounds: the slack that keeps the last round's
+    # check (its review and fix must fit before the job's end) from failing
+    # on the seconds the work itself took past its own budget.
+    return min(MAX_JOB_MINUTES, STEPS[step]["minutes"] * (1 + rounds) + STEPS["review"]["minutes"] * (rounds + 1) + JOB_MINUTES)
 
 
 def matrix(steps, root=ROOT):
@@ -631,8 +634,8 @@ def replay_autopilot(case, work):
         return None
     head = commit_all(tree, "chore: what the agent left")
     # The production's loop (#840): the review, then a fix round on what it
-    # blocks, up to the production's rounds; graded on the tree it leaves.
-    rounds = max_rounds()
+    # blocks, up to EVAL_ROUNDS (#941); graded on the tree it leaves.
+    rounds = eval_rounds()
     try:
         fix_args = autopilot_args("work", "10")
     except KeyError as e:
@@ -662,6 +665,19 @@ def replay_autopilot(case, work):
     if not clone:
         return None
     return merged_tests(tree, case, clone, head, os.path.join(work, "out", case["id"].replace("/", "_")))
+
+
+# The replay's fix rounds (#941): one review and at most one fix round, not
+# the production's `autopilot-rounds`. Whether a change made the step worse
+# shows in the first round; every further round multiplied the cost of a
+# replay without telling much more.
+EVAL_ROUNDS = 1
+
+
+def eval_rounds(root=ROOT):
+    """The replay's fix rounds: EVAL_ROUNDS, never more than the
+    production's `autopilot-rounds` (max_rounds)."""
+    return min(EVAL_ROUNDS, max_rounds(root))
 
 
 def max_rounds(root=ROOT):
