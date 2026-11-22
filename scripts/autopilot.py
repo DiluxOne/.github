@@ -1441,6 +1441,20 @@ def core_busy(spec_files, core, others, mine=0):
     return 0
 
 
+def runs_busy(repo, number, run=None):
+    """#934 C1: the ids of the issue's autopilot runs queued or in progress
+    (claim.py's `autopilot_runs`: their prep job is named for the issue),
+    for autopilot-sweep.yml, which leaves such a draft for the next pass.
+    RUN stands in for `gh` (a test's); any read that fails raises, so the
+    sweep treats the issue as busy rather than updating it under a run."""
+    claim = _load("claim_runs", "claim.py")
+
+    def strict(*args, input_text=None, check=True):
+        return (run or gh)(*args, input_text=input_text)
+    claim.gh = strict
+    return claim.autopilot_runs(repo, number)
+
+
 # #832 C1: the waiter the sweep starts carries `core_started` (UTC) on its
 # board until its draft opens, its run waits on the core again or stops, or
 # CORE_HOLD_HOURS pass; while one does, its repository's core is taken.
@@ -4049,6 +4063,22 @@ A class on html.
           (core_next([{"repo": "o/r", "number": 9}], [{"repo": "o/r", "number": 7, "at": "2026-11-18T06:00:00Z"}], t832),
            core_next([], [{"repo": "o/r", "number": 7, "at": None}], t832)),
           ([("o/r", 7, "expired"), ("o/r", 9, "start")], [("o/r", 7, "expired")]))
+    # #934 C1: the issue's runs in progress, and a read that fails raises.
+    def runs934(*args, input_text=None):
+        if args[:2] == ("run", "list"):
+            return {"in_progress": "11\n12\n", "queued": "13\n"}[args[args.index("--status") + 1]]
+        return {"11": "Autopilot (continue) · may it run · #7\nAutopilot (continue) · the agent\n",
+                "12": "Autopilot (continue) · may it run · #70\n", "13": "Autopilot (fix) · may it run · #7\n"}[args[2]]
+
+    def broken934(*args, input_text=None):
+        raise RuntimeError("HTTP 502")
+    try:
+        runs_busy("o/r", 7, broken934)
+        failed934 = False
+    except RuntimeError:
+        failed934 = True
+    check("#934 C1: the issue's runs queued or in progress, not another issue's; a failed read raises",
+          (runs_busy("o/r", 7, runs934), runs_busy("o/r", 8, runs934), failed934), (["11", "13"], [], True))
     # #563: the test repository's fixed change, no model.
     tpack = {"autopilot": "fixed-change", "fixed-change": {"file": "scenarios/{scenario}/{n}.test.md"}, "core": ["scenarios/*/**"]}
     check("#563: the test repository's autopilot has a fixed change; any other repository's calls a model",
@@ -6678,6 +6708,18 @@ def main(argv):
         import deciders  # the Spec's files, read as who-decides reads them
         busy = core_busy(deciders.spec_files(body), core, others, int(pr or 0))
         print(busy or "")
+        return 0
+    if argv[:1] == ["runs-busy"]:
+        # #934 C1, for autopilot-sweep.yml: prints the ids of the issue's
+        # (NUMBER) autopilot runs queued or in progress, one per line;
+        # exits 1 when they cannot be read.
+        try:
+            ids = runs_busy(repo, number)
+        except (RuntimeError, OSError) as err:
+            print(f"runs-busy: the runs could not be read ({err})", file=sys.stderr)
+            return 1
+        for rid in ids:
+            print(rid)
         return 0
     if argv[:1] == ["core-next"]:
         # #832 C1, for autopilot-sweep.yml: {waiters: [{repo, number}],

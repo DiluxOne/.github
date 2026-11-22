@@ -47,7 +47,12 @@ name: Autopilot
 #                   so is one whose `make pre-pr` failed after the agent's
 #                   step (#673), or whose commits `apply` refused because
 #                   they do not build on the branch as GitHub has it (#856:
-#                   free, and it stops).
+#                   free, and it stops). A branch that moved on GitHub while
+#                   the agent worked (the sweep's merge of main, a person's
+#                   push) gets the agent's commits replayed on top when they
+#                   apply cleanly, and is refused only when they do not;
+#                   a refusal still posts the agent's question or stop
+#                   comment on the pull request (#934).
 #                   A maintainer's answer after a stop or a silent end
 #                   brings it back the same way: review-reply.yml takes
 #                   `needs-human` off and dilux-bot adds the continue (#561),
@@ -1454,6 +1459,8 @@ jobs:
       # #928 C1: whether the agent's own `make pre-pr` passed at that head.
       checked: ${{ steps.left.outputs.checked }}
       base: ${{ steps.task.outputs.base }}
+      # #934: the head the agent started from, for apply's replay.
+      start: ${{ steps.task.outputs.start }}
     steps:
       # The working tree, with the job's token, which only reads; nothing
       # keeps it. A reproduced bug's test was written from an outsider's
@@ -1935,6 +1942,8 @@ jobs:
           # #699 C3: a fix round after a failed conventions check, as prep
           # read it (never the agent's word), may reword its own commits.
           REWORD_OK: ${{ needs.prep.outputs.mode == 'fix' && needs.prep.outputs.conventions == 'true' }}
+          # #934: the head the agent started from (work's `start`).
+          START: ${{ needs.work.outputs.start }}
           DEFAULT: ${{ github.event.repository.default_branch }}
           # #673: `verify`'s verdict (pass, fail, timeout; lost when it ended
           # without one), empty when it did not run. When it ran, `ready`
@@ -1975,7 +1984,39 @@ jobs:
                 REWORD=true
                 echo "The agent reworded the branch's commits (the same tree): pushed with a lease."
               else
-                echo "refused=diverged" >> "$GITHUB_OUTPUT"; echo "::error::The agent's commits do not build on $BRANCH as GitHub has it: nothing is pushed."; exit 1
+                # #934 C2: the branch moved on GitHub while the agent
+                # worked (the sweep merged main, a person pushed): the
+                # agent built on the head it started from (START), and
+                # GitHub's branch still holds that head, so the agent's own
+                # commits are replayed on top when they apply cleanly (a
+                # rebase, in a worktree of its own; a merge of the agent's
+                # is dropped: api-commit.py pushes no merge but one of
+                # main, #550). A rewrite of the branch's history, or
+                # commits that do not apply, are refused.
+                replayed=""
+                replay="$RUNNER_TEMP/dx-replay"
+                if [ -n "${START:-}" ] && git merge-base --is-ancestor "$START" "$new" 2>/dev/null \
+                  && git merge-base --is-ancestor "$START" "origin/$BRANCH" 2>/dev/null \
+                  && git worktree add -q --detach "$replay" "$new"; then
+                  if git -C "$replay" rebase -q "origin/$BRANCH" >/dev/null 2>&1; then
+                    replayed=$(git -C "$replay" rev-parse HEAD)
+                  else
+                    git -C "$replay" rebase --abort >/dev/null 2>&1 || true
+                  fi
+                  git worktree remove --force "$replay" || true
+                fi
+                # #934 C3: refused, the agent's final words (its question
+                # or its stop) still reach the pull request, and the end
+                # rule reads them as its own end; nothing else is applied.
+                final_words() {
+                  python3 .dx-central/scripts/autopilot.py apply .dx-out/outbox.jsonl +ask,stop \
+                    || echo "::warning::The agent's question or stop could not be posted (the log says why)."
+                }
+                if [ -z "$replayed" ]; then
+                  echo "refused=diverged" >> "$GITHUB_OUTPUT"; echo "::error::The agent's commits do not build on $BRANCH as GitHub has it: nothing is pushed."; final_words; exit 1
+                fi
+                new=$replayed
+                echo "$BRANCH moved on GitHub while the agent worked: its $(git rev-list --count "origin/$BRANCH..$new") commit(s) are replayed on top."
               fi
             fi
             # Read whole, then searched: a pipe into grep -q could end early
