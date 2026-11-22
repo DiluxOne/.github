@@ -76,3 +76,43 @@ def test_c5_the_review_says_whether_it_read_the_pull_request_in_this_run(tmp_pat
                "BODY": "b", "EXECUTION_FILE": "", "VERIFY_EXECUTION_FILE": ""}
         ran = run(step("claude-review.yml", "verdict"), d, env=env, stubs={"gh": gh})
         assert ran.output.get("fresh") == want, (mode, ran.output, ran.stderr[-1500:])
+
+
+def org_fix(path):
+    """The `autopilot-fix` job of org-pull-request.yml or of the test
+    repository's caller, which keeps its jobs in step."""
+    if path.startswith("workflow-templates/"):
+        import yaml
+        root = Path(__file__).resolve().parents[2]
+        return yaml.safe_load((root / path).read_text(encoding="utf-8"))["jobs"]["autopilot-fix"]
+    return workflow(path)["jobs"]["autopilot-fix"]
+
+
+def org_starts(job, action="edited", fresh="true", conventions="success", **kw):
+    ctx = {"github.event_name": "pull_request", "github.repository": "DiluxOne/other", "github.event.action": action,
+           "github.event.pull_request.draft": False, "github.event.pull_request.labels.*.name": ["autopilot"],
+           "github.event.pull_request.user.login": BOT, "vars.DX_BOT_LOGIN": BOT,
+           "needs.review.outputs.blocking": "true", "needs.review.outputs.fresh": fresh, "needs.review.result": "success",
+           "needs.review.outputs.current": "true", "needs.review.outputs.description-mismatch": "false",
+           "needs.conventions.result": conventions}
+    ctx.update(kw)
+    return bool(evaluate(str(job["if"]), ctx))
+
+
+def test_c5_every_other_repository_rounds_an_edits_fresh_blocker_too():
+    # The maintainer's answer on #928: the same rule in org-pull-request.yml,
+    # with the `fresh` guard, and in the test repository's caller with it.
+    for path in ("org-pull-request.yml", "workflow-templates/test-pull-request.yml"):
+        job = org_fix(path)
+        assert org_starts(job) is True, path
+        # A verdict the edit only reused: the push's round has it.
+        assert org_starts(job, fresh="false") is False, path
+        assert org_starts(job, fresh="") is False, path
+        # A push's run is as before, `fresh` or not.
+        assert org_starts(job, action="synchronize", fresh="") is True, path
+        assert org_starts(job, action="synchronize", fresh="", conventions="failure",
+                          **{"needs.review.outputs.blocking": "", "needs.review.result": "skipped"}) is True, path
+        # An edit whose conventions fail skips the review: no round.
+        assert org_starts(job, fresh="", conventions="failure",
+                          **{"needs.review.outputs.blocking": "", "needs.review.result": "skipped"}) is False, path
+        assert org_starts(job, **{"needs.review.outputs.blocking": "false"}) is False, path
