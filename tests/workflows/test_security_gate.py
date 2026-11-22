@@ -182,3 +182,30 @@ def test_c1_make_pre_pr_names_each_finding_with_its_file_line_rule_and_fix(tmp_p
     assert out.count("  Fix: ") == len(findings)
     if kind is None:
         assert ran.returncode == 0, out
+
+
+def test_c2_a_finding_on_a_line_the_change_did_not_touch_is_pre_existing_and_never_fails(tmp_path):
+    assert GATE.is_file(), "scripts/security-gate.py is the gate"
+    cent = central(tmp_path, "block")
+    env = environment(tmp_path, cent)
+    # app.py's subprocess and eval lines are on main already; the change
+    # adds a line at its end, so the file is read, those lines are not new.
+    repo = scratch(tmp_path, env, None, {"app.py": APP}, {"app.py": APP + "# the end\n"})
+    ran = pre_pr(repo, env)
+    out = ran.stdout + ran.stderr
+    assert "[high] app.py:6 python.lang.security.audit.subprocess-shell-true (semgrep, pre-existing)" in out, out
+    assert "(semgrep, new)" not in out
+    assert "Security gate (block): 0 new" in out, out
+    assert ran.returncode == 0, out
+    result = json.loads((repo / ".git" / "dx-review" / "security-gate.json").read_text())
+    assert {f["status"] for f in result["findings"]} == {"pre-existing"} and result["blocking"] == []
+    # The same finding on a line the change adds fails it under `block`.
+    git(repo, env, "checkout", "-q", "main")
+    git(repo, env, "rm", "-q", "app.py")
+    git(repo, env, "commit", "-qm", "no app")
+    git(repo, env, "checkout", "-qb", "feat/2-y")
+    (repo / "app.py").write_text(APP)
+    git(repo, env, "add", "-A")
+    git(repo, env, "commit", "-qm", "app")
+    again = pre_pr(repo, env)
+    assert "(semgrep, new)" in again.stdout and again.returncode != 0, again.stdout + again.stderr

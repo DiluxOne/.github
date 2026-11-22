@@ -52,7 +52,7 @@ import urllib.request
 import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CENTRAL = os.path.join(HERE, "..")
+CENTRAL = os.path.normpath(os.path.join(HERE, ".."))
 sys.path.insert(0, HERE)
 import policy as pol  # noqa: E402  the YAML reader and the packs (scripts/policy.py)
 
