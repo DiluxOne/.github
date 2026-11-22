@@ -62,6 +62,15 @@ pre-pr-make:
 # scripts/pre-pr.py tools): none, python3 and php are on it.
 pre-pr-tools: []
 
+# The security gate (#956, scripts/security-gate.py), which every
+# repository's `make pre-pr` and pull request run first, whatever its kind:
+# `rules`, Semgrep rule files or directories of the repository's own,
+# beside the organisation's (policy/security-gate.yml); `exclude`, globs of
+# paths it never reads. The kind's own checks stay as they are.
+security:
+  rules: []
+  exclude: []
+
 # How detection recognises a repository of this kind (#191,
 # scripts/detect.py): one of `any-files`, the manifests of tools.yml, from
 # the repository's root. Detection only proposes: repos.yml says what a

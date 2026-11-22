@@ -18,6 +18,15 @@ workflows: []
 # (#682, scripts/pre-pr.py tools): none.
 pre-pr-tools: []
 
+# The security gate (#956, scripts/security-gate.py), which every
+# repository's `make pre-pr` and pull request run first, whatever its kind:
+# `rules`, Semgrep rule files or directories of the repository's own,
+# beside the organisation's (policy/security-gate.yml); `exclude`, globs of
+# paths it never reads. The kind's own checks stay as they are.
+security:
+  rules: []
+  exclude: []
+
 # The shipped callers (workflow-templates/) the test repository has, which
 # scripts/install.py and scripts/sync-repos.py callers write there (#748).
 # test-pull-request.yml is its pull-request pipeline, the jobs of

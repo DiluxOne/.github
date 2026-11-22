@@ -542,6 +542,13 @@ files:
       read-by: [scripts/pre-pr.py]
       issue: "#682"
       says: The commands its `make pre-pr` runs that a bare runner may not have, which the autopilot installs.
+    - key: security
+      org: any
+      repo: never
+      limit: "`rules`, Semgrep rule paths of the repository's own, beside the organisation's; `exclude`, globs the gate never reads"
+      read-by: [scripts/security-gate.py]
+      issue: "#956"
+      says: What the kind adds to the security gate, and what it leaves out.
     - key: battery-needs
       org: any
       repo: never
