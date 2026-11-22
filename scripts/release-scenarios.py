@@ -183,7 +183,8 @@ after GitHub's back-off within the scenario's limit, then named.
         callers (one that does is closed unmerged), and once it
         merged plays them there with the test identity's token
         (GH_TOKEN), polls until each one's `expect` holds or its time is
-        up, cleans up (its pack's `cleanup: after-run`) and writes the
+        up, cleans up (its pack's `cleanup: after-run`; a pull request in
+        the merge queue is closed only once it leaves it, #936) and writes the
         Markdown table of results (scenario, pass or fail, run link) to
         FILE (and stdout), then puts the callers back the same way; a
         pull request that does not merge is a failing `callers` row;
@@ -824,18 +825,21 @@ def setup_calls(s, bodies=None):
     view, the pull request that closes it, its close and lock), its pull
     request (its branch, its file, its creation, from a fork its fork and
     login), each land on main (its branch, its file, its pull request, its
-    close), each step, and the read of the runs it triggered. Pure."""
+    close), each step, and the read of the runs it triggered. Every pull
+    request its cleanup closes is read first (#936: `queued`); the polls
+    of one still in the merge queue, QUEUE_LEAVE / QUEUE_POLL at most per
+    cleanup, are rare and bounded in time, and not counted. Pure."""
     sid, opens, bodies = s.get("id") or "?", s.get("opens") or {}, bodies or {}
     lands = [str(b["lands"]) for b in s.get("before") or [] if isinstance(b, dict) and "lands" in b]
     cleared = len(dict.fromkeys([f"scenario/{sid}", branch_of(s)] + [landing(sid, a) for a in (*LANDS, *lands)])) + 3
     n = 2 * cleared + 2
     for spec, _ in opened_issues(s, bodies):
         first = spec.get("comments") or []
-        n += 1 + len(first) + (1 if first and spec.get("labels") else 0) + 4
+        n += 1 + len(first) + (1 if first and spec.get("labels") else 0) + 4 + 1
     landed = len(lands) + sum(1 for st in s.get("steps") or [] if isinstance(st, dict) and st.get("push") in LANDS)
-    n += 7 * landed + len(lands)
+    n += 8 * landed + len(lands)
     if "pull" in opens:
-        n += 7 + (2 if (opens.get("pull") or {}).get("fork") else 0)
+        n += 8 + (2 if (opens.get("pull") or {}).get("fork") else 0)
     for st in s.get("steps") or []:
         if not isinstance(st, dict):
             continue
@@ -1039,7 +1043,63 @@ def lane_leftovers(repo, mark, run=gh):
             pass
 
 
-def clear(repo, sid, run=gh, branch=None, lands=()):
+# #936: the test repository's merge queue merges up to 3 pull requests in
+# one group, and closing one that is queued knocks the others of its group
+# out of the queue unmerged. Before `cleanup` and `clear` close a pull
+# request, they wait for it to leave the queue: a poll every QUEUE_POLL
+# seconds, QUEUE_LEAVE seconds at most per cleanup (inside PLAY_SPARE and
+# RETRY_ALLOWANCE), after which it is closed anyway.
+QUEUE_LEAVE = 120
+QUEUE_POLL = 15
+QUEUED = ("query($owner: String!, $name: String!, $number: Int!) "
+          "{ repository(owner: $owner, name: $name) { pullRequest(number: $number) { state isInMergeQueue } } }")
+
+
+def queued(repo, number, run=gh):
+    """Pull request `number`'s (state, isInMergeQueue) in `repo`, from
+    GraphQL (gh's `pr view --json` has no queue field); None when the read
+    fails or is not JSON (#784: a failure never hides a result)."""
+    owner, name = repo.split("/", 1)
+    try:
+        got = json.loads(run("api", "graphql", "-f", f"query={QUEUED}", "-F", f"owner={owner}", "-F", f"name={name}",
+                             "-F", f"number={int(number)}") or "{}")
+        pull = got["data"]["repository"]["pullRequest"]
+        return str(pull.get("state") or ""), bool(pull.get("isInMergeQueue"))
+    except (RuntimeError, ValueError, TypeError, KeyError, AttributeError):
+        return None
+
+
+def queue_read(args):
+    """Whether gh's `args` are `queued`'s read, the only GraphQL call here
+    that is not a commit. Pure."""
+    return tuple(args[:2]) == ("api", "graphql") and f"query={QUEUED}" in args
+
+
+def closer(repo, run=gh, sleep=time.sleep, leave=None):
+    """A `close(number)` for one cleanup: it waits while pull request
+    `number` is in the merge queue (QUEUE_LEAVE seconds in all, shared by
+    every pull request it closes), closes nothing once it merged, and closes
+    it otherwise, `gh pr close --delete-branch`. A close that fails is
+    left for the next run's `clear`."""
+    budget = {"left": QUEUE_LEAVE if leave is None else leave}
+
+    def close(number):
+        while True:
+            read = queued(repo, number, run)
+            if read and read[0] == "MERGED":
+                return
+            if not read or not read[1] or budget["left"] < QUEUE_POLL:
+                break
+            sleep(QUEUE_POLL)
+            budget["left"] -= QUEUE_POLL
+        try:
+            run("pr", "close", str(number), "--repo", repo, "--delete-branch")
+        except RuntimeError:
+            pass
+    return close
+
+
+def clear(repo, sid, run=gh, branch=None, lands=(), sleep=time.sleep):
     """What scenario `sid` left in `repo`, before it plays and after (#694):
     its branches deleted (`scenario/<id>`, which earlier runs left,
     `branch`, its own now, and those of the pull requests its pushes and
@@ -1047,7 +1107,9 @@ def clear(repo, sid, run=gh, branch=None, lands=()):
     issue and pull request whose body carries its mark closed. A failure
     here never stops a scenario: what it cannot clear, the next run
     clears. A confirmed bug's lane issue, whose report carries the mark, is
-    closed too (`lane_leftovers`, #707)."""
+    closed too (`lane_leftovers`, #707). A pull request in the merge queue
+    is closed once it leaves it (`closer`, #936)."""
+    close = closer(repo, run, sleep)
     for name in dict.fromkeys([f"scenario/{sid}"] + ([branch] if branch else []) + [landing(sid, a) for a in (*LANDS, *lands)]):
         try:
             run("api", "-X", "DELETE", f"repos/{repo}/git/refs/heads/{name}")
@@ -1064,11 +1126,11 @@ def clear(repo, sid, run=gh, branch=None, lands=()):
         for item in found:
             if mark not in str(item.get("body") or ""):
                 continue  # the search matched another scenario's, or none
+            if what == "pr":
+                close(item["number"])
+                continue
             try:
-                if what == "issue":
-                    run("issue", "close", str(item["number"]), "--repo", repo)
-                else:
-                    run("pr", "close", str(item["number"]), "--repo", repo, "--delete-branch")
+                run("issue", "close", str(item["number"]), "--repo", repo)
             except RuntimeError:
                 pass
 
@@ -1440,7 +1502,7 @@ def _play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None,
     lands = [str(b["lands"]) for b in s.get("before") or [] if "lands" in b]
     befores = []
     try:
-        clear(repo, sid, run, own, lands)
+        clear(repo, sid, run, own, lands, sleep)
         for first in s.get("before") or []:
             if "lands" in first:
                 # #707: a file of the scenario's own on main before its issue
@@ -1552,8 +1614,8 @@ def _play(s, repo, ref, bodies, run=gh, sleep=time.sleep, minutes=20, fork=None,
         # #878: an error that escapes the cleanup kills no process: `play`
         # makes it a failing row.
         try:
-            cleanup(repo, made, run)
-            clear(repo, sid, run, own, lands)
+            cleanup(repo, made, run, sleep)
+            clear(repo, sid, run, own, lands, sleep)
         except Exception as e:  # noqa: BLE001 - any error, a row
             if observed is None:
                 raise
@@ -1670,12 +1732,15 @@ def closing_pulls(repo, view):
     return [r for r in refs if isinstance(r, int)]
 
 
-def cleanup(repo, made, run=gh):
+def cleanup(repo, made, run=gh, sleep=time.sleep):
     """`cleanup: after-run`: its issues closed and locked, its pull requests
     closed and their branches deleted, and so are the pull requests that
     close its issues (#784: the autopilot's, which carry no `dx-scenario`
     mark for `clear` to find, and which the next run's core scenario would
-    wait on). A failure here never hides a result."""
+    wait on). A failure here never hides a result. A pull request in the
+    merge queue is closed once it leaves it, and not at all once it merged
+    (`closer`, #936)."""
+    close = closer(repo, run, sleep)
     for what, number in made:
         if what == "issue":
             # #784: the pull requests that say `Closes #<issue>` for an
@@ -1686,16 +1751,13 @@ def cleanup(repo, made, run=gh):
             except (RuntimeError, ValueError):
                 view = {}
             for pull in closing_pulls(repo, view):
-                try:
-                    run("pr", "close", str(pull), "--repo", repo, "--delete-branch")
-                except RuntimeError:
-                    pass
+                close(pull)
+        if what != "issue":
+            close(number)
+            continue
         try:
-            if what == "issue":
-                run("issue", "close", number, "--repo", repo)
-                run("issue", "lock", number, "--repo", repo)
-            else:
-                run("pr", "close", number, "--repo", repo, "--delete-branch")
+            run("issue", "close", number, "--repo", repo)
+            run("issue", "lock", number, "--repo", repo)
         except (RuntimeError, ValueError):
             pass
 
@@ -2793,13 +2855,13 @@ def default_commits(source):
 def wrong_writes(calls):
     """The recorded `gh` calls (args, input) that write a file otherwise
     than `createCommitOnBranch` on a named branch other than the default:
-    a contents `PUT`, or a commit with no branch or the default one.
-    Pure."""
+    a contents `PUT`, or a commit with no branch or the default one
+    (`queued`'s read, #936, writes nothing). Pure."""
     out = []
     for args, given in calls:
         if tuple(args[:3]) == ("api", "-X", "PUT") and "/contents/" in str(args[3]):
             out.append(args)
-        elif tuple(args[:2]) == ("api", "graphql"):
+        elif tuple(args[:2]) == ("api", "graphql") and not queue_read(args):
             branch = ((json.loads(given or "{}").get("variables") or {}).get("input") or {}).get("branch") or {}
             if not branch.get("branchName") or branch["branchName"] in DEFAULTS:
                 out.append(args)
@@ -3168,11 +3230,11 @@ def self_test():
     check("#726 #878: the real plan, every scenario polling at once with its setup, cleanup and retry, stays under the test identity's rate limit; a plan of many scenarios is refused",
           (call_budget(real["scenarios"], real["bodies"]) < RATE_LIMIT, poll_budget([{"opens": {"issue": {}}}, {"opens": {"pull": {}}, "expect": {"check": {"c": "success"}}}]),
            timing([{"id": f"s{i}", "opens": {"pull": {}}, "expect": {"check": {"c": "success"}}} for i in range(30)])),
-          (True, 240, ["the plan's 30 scenarios call GitHub 5700 times an hour, polling every 75 seconds, with their setup, cleanup and retry, past the test identity's 5000"]))
+          (True, 240, ["the plan's 30 scenarios call GitHub 5760 times an hour, polling every 75 seconds, with their setup, cleanup and retry, past the test identity's 5000"]))
     check("#878: a scenario's setup calls: its clear twice, its issue and its cleanup, its pull request, its steps, a land on main",
           [setup_calls(s) for s in ({"id": "i", "opens": {"issue": {}}}, {"id": "p", "opens": {"pull": {}}},
                                     {"id": "p", "opens": {"pull": {}}, "steps": [{"comment": "x"}, {"until": {"labels": ["y"]}}, {"push": "conflict"}]})],
-          [21, 23, 40])
+          [22, 24, 43])
     check("C3: timing names a fixed wait, an empty `until` and a limit past 15 minutes",
           timing([{"id": "w", "steps": [{"wait": 60}, {"until": {"of": "before"}}], "minutes": 16}]),
           ["scenario w: waits a fixed 60 seconds; wait `until` the state it waits for, polled every 75 seconds", "scenario w: an `until` with no expectation",
@@ -3262,7 +3324,7 @@ def self_test():
                lambda s: None, 1, fork=lambda *a, input=None: forked.append(("fork",) + a) or fork_in.append((a, input)) or ("me\n" if a[-1] == ".login" else "s\n"))
     check("C9: a scenario from a fork forks and writes its fork with the fork token, and opens its pull request with the test identity's",
           (got["ok"], [c[0] for c in forked if c[1:3] == ("repo", "fork")], [c[0] for c in forked if c[1:3] == ("pr", "create")],
-           [c[0] for c in forked if c[1:3] == ("api", "graphql")], [c[:3] for c in commits(fork_in)]), (True, ["fork"], ["test"], ["fork"], [("me/t", "docs/scenario-f", ["scenarios/f/pull.md"])]))
+           [c[0] for c in forked if c[1:3] == ("api", "graphql") and not queue_read(c[1:])], [c[:3] for c in commits(fork_in)]), (True, ["fork"], ["test"], ["fork"], [("me/t", "docs/scenario-f", ["scenarios/f/pull.md"])]))
     forked = []
     got = play({"id": "f", "opens": {"pull": {"title": "docs: x", "body": "b", "fork": True}}, "expect": {}}, "o/t", "v7-next", {"b": "x"},
                lambda *a, input=None: forked.append(a) or "[]", lambda s: None, 1, fork=False)
@@ -3535,6 +3597,20 @@ def self_test():
         cleanup("o/t", [("issue", "5")], fake_)
         check(f"#784 cleanup: a view {name} still has the issue closed and locked",
               [c for c in seen if c[1] != "view"], [("issue", "close", "5", "--repo", "o/t"), ("issue", "lock", "5", "--repo", "o/t")])
+    for name, reads, closes, slept in (("leaves the queue unmerged", [("OPEN", True), ("OPEN", False)], 1, [QUEUE_POLL]),
+                                       ("merges", [("OPEN", True), ("MERGED", False)], 0, [QUEUE_POLL]),
+                                       ("never leaves", [("OPEN", True)], 1, [QUEUE_POLL] * (QUEUE_LEAVE // QUEUE_POLL))):
+        qcalls, naps, answers = [], [], iter(reads + [reads[-1]] * 99)
+
+        def qfake(*args, input=None):
+            qcalls.append(args)
+            if queue_read(args):
+                state, inq = next(answers)
+                return json.dumps({"data": {"repository": {"pullRequest": {"state": state, "isInMergeQueue": inq}}}})
+            return ""
+        cleanup("o/t", [("pr", "7")], qfake, naps.append)
+        check(f"#936 cleanup: a pull request in the merge queue that {name} is closed {closes} time(s), after waiting for it",
+              (sum(1 for c in qcalls if c[:2] == ("pr", "close")), naps), (closes, slept))
     pcalls_ = []
 
     def prfake(*args, input=None):
@@ -4084,7 +4160,7 @@ def self_test():
             run=lambda *a, input=None: recorded.append((a, input)) or fake(*a, input=input), sleep=lambda s: None, minutes=3, central="O/.github")
     check("#709 C3: every write run_all, play and point_callers make is a createCommitOnBranch on a named branch, never main, and none a contents PUT",
           ([c[1] for c in commits(recorded)], wrong_writes(recorded), [a for a, _ in recorded if a[:3] == ("api", "-X", "PUT")],
-           len(commits(recorded)) == sum(1 for a, _ in recorded if a[:2] == ("api", "graphql"))),
+           len(commits(recorded)) == sum(1 for a, _ in recorded if a[:2] == ("api", "graphql") and not queue_read(a))),
           (["ci/callers-v7-next", "test/scenario-p", "test/scenario-p", "ci/callers-v7-next-back"], [], [], True))
     heads, tries = iter(["h1", "h2", "h3"]), []
 
