@@ -81,6 +81,28 @@ def test_c1_the_script_passes_an_answer_that_covers_every_file(tmp_path):
     assert (out.returncode, out.stdout.split()) == (1, ["a.py"])
 
 
+
+def test_c1_a_non_ascii_path_git_quotes_in_the_list_matches_its_real_name(tmp_path):
+    # review-brief.sh writes shown-files.txt with `git diff --name-only`,
+    # which C-quotes a non-ASCII path ("caf\303\251.md"); the model may
+    # answer with the real name or echo the diff header's quoted one.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", "-c", "core.quotepath=true"]
+    subprocess.run(git + ["init", "-q"], check=True)
+    subprocess.run(git + ["commit", "-q", "--allow-empty", "-m", "base"], check=True)
+    (repo / "café.md").write_text("x\n", encoding="utf-8")
+    subprocess.run(git + ["add", "."], check=True)
+    subprocess.run(git + ["commit", "-q", "-m", "add"], check=True)
+    listed = subprocess.run(git + ["diff", "HEAD~1...HEAD", "--name-only", "--", "."], capture_output=True, text=True, check=True).stdout.splitlines()[0]
+    assert listed.startswith('"'), listed
+    for name in ("café.md", listed):
+        out = run_script(tmp_path, {"examined": [{"file": name, "checked": "x"}]}, [listed])
+        assert (out.returncode, out.stdout) == (0, ""), (name, out)
+    out = run_script(tmp_path, {"examined": []}, [listed])
+    assert (out.returncode, out.stdout) == (1, "café.md\n"), out
+
+
 GH = """
 case "$*" in
   *"--json files"*) echo '[]' ;;
