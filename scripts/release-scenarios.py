@@ -153,7 +153,7 @@ after GitHub's back-off within the scenario's limit, then named.
   release-scenarios.py merge --dir DIR --groups JSON --job NAME=RESULT ...
                              --out FILE [--run URL] [--minutes N]
                              [--play-minutes M]
-        one table, to FILE (and stdout), from the scenarios-<name>/results.md
+        one table, to FILE (and stdout), from the scenarios-<name>-a<N>/results.md
         under DIR (`move`, `back` and every group's): each group's rows of
         its own scenarios, and a failing row, with URL, for a group whose
         file is missing (its job failed, timed out or was cancelled), a
@@ -164,7 +164,10 @@ after GitHub's back-off within the scenario's limit, then named.
         fails nothing, never counting `covers:`, which `coverage` reads as
         each scenario's plan); exits 1 when a row fails. With --passed FILE
         (what `passed` wrote, #929), a passing row `pass (in <run>)` for
-        each scenario that passed on the same candidate, so it still counts
+        each scenario that passed on the same candidate, so it still counts.
+        Each name's latest attempt is read (#929: a re-run's over the
+        first's), and a play job that failed adds no row of its own when
+        a group's row failed: its job fails on it, so a re-run replays it
   release-scenarios.py run --repo OWNER/NAME [--ref v7-next] [--only ID ...]
                            [--out FILE] [--minutes N]
         moves the test repository's callers to the ref through a pull
@@ -182,14 +185,16 @@ after GitHub's back-off within the scenario's limit, then named.
         exits 1 when one fails. With --moved MOVED, what moved is written
         to MOVED as soon as the pointing is over, before the first
         scenario plays ([] when it failed cleanly), and left for `back`
-  release-scenarios.py back --repo OWNER/NAME --moved MOVED [--ref v7-next]
-                            [--out FILE] [--minutes N]
+  release-scenarios.py back --repo OWNER/NAME (--moved MOVED | --moved-dir DIR)
+                            [--ref v7-next] [--out FILE] [--minutes N]
         puts back the callers `run --moved` left at the ref (with
         DX_CALLERS_TOKEN, minted after the scenarios: an App token lasts
         an hour) and adds a failing `callers` row to FILE if they do not
         come back, or if MOVED is missing or unreadable (a run cancelled
         or killed while pointing: could not tell, never "nothing moved");
-        exits 1 when a row of FILE fails
+        exits 1 when a row of FILE fails. With --moved-dir, every
+        attempt's record under DIR (#929, `read_moved_dir`), each caller
+        put back as the earliest attempt that recorded it found it
   release-scenarios.py --test
 """
 import ast
@@ -1815,6 +1820,23 @@ def merge_when_checked(repo, number, url, head, run=gh, sleep=time.sleep, minute
         waited += POLL
 
 
+def wait_merged(repo, number, url, run=gh, sleep=time.sleep, minutes=20):
+    """The callers pull request another job opened (#929), waited for until
+    it merged, never queued nor closed here: that job queues it. Raises,
+    naming it, when it closes unmerged or `minutes` run out."""
+    waited = 0
+    while True:
+        view = json.loads(run("pr", "view", number, "--repo", repo, "--json", "mergedAt,state") or "{}")
+        if view.get("mergedAt"):
+            return
+        if view.get("state") == "CLOSED":
+            raise RuntimeError(f"the pull request {url} that moves them, opened by another job, closed unmerged")
+        if waited >= minutes * 60:
+            raise RuntimeError(f"the pull request {url} that moves them, opened by another job, did not merge in {minutes} minutes")
+        sleep(POLL)
+        waited += POLL
+
+
 def point_callers(repo, ref, run=gh, central=None, back=None, sleep=time.sleep, minutes=20):
     """The test repository's callers at `ref` (`v7-next` while the lane
     tries a candidate, `v7` once the installer plays them), so what plays
@@ -1824,26 +1846,41 @@ def point_callers(repo, ref, run=gh, central=None, back=None, sleep=time.sleep, 
     the lane merges itself (`merge_when_checked`: the merge queue, once its
     checks pass; auto-merge never merges a change to .github/workflows),
     and it returns once that merged. Nothing to change opens nothing. Returns what it moved,
-    each caller's `name` and its text `before`."""
+    each caller's `name` and its text `before`. Safe to call twice at once
+    (#929: the play jobs of a re-run each move the callers again): when
+    `ci/callers-<ref>` already has an open pull request, it waits for that
+    one to merge (`wait_merged`) instead of deleting its branch, then
+    reads the callers again."""
     import base64
     if central is None:
         sys.path.insert(0, HERE)
         import org
         central = org.CENTRAL
-    changes = []
-    for f in json.loads(run("api", f"repos/{repo}/contents/.github/workflows") or "[]"):
-        name = str(f.get("name", ""))
-        if not name.endswith(".yml") or (back is not None and name not in back):
-            continue
-        got = json.loads(run("api", f"repos/{repo}/contents/.github/workflows/{name}") or "{}")
-        text = base64.b64decode(got.get("content") or "").decode()
-        new = back[name] if back is not None else at_ref(text, central, ref)
-        if new != text:
-            changes.append((name, text, new))
+    branch = f"ci/callers-{ref}" + ("-back" if back is not None else "")
+
+    def read():
+        changes = []
+        for f in json.loads(run("api", f"repos/{repo}/contents/.github/workflows") or "[]"):
+            name = str(f.get("name", ""))
+            if not name.endswith(".yml") or (back is not None and name not in back):
+                continue
+            got = json.loads(run("api", f"repos/{repo}/contents/.github/workflows/{name}") or "{}")
+            text = base64.b64decode(got.get("content") or "").decode()
+            new = back[name] if back is not None else at_ref(text, central, ref)
+            if new != text:
+                changes.append((name, text, new))
+        return changes
+    changes = read()
     if not changes:
         return []
+    opened = json.loads(run("pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "number,url") or "[]")
+    if opened:
+        # Another job is moving them (#929): its pull request, never a second.
+        wait_merged(repo, str(opened[0]["number"]), str(opened[0].get("url") or opened[0]["number"]), run, sleep, minutes)
+        changes = read()
+        if not changes:
+            return []
     base = run("api", f"repos/{repo}", "--jq", ".default_branch").strip()
-    branch = f"ci/callers-{ref}" + ("-back" if back is not None else "")
     try:
         run("api", "-X", "DELETE", f"repos/{repo}/git/refs/heads/{branch}")
     except RuntimeError:
@@ -1911,6 +1948,30 @@ def read_moved(path, ref):
         return [], [{"id": "callers", "ok": False, "why": [f"could not read what moved to {ref}, the callers may be left there: {e}"], "run": "", "class": "harness"}]
 
 
+def read_moved_dir(path, ref):
+    """What every attempt's move recorded under `path` (#929: one directory
+    per artifact, `scenarios-move-a<N>/moved.json`, or a moved.json there),
+    each caller once, as the earliest attempt that recorded it found it,
+    and the rows that say why none could be read (`read_moved`)."""
+    found = []
+    for d in sorted(os.listdir(path)) if os.path.isdir(path) else []:
+        m = ATTEMPT.match(d)
+        if m and m.group(1) == "move" and os.path.exists(os.path.join(path, d, "moved.json")):
+            found.append((int(m.group(2) or 0), os.path.join(path, d, "moved.json")))
+    if not found:
+        return read_moved(os.path.join(path, "moved.json"), ref)
+    moved, names = [], set()
+    for _, f in sorted(found):
+        got, rows = read_moved(f, ref)
+        if rows:
+            return [], rows
+        for m in got:
+            if m["name"] not in names:
+                moved.append(m)
+                names.add(m["name"])
+    return moved, []
+
+
 def at_candidate(repo, ref, run=gh, central=None):
     """What would still run a pipeline of the test repository off `ref` once
     its callers moved (#748), as failing `callers` rows, each naming it: its
@@ -1963,7 +2024,21 @@ def move_callers(repo, ref, callers=gh, central=None, sleep=time.sleep, minutes=
 
 GROUP_ID = re.compile(r"[a-z0-9-]+")
 # The artifacts the lane names after them besides the groups' (scenarios-*).
-NOT_GROUPS = ("move", "back")
+NOT_GROUPS = ("move", "back", "results")
+# The attempt an artifact's name ends with (#929): scenarios-<name>-a<N>.
+ATTEMPT = re.compile(r"^scenarios-(.+?)(?:-a(\d+))?$")
+
+
+def unfit_group(gid):
+    """Why a group id cannot name an artifact the lane reads back (#929):
+    "" when it can. One that ends like an attempt (`-a<N>`) or starts like
+    another artifact (`move-`, `back-`, `results-`) would be read as
+    another. Pure."""
+    if not isinstance(gid, str) or not GROUP_ID.fullmatch(gid) or gid in NOT_GROUPS:
+        return f"not ^[a-z0-9-]+$, or {' or '.join(NOT_GROUPS)}"
+    if re.search(r"-a\d+$", gid) or any(gid.startswith(f"{n}-") for n in NOT_GROUPS):
+        return f"it ends with -a<N>, an attempt, or starts with {', '.join(n + '-' for n in NOT_GROUPS)}"
+    return ""
 
 
 def groups(scenarios):
@@ -2049,7 +2124,7 @@ def core_writes(s, pack):
 def partition(scenarios, gs, pack=None):
     """What is wrong with the groups `gs` of `scenarios`: a scenario in no
     group or in two, a group that plays no scenario of the file, a group id
-    unfit for an artifact name (`^[a-z0-9-]+$`, nor `move` or `back`) or used
+    unfit for an artifact name (`unfit_group`: `^[a-z0-9-]+$`, nor `move`, `back` or `results`, nor read as an attempt's) or used
     twice, and (#694) two scenarios that could write to the same part of the
     test repository's core (`pack`'s, scripts/org.py core_key), which would
     wait on each other's change, and (#709) any that writes under it but
@@ -2058,8 +2133,8 @@ def partition(scenarios, gs, pack=None):
     seen = set()
     for g in gs:
         gid = str(g.get("id"))
-        if not GROUP_ID.fullmatch(gid) or gid in NOT_GROUPS:
-            out.append(f"group {gid}: its id is unfit for an artifact name (^[a-z0-9-]+$, nor {' or '.join(NOT_GROUPS)})")
+        if unfit_group(gid):
+            out.append(f"group {gid}: its id is unfit for an artifact name (^[a-z0-9-]+$, nor {' or '.join(NOT_GROUPS)}: {unfit_group(gid)})")
         if gid in seen:
             out.append(f"group {gid}: its id is used twice")
         seen.add(gid)
@@ -2478,6 +2553,7 @@ def merge(gs, files, jobs, run="", minutes=0, play_minutes=0, passed=()):
     passed = [p for p in passed or [] if isinstance(p, dict) and p.get("id")]
     if not gs and not passed:
         fail("groups", "no groups of scenarios to read: none played", "harness")
+    first_group_row = len(rows)
     for g in gs:
         got = files.get(g["id"])
         if got is None:
@@ -2489,11 +2565,15 @@ def merge(gs, files, jobs, run="", minutes=0, play_minutes=0, passed=()):
         for r in got:
             if isinstance(r, dict) and r.get("id") in g["scenarios"]:
                 by_id.setdefault(r["id"], own(r))
+            elif isinstance(r, dict) and r.get("id") == "callers" and r.get("ok") is not True:
+                # #929: a re-run play job's move of the callers that failed.
+                rows.append(own(r, "harness"))
         for sid in g["scenarios"]:
             if sid in by_id:
                 rows.append(by_id[sid])
             else:
                 fail(sid, f"no result in the results of its group {g['id']}", "harness")
+    group_failed = any(not r["ok"] for r in rows[first_group_row:])
     have = {r["id"] for r in rows}
     for p in passed:
         if p["id"] not in have:
@@ -2503,8 +2583,13 @@ def merge(gs, files, jobs, run="", minutes=0, play_minutes=0, passed=()):
         fail("back", "the back job left no results: the callers may be left at the ref", "harness")
     else:
         rows += [own(r, "harness") for r in files["back"] if isinstance(r, dict)]
+    # #929: a play job fails when its group has a failing row, so the
+    # re-run of the failed jobs replays it: that row is the failure, and a
+    # failed play job adds none of its own then.
     for name, result in jobs.items():
         if result == "success" or (name == "play" and result == "skipped" and not gs and passed):
+            continue
+        if name == "play" and result == "failure" and group_failed:
             continue
         if name == "play" and minutes and result == "cancelled":
             fail(name, f"a play job ran past its timeout of {minutes} minutes and was cancelled (timeout-minutes in release-lane.yml)", "infrastructure")
@@ -2523,18 +2608,32 @@ def read_groups(text):
         gs = json.loads(text or "")
     except ValueError:
         return []
-    ok = isinstance(gs, list) and all(isinstance(g, dict) and isinstance(g.get("id"), str) and GROUP_ID.fullmatch(g["id"]) and g["id"] not in NOT_GROUPS
-                                     and isinstance(g.get("scenarios"), list) for g in gs)
+    ok = isinstance(gs, list) and all(isinstance(g, dict) and not unfit_group(g.get("id")) and isinstance(g.get("scenarios"), list) for g in gs)
     return gs if ok else []
+
+
+def latest_attempts(path):
+    """{name: directory} of the artifacts downloaded under `path`, each in
+    its own directory, `scenarios-<name>-a<N>` (#929: a re-run's attempt
+    over an earlier one's; one with no attempt is the first's), the
+    latest attempt of each name kept."""
+    best = {}
+    for d in sorted(os.listdir(path)) if os.path.isdir(path) else []:
+        m = ATTEMPT.match(d)
+        if m and os.path.exists(os.path.join(path, d, "results.md")):
+            n = int(m.group(2) or 0)
+            if m.group(1) not in best or n >= best[m.group(1)][0]:
+                best[m.group(1)] = (n, os.path.join(path, d))
+    return {name: d for name, (_, d) in best.items()}
 
 
 def merge_dir(path, gs, jobs, run="", minutes=0, play_minutes=0, passed=()):
     """`merge` of the artifacts downloaded under `path`, each in its own
-    directory (`scenarios-<name>/results.md`)."""
-    files = {}
+    directory (`scenarios-<name>-a<N>/results.md`, the latest attempt of
+    each, `latest_attempts`)."""
+    files, found = {}, latest_attempts(path)
     for name in ["move", "back"] + [g["id"] for g in gs]:
-        f = os.path.join(path, f"scenarios-{name}", "results.md")
-        files[name] = read_results(f) if os.path.exists(f) else None
+        files[name] = read_results(os.path.join(found[name], "results.md")) if name in found else None
     return merge(gs, files, jobs, run, minutes, play_minutes, passed)
 
 
@@ -3921,7 +4020,8 @@ def self_test():
         check("C3: every group passing is one passing table, every scenario's row in the groups' order",
               ([(r["id"], r["ok"]) for r in whole], lane.decide(plan, whole)["do"]), ([("a", True), ("c", True), ("b", True)], "release"))
         for how, files, jobs, want in (
-                ("a group's missing file (its job timed out)", dict(every, b=None), dict(done, play="failure"), {"b", "play"}),
+                # #929: the group's row is the failure; the failed play job adds none.
+                ("a group's missing file (its job timed out)", dict(every, b=None), dict(done, play="failure"), {"b"}),
                 ("a play job that ended in failure with all rows passing", every, dict(done, play="failure"), {"play"}),
                 ("a missing scenario row", dict(every, serial=passed("a")), done, {"c"}),
                 ("a row from another group in place of its own", dict(every, b=passed("a")), done, {"b"}),
@@ -3949,7 +4049,7 @@ def self_test():
         with contextlib.redirect_stdout(io.StringIO()):
             rc = main(["merge", "--dir", lay(dict(every, b=None)), "--groups", json.dumps(mgs), "--job", "move=success", "--job", "play=failure", "--job", "back=success", "--run", lane_run, "--out", out])
         check("C3: merge's command writes the table release-lane.py reads, and exits 1 on a failing row",
-              (rc, [r["id"] for r in read_results(out) if not r["ok"]], lane.decide(plan, read_results(out))["scenario"]), (1, ["b", "play"], "b"))
+              (rc, [r["id"] for r in read_results(out) if not r["ok"]], lane.decide(plan, read_results(out))["scenario"]), (1, ["b"], "b"))
     # #713: the autopilot's result read once it is there.
     def sealing(pull=True):
         """A test repository whose triage answers issue 9 on its second view
@@ -4326,6 +4426,43 @@ def self_test():
     check("#929 C1: earlier_passes reads the runs newest first, skips this run and one with no artifact, and takes the first with the key",
           (earlier_passes("o/r", "S", "N", "9", ["a"], lane_gh), [a[2] for a in calls929 if a[:2] == ("run", "download")]), ([{"id": "a", "in": "u7"}], ["8", "7"]))
     check("#929 C1: no key, no earlier passes", earlier_passes("o/r", "S", "", "9", ["a"], lambda *a, input=None: 1 / 0), [])
+    # #929 C2: a re-run's artifacts over the first's, and its moves.
+    with tempfile.TemporaryDirectory() as d929:
+        for name, rows in (("scenarios-b-a1", [{"id": "b", "ok": False}]), ("scenarios-b-a2", [{"id": "b", "ok": True}]), ("scenarios-move", []), ("scenarios-results", [])):
+            write_results(rows, os.path.join(d929, name, "results.md"), echo=False)
+        got = latest_attempts(d929)
+        check("#929 C2: latest_attempts keeps each name's latest attempt, one with none the first's",
+              {k: os.path.basename(v) for k, v in got.items()}, {"b": "scenarios-b-a2", "move": "scenarios-move", "results": "scenarios-results"})
+        for n, moved in ((1, [{"name": "a.yml", "before": "first"}]), (2, [{"name": "a.yml", "before": "second"}, {"name": "b.yml", "before": "b"}])):
+            os.makedirs(os.path.join(d929, "moves", f"scenarios-move-a{n}"))
+            write_moved(moved, os.path.join(d929, "moves", f"scenarios-move-a{n}", "moved.json"))
+        check("#929 C2: read_moved_dir puts each caller back as the earliest attempt found it",
+              read_moved_dir(os.path.join(d929, "moves"), "v7-next"), ([{"name": "a.yml", "before": "first"}, {"name": "b.yml", "before": "b"}], []))
+        check("#929 C2: read_moved_dir with no record is could-not-tell", [r["id"] for r in read_moved_dir(os.path.join(d929, "none"), "v7-next")[1]], ["callers"])
+    check("#929 C2: a group id read as an attempt or another artifact is unfit", [bool(unfit_group(g)) for g in ("b", "b-a2", "move-x", "results", "spec-to-draft")],
+          [False, True, True, True, False])
+    m929 = merge([{"id": "b", "scenarios": ["b"]}], {"move": [], "back": [], "b": [{"id": "callers", "ok": False, "why": ["x"]}]}, {"move": "success", "play": "failure", "back": "success"})
+    check("#929 C2: a re-run's failed move is its group's callers row, with the scenario's missing row, and no play row",
+          [(r["id"], r["ok"]) for r in m929], [("callers", False), ("b", False)])
+    base929 = base64.b64encode(b"jobs:\n  t:\n    uses: O/.github/.github/workflows/x.yml@v7\n").decode()
+    log929, views = [], []
+
+    def busy(*a, input=None):
+        log929.append(a)
+        if a[:2] == ("pr", "list"):
+            return json.dumps([{"number": 31, "url": "https://github.com/o/t/pull/31"}])
+        if a[:2] == ("pr", "view"):
+            views.append(a)
+            return json.dumps({"mergedAt": "x"} if len(views) > 1 else {"state": "OPEN"})
+        if a[-1] == "repos/o/t/contents/.github/workflows":
+            return json.dumps([{"name": "a.yml"}])
+        if a[-1] == "repos/o/t/contents/.github/workflows/a.yml":
+            at = len(views) > 1
+            return json.dumps({"content": base64.b64encode(at_ref(base64.b64decode(base929).decode(), "O/.github", "v7-next").encode()).decode() if at else base929})
+        return "[]"
+    check("#929 C2: point_callers with another job's pull request open waits for it, deletes no branch, opens nothing",
+          (point_callers("o/t", "v7-next", busy, "O/.github", sleep=lambda s: None, minutes=3), len(views),
+           [a for a in log929 if a[:3] == ("api", "-X", "DELETE") or a[:2] in (("pr", "create"), ("pr", "merge"), ("pr", "close"))]), ([], 2, []))
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
 
@@ -4444,11 +4581,13 @@ def main(argv):
         p = argparse.ArgumentParser(prog="release-scenarios.py back")
         p.add_argument("--repo", required=True)
         p.add_argument("--ref", default="v7-next")
-        p.add_argument("--moved", required=True)
+        where = p.add_mutually_exclusive_group(required=True)
+        where.add_argument("--moved")
+        where.add_argument("--moved-dir")
         p.add_argument("--out", default="")
         p.add_argument("--minutes", type=int, default=20)
         a = p.parse_args(argv[1:])
-        moved, unread = read_moved(a.moved, a.ref)
+        moved, unread = read_moved_dir(a.moved_dir, a.ref) if a.moved_dir else read_moved(a.moved, a.ref)
         results = (read_results(a.out) if a.out else []) + unread + put_back(a.repo, a.ref, moved, callers_gh(), minutes=a.minutes)
         write_results(results, a.out)
         return 0 if all(r["ok"] for r in results) else 1

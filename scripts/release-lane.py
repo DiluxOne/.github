@@ -776,18 +776,19 @@ def check_workflow(check, path=os.path.join(ROOT, ".github", "workflows", "relea
     # The move and back jobs wait on the callers pull request's checks with
     # the token each passes as DX_CALLERS_TOKEN: that token reads them (#627).
     used, minted = [], []
-    for job in ("move", "back"):
+    for job in ("move", "play", "back"):
         steps = jobs.get(job, {}).get("steps") or []
         mine = {st.get("id"): st.get("with") or {} for st in steps if "create-github-app-token" in str(st.get("uses"))}
         minted += list(mine.values()) or [{}]
         waits = [(st.get("env") or {}).get("DX_CALLERS_TOKEN") for st in steps if re.search(r"release-scenarios\.py (move|back)\b", str(st.get("run")))]
         used += [mine.get(m.group(1)) if (m := re.fullmatch(r"\$\{\{ steps\.([\w-]+)\.outputs\.token \}\}", str(w))) else None for w in waits] or [None]
-    check("workflow: the waits on the callers pull request, move's and back's, each use a token of its own job (#627)", len(used) == 2 and all(t is not None for t in used), True)
+    check("workflow: the waits on the callers pull request, move's, a re-run play job's (#929) and back's, each use a token of its own job (#627)",
+          len(used) == 3 and all(t is not None for t in used), True)
     check("workflow: the waits' tokens read the checks and the statuses (#627)",
-          [(t or {}).get("permission-checks") == "read" and (t or {}).get("permission-statuses") == "read" for t in used], [True, True])
+          [(t or {}).get("permission-checks") == "read" and (t or {}).get("permission-statuses") == "read" for t in used], [True, True, True])
     check("workflow: the waits' tokens are the test repository's alone (#627)",
-          [(t or {}).get("repositories") for t in used], ["${{ steps.test.outputs.repo }}"] * 2)
-    check("workflow: every App token of the move and back jobs asks for checks: read and statuses: read (#627)",
+          [(t or {}).get("repositories") for t in used], ["${{ steps.test.outputs.repo }}"] * 3)
+    check("workflow: every App token of the move, play and back jobs asks for checks: read and statuses: read (#627)",
           all(t.get("permission-checks") == "read" and t.get("permission-statuses") == "read" for t in minted), True)
     # The test identity (#739): the move job checks DX_TEST_LOGIN against
     # its token's owner before the callers move, so nothing plays when it differs.
@@ -821,9 +822,16 @@ def check_workflow(check, path=os.path.join(ROOT, ".github", "workflows", "relea
           [(st.get("with") or {}).get("name") for st in jobs.get("act", {}).get("steps") or [] if "upload-artifact" in str(st.get("uses")) and st.get("if") == "always()"],
           ["scenarios-results"])
     psteps = play.get("steps") or []
-    check("workflow: play mints no App token: the test identity's tokens alone (#694: its fork token, for the scenario from a fork)",
-          ([st for st in psteps if "create-github-app-token" in str(st.get("uses"))], [v for st in psteps for k, v in (st.get("env") or {}).items() if "token" in str(v).lower() or "TOKEN" in k]),
-          ([], ["${{ secrets.DX_TEST_TOKEN }}", "${{ secrets.DX_TEST_FORK_TOKEN }}"]))
+    # #929: on a re-run alone, play mints the callers' App token, used by
+    # its own step that moves them again, never by the scenarios.
+    papp = [st for st in psteps if "create-github-app-token" in str(st.get("uses"))]
+    check("#929 workflow: play mints an App token on a re-run alone, for the callers' move, never the scenarios'",
+          ([(st.get("id"), st.get("if")) for st in papp], [st.get("id") for st in psteps if "steps.callers.outputs.token" in json.dumps(st.get("env") or {})],
+           [st.get("if") for st in psteps if st.get("id") == "rerun"]),
+          ([("callers", "github.run_attempt != '1'")], ["rerun"], ["github.run_attempt != '1'"]))
+    check("workflow: the play step holds the test identity's tokens alone (#694: its fork token, for the scenario from a fork)",
+          [v for st in psteps if st.get("id") == "play" for k, v in (st.get("env") or {}).items() if "token" in str(v).lower() or "TOKEN" in k],
+          ["${{ secrets.DX_TEST_TOKEN }}", "${{ secrets.DX_TEST_FORK_TOKEN }}"])
     check("workflow: back needs play and runs under always(), so the callers come back whatever the groups did",
           ("play" in needs("back"), "always()" in str(jobs.get("back", {}).get("if"))), (True, True))
     check("workflow: act reads the move, the play and the back jobs", {"move", "play", "back"} <= set(needs("act")), True)
@@ -1190,7 +1198,10 @@ def self_test():
             ("fail-fast", lambda j: j["play"]["strategy"].update({"fail-fast": True}), "matrix"),
             ("one runner for every group", lambda j: j["play"].update({"runs-on": "self-hosted"}), "DX_RUNNER_HEAVY"),
             ("play before the move", lambda j: j["play"].update({"needs": ["plan"]}), "play needs move"),
-            ("an App token in play", lambda j: j["play"]["steps"].insert(0, app), "no App token"),
+            ("another App token in play", lambda j: j["play"]["steps"].insert(0, app), "re-run alone"),
+            ("play's App token on every attempt", lambda j: next(s for s in j["play"]["steps"] if s.get("id") == "callers").pop("if"), "re-run alone"),
+            ("the callers' token in the play step", lambda j: next(s for s in j["play"]["steps"] if s.get("id") == "play")["env"].update({"DX_CALLERS_TOKEN": "${{ steps.callers.outputs.token }}"}),
+             "re-run alone"),
             ("back only when play passed", lambda j: j["back"].update({"if": "needs.move.result != 'skipped'"}), "always()"),
             ("back before play", lambda j: j["back"].update({"needs": ["plan", "move"]}), "back needs play"),
             ("back's token without statuses", lambda j: next(s for s in j["back"]["steps"] if s.get("id") == "back")["with"].pop("permission-statuses"), "statuses"),

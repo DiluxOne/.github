@@ -270,3 +270,67 @@ def test_c1_the_candidate_keeps_a_v7_next_already_built_on_the_same_commit():
         calls.clear()
         lane.candidate("O/.github", "v7", root=root, run=fake)
         assert ("git", "-C", root, "push", "-f", "origin", "refs/tags/v7-next") in calls
+
+
+# C2: a re-run of the lane's failed jobs replays the failed group and releases.
+
+def run_play_step(tmp_path, rows, code):
+    checkout(tmp_path, {"release-scenarios.py": RECORD.format(name="release-scenarios.py")})
+    do = {"play": {"rows": rows, "code": code}}
+    return run(step(LANE, "play", job="play"), tmp_path, env={"FAKE_SCRIPT_DO": json.dumps(do), "GROUP": "b", "OWNER": "o", "TEST_REPO": "t"})
+
+
+def test_c2_a_play_step_whose_scenario_fails_exits_1(tmp_path):
+    ran = run_play_step(tmp_path / "fail", [{"id": "b", "ok": False, "why": ["no label"], "run": ""}], 1)
+    assert ran.code == 1
+    assert [c[0] for c in ran.of("release-scenarios.py")] == ["play"]
+    ran = run_play_step(tmp_path / "pass", ok("b"), 0)
+    assert ran.code == 0
+    # Its results are uploaded all the same, before the job ends red.
+    upload = next(s for s in jobs()["play"]["steps"] if "upload-artifact" in s.get("uses", ""))
+    assert upload["if"] == "${{ !cancelled() }}"
+
+
+def test_c2_the_latest_attempt_of_a_group_is_what_the_decision_reads(tmp_path):
+    gs = [{"id": "a", "scenarios": ["a"]}, {"id": "b", "scenarios": ["b"]}]
+    failed = [{"id": "b", "ok": False, "why": ["no label"], "run": "", "class": "engine"}]
+    written = {"scenarios-move-a1": [], "scenarios-a-a1": ok("a"), "scenarios-b-a1": failed, "scenarios-b-a2": ok("b"),
+               "scenarios-back-a1": [], "scenarios-back-a2": []}
+    d, rows, _ = run_act(tmp_path / "rerun", gs, written)
+    assert d["do"] == "release"
+    assert sorted(r["id"] for r in rows) == ["a", "b"] and all(r["ok"] for r in rows)
+    # The first attempt alone: its failure is the decision.
+    d, _, _ = run_act(tmp_path / "first", gs, {k: v for k, v in written.items() if not k.endswith("-a2")}, {"MOVE": "success", "PLAY": "failure", "BACK": "success"})
+    assert d["do"] == "bug" and d["scenario"] == "b" and [f["scenario"] for f in d["filings"]] == ["b"]
+
+
+def test_c2_the_artifacts_carry_the_attempt():
+    names = {job: [s["with"]["name"] for s in jobs()[job]["steps"] if "upload-artifact" in s.get("uses", "")] for job in ("move", "play", "back")}
+    assert names == {"move": ["scenarios-move-a${{ github.run_attempt }}"], "play": ["scenarios-${{ matrix.group.id }}-a${{ github.run_attempt }}"],
+                     "back": ["scenarios-back-a${{ github.run_attempt }}"]}
+
+
+def test_c2_a_re_run_play_job_moves_the_callers_to_v7_next_before_it_plays(tmp_path):
+    play = jobs()["play"]["steps"]
+    ids = [s.get("id") for s in play]
+    assert {"callers", "rerun", "play"} <= set(ids), ids
+    assert ids.index("callers") < ids.index("rerun") < ids.index("play")
+    token, rerun = play[ids.index("callers")], play[ids.index("rerun")]
+    for s in (token, rerun):
+        assert evaluate(s["if"], {"github.run_attempt": "2"}) is True
+        assert evaluate(s["if"], {"github.run_attempt": "1"}) is False
+    assert token["with"]["repositories"] == "${{ steps.test.outputs.repo }}"
+    assert rerun["env"]["DX_CALLERS_TOKEN"] == "${{ steps.callers.outputs.token }}"
+    assert "DX_CALLERS_TOKEN" not in (play[ids.index("play")].get("env") or {})
+    checkout(tmp_path, {"release-scenarios.py": RECORD.format(name="release-scenarios.py")})
+    ran = run(rerun, tmp_path, env={"OWNER": "o", "TEST_REPO": "t", "DX_CALLERS_TOKEN": "app"})
+    assert ran.code == 0, ran.stderr
+    moves = ran.of("release-scenarios.py")
+    assert len(moves) == 1 and moves[0][0] == "move"
+    assert moves[0][moves[0].index("--repo") + 1] == "o/t" and moves[0][moves[0].index("--ref") + 1] == "v7-next"
+    # A move that fails plays nothing: the step fails, with its row for the group's file.
+    checkout(tmp_path / "x", {"release-scenarios.py": RECORD.format(name="release-scenarios.py")})
+    ran = run(rerun, tmp_path / "x", env={"OWNER": "o", "TEST_REPO": "t", "DX_CALLERS_TOKEN": "app",
+                                          "FAKE_SCRIPT_DO": json.dumps({"move": {"rows": [{"id": "callers", "ok": False, "why": ["x"]}], "code": 1}})})
+    assert ran.code == 1
+    assert "callers" in (tmp_path / "x" / "temp" / "results.md").read_text()
