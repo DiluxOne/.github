@@ -425,6 +425,13 @@ files:
       read-by: [scripts/policy.py]
       issue: "#78"
       says: The most one review run may spend.
+    - key: review-eval.found-floor
+      org: any
+      repo: never
+      limit: a share of the flag cases, 0 to 1; never fewer than one case
+      read-by: [scripts/review-eval.py]
+      issue: "#930"
+      says: The share of the review evaluation's known bugs it must find again, whatever its baseline.
     - key: auto-merge
       org: any
       repo: stricter

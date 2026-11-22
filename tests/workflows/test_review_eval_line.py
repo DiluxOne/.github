@@ -98,11 +98,11 @@ def test_collect_picks_the_first_commit_after_head_that_changed_the_line():
 
 
 
-def test_a_review_that_flags_another_line_of_the_same_file_missed_the_case():
+def test_a_review_that_flags_a_far_line_of_the_same_file_missed_the_case():
     mod = load()
     c = {"expect": "flag", "path": "a.php", "line": 3}
     assert mod.verdict(c, {"findings": [{"severity": "major", "file": "a.php", "line": 3}]}) is True
-    assert mod.verdict(c, {"findings": [{"severity": "major", "file": "a.php", "line": 4}]}) is False
+    assert mod.verdict(c, {"findings": [{"severity": "major", "file": "a.php", "line": 14}]}) is False
     assert mod.verdict(c, {"findings": [{"severity": "blocker", "file": "a.php"}]}) is False
     assert mod.verdict(c, {"findings": [{"severity": "major", "file": "a.php", "line": "3"}]}) is True
 
@@ -200,15 +200,15 @@ def test_check_refuses_a_case_whose_fix_is_docs_by_name(tmp_path):
     assert f"o/r#26:flag: {fix} is not a bug's fix" in out.stderr
 
 
-def test_a_finding_counts_inside_the_hunk_the_fix_changed_and_not_beside_it():
+def test_a_finding_counts_in_the_fix_hunk_or_near_the_fixed_lines_and_not_farther():
+    # #930: within NEAR (10) lines of the fixed lines, or inside the hunk.
     mod = load()
     c = {"expect": "flag", "path": "s.py", "line": 12, "hunk": [10, 26], "fixed": [[20, 24]]}
     find = lambda **f: mod.verdict(c, {"findings": [{"severity": "major", **f}]})
-    assert find(file="s.py", line=20) is True
-    assert find(file="s.py", line=24) is True
-    assert find(file="s.py", line=19) is False
-    assert find(file="s.py", line=25) is False
-    assert find(file="s.py", line=12) is False
+    for n in (10, 12, 19, 20, 24, 25, 34):
+        assert find(file="s.py", line=n) is True, n
+    assert find(file="s.py", line=9) is False
+    assert find(file="s.py", line=35) is False
     assert find(file="t.py", line=22) is False
 
 

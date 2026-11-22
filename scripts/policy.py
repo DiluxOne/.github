@@ -625,7 +625,7 @@ def settings_tests():
     # key is what policy/settings-schema.yml says of it (its `repo:`).
     rules = {"trusted-authors": "any", "issue-gate.required": "stricter", "issue-gate.label": "never", "issue-gate.optional": "never",
              "max-changed-lines-untrusted": "lower-only", "docs-paths": "never", "high-risk": "add-only", "review": "any",
-             "budget-usd": "any", "auto-merge": "stricter", "release": "stricter", "auto-allowed": "never",
+             "budget-usd": "any", "review-eval.found-floor": "never", "auto-merge": "stricter", "release": "stricter", "auto-allowed": "never",
              "low-risk-eligible": "add-only", "code": "add-only", "plugin-check": "add-only", "kind-settings": "add-only",
              "files-wait.reads": "never", "files-wait.seconds": "never"}
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

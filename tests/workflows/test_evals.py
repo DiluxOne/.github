@@ -4,6 +4,7 @@ that runs the set of a step a pull request changes, and the docs that say
 how."""
 import importlib.util
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -191,6 +192,8 @@ def run_score(tmp_path, step, results, base):
     shutil.copy(ROOT / "org.yml", root / "org.yml")
     (root / "policy").mkdir()
     shutil.copy(ROOT / "policy" / "issue-schema.yml", root / "policy" / "issue-schema.yml")
+    # The review's found floor: review-eval.py fails without it (#930).
+    shutil.copy(ROOT / "policy" / "review-policy.default.yml", root / "policy" / "review-policy.default.yml")
     (root / "evals" / step).mkdir(parents=True)
     if base is not None:
         # A string is the file's raw text (a corrupt one); anything else, its JSON.
@@ -408,11 +411,16 @@ def test_c2_an_empty_file_list_fails_steps_not_selects_nothing():
 
 
 # C3: the review's gate is review-eval.yml's, exactly: a slack of one case
-# on each count, whatever the baseline (a baseline of found <= 1 keeps it).
+# on each count, and the found floor whatever the baseline (#930).
 
 def old_review_worse(now, base):
     """review-eval.py's worse() as review-eval.yml ran it before #735."""
     why = []
+    # And, since #930, the found floor whatever the baseline, the policy's
+    # review-eval.found-floor share of the flag cases.
+    share = yaml.safe_load((ROOT / "policy" / "review-policy.default.yml").read_text(encoding="utf-8"))["review-eval"]["found-floor"]
+    if now["found"] < max(1, math.ceil(round(share * now["flag"], 9))):
+        why.append("floor")
     if base.get("flag") and now["found"] < base["found"] - 1:
         why.append("found")
     if now["blocked"] > base.get("blocked", 0) + 1:
