@@ -765,6 +765,11 @@ jobs:
           rank() { case "$1" in low) echo 0;; medium) echo 1;; *) echo 2;; esac; }
           if [ "$MODE" = reuse ] || [ "$MODE" = capped ]; then
             risk=$(jq -r .risk "$previous"); complexity=$(jq -r .complexity "$previous"); blocking=$(jq -r .blocking "$previous")
+            # #928 C4: an older record read as the findings decide (#506),
+            # so one written wrong before (false, with a major) reads right.
+            if decided=$(jq -c '{blocking, findings}' "$previous" | python3 .dx-central/scripts/review-count.py blocking); then
+              blocking=$decided
+            fi
             # jq's // treats false as missing: the boolean is tested, not defaulted.
             dmatch=$(jq -r 'if .description_matches == false then "false" else "true" end' "$previous")
             # The verdict judged one description. A different one now has not
@@ -909,8 +914,10 @@ jobs:
           files=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json files --jq '[.files[].path] | .[:300]' 2>/dev/null || echo '[]')
           # `max` lets the conventions tell a capped review (no new reading
           # will come) from one still to run on a new commit.
-          record=$(jq -c --arg risk "$risk" --arg floor "$FLOOR" --arg sha "$SHA" --arg model "$MODEL" --arg mode "$MODE" --argjson count "$count" --argjson max "${MAX_AUTO:-5}" --arg cost "${cost:-}" --argjson files "$files" --arg type "$type" --arg text "$text" \
-            '{risk:$risk, model_risk:.risk, floor:$floor, complexity, blocking, type:$type, description_matches:.description_matches, text:$text, lessons, findings:[.findings[] | del(.detail)], verification:(.verification // null), criteria:(.criteria // []), sha:$sha, model:$model, mode:$mode, count:$count, max:$max, cost:$cost, files:$files}' <<<"$OUT")
+          # #928 C4: the record's `blocking` is the one decided above, the
+          # heading's and the step's, never the model's own boolean.
+          record=$(jq -c --arg risk "$risk" --arg floor "$FLOOR" --arg sha "$SHA" --arg model "$MODEL" --arg mode "$MODE" --argjson count "$count" --argjson max "${MAX_AUTO:-5}" --arg cost "${cost:-}" --argjson files "$files" --arg type "$type" --arg text "$text" --argjson blocking "$blocking" \
+            '{risk:$risk, model_risk:.risk, floor:$floor, complexity, blocking:$blocking, type:$type, description_matches:.description_matches, text:$text, lessons, findings:[.findings[] | del(.detail)], verification:(.verification // null), criteria:(.criteria // []), sha:$sha, model:$model, mode:$mode, count:$count, max:$max, cost:$cost, files:$files}' <<<"$OUT")
           body=$(cat <<EOF
           <!-- dx-review -->
           ### Claude review · risk **$risk** · complexity **$complexity** · type **$type**$blk
