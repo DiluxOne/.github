@@ -50,8 +50,9 @@ name: Autopilot
 #                   free, and it stops). A branch that moved on GitHub while
 #                   the agent worked (the sweep's merge of main, a person's
 #                   push) gets the agent's commits replayed on top when they
-#                   apply cleanly, and is refused only when they do not
-#                   (#934).
+#                   apply cleanly, and is refused only when they do not;
+#                   a refusal still posts the agent's question or stop
+#                   comment on the pull request (#934).
 #                   A maintainer's answer after a stop or a silent end
 #                   brings it back the same way: review-reply.yml takes
 #                   `needs-human` off and dilux-bot adds the continue (#561),
@@ -1997,8 +1998,15 @@ jobs:
                   fi
                   git worktree remove --force "$replay" || true
                 fi
+                # #934 C3: refused, the agent's final words (its question
+                # or its stop) still reach the pull request, and the end
+                # rule reads them as its own end; nothing else is applied.
+                final_words() {
+                  python3 .dx-central/scripts/autopilot.py apply .dx-out/outbox.jsonl +ask,stop \
+                    || echo "::warning::The agent's question or stop could not be posted (the log says why)."
+                }
                 if [ -z "$replayed" ]; then
-                  echo "refused=diverged" >> "$GITHUB_OUTPUT"; echo "::error::The agent's commits do not build on $BRANCH as GitHub has it: nothing is pushed."; exit 1
+                  echo "refused=diverged" >> "$GITHUB_OUTPUT"; echo "::error::The agent's commits do not build on $BRANCH as GitHub has it: nothing is pushed."; final_words; exit 1
                 fi
                 new=$replayed
                 echo "$BRANCH moved on GitHub while the agent worked: its $(git rev-list --count "origin/$BRANCH..$new") commit(s) are replayed on top."
