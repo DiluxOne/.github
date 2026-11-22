@@ -1459,6 +1459,8 @@ jobs:
       # #928 C1: whether the agent's own `make pre-pr` passed at that head.
       checked: ${{ steps.left.outputs.checked }}
       base: ${{ steps.task.outputs.base }}
+      # #934: the head the agent started from, for apply's replay.
+      start: ${{ steps.task.outputs.start }}
     steps:
       # The working tree, with the job's token, which only reads; nothing
       # keeps it. A reproduced bug's test was written from an outsider's
@@ -1940,6 +1942,8 @@ jobs:
           # #699 C3: a fix round after a failed conventions check, as prep
           # read it (never the agent's word), may reword its own commits.
           REWORD_OK: ${{ needs.prep.outputs.mode == 'fix' && needs.prep.outputs.conventions == 'true' }}
+          # #934: the head the agent started from (work's `start`).
+          START: ${{ needs.work.outputs.start }}
           DEFAULT: ${{ github.event.repository.default_branch }}
           # #673: `verify`'s verdict (pass, fail, timeout; lost when it ended
           # without one), empty when it did not run. When it ran, `ready`
@@ -1982,16 +1986,19 @@ jobs:
               else
                 # #934 C2: the branch moved on GitHub while the agent
                 # worked (the sweep merged main, a person pushed): the
-                # agent's own commits, from the head it started from, are
-                # replayed on top when they apply cleanly (a rebase, in a
-                # worktree of its own; a merge of the agent's is dropped:
-                # api-commit.py pushes no merge but one of main, #550).
-                # Only when they do not is the round refused.
+                # agent built on the head it started from (START), and
+                # GitHub's branch still holds that head, so the agent's own
+                # commits are replayed on top when they apply cleanly (a
+                # rebase, in a worktree of its own; a merge of the agent's
+                # is dropped: api-commit.py pushes no merge but one of
+                # main, #550). A rewrite of the branch's history, or
+                # commits that do not apply, are refused.
                 replayed=""
-                fork=$(git merge-base "origin/$BRANCH" "$new") || fork=""
                 replay="$RUNNER_TEMP/dx-replay"
-                if [ -n "$fork" ] && git worktree add -q --detach "$replay" "$new"; then
-                  if git -C "$replay" rebase -q --onto "origin/$BRANCH" "$fork" >/dev/null 2>&1; then
+                if [ -n "${START:-}" ] && git merge-base --is-ancestor "$START" "$new" 2>/dev/null \
+                  && git merge-base --is-ancestor "$START" "origin/$BRANCH" 2>/dev/null \
+                  && git worktree add -q --detach "$replay" "$new"; then
+                  if git -C "$replay" rebase -q "origin/$BRANCH" >/dev/null 2>&1; then
                     replayed=$(git -C "$replay" rev-parse HEAD)
                   else
                     git -C "$replay" rebase --abort >/dev/null 2>&1 || true

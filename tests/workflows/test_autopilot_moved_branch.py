@@ -42,10 +42,11 @@ def commit(cwd, path, text, msg):
     git(cwd, "commit", "-q", "-m", msg)
 
 
-def round_on_moved_branch(tmp_path, conflict):
+def round_on_moved_branch(tmp_path, conflict, rewrite=False):
     """The agent commits on BRANCH; meanwhile main moves and is merged into
     BRANCH on GitHub (the sweep's update-branch). With CONFLICT, main's change
-    and the agent's touch the same line."""
+    and the agent's touch the same line; with REWRITE, the agent also
+    rewrote the head it started from."""
     origin, seed, agent, work = (tmp_path / d for d in ("origin.git", "seed", "agent", "work"))
     git(tmp_path, "init", "-q", "--bare", str(origin))
     git(tmp_path, "clone", "-q", str(origin), str(seed))
@@ -56,6 +57,9 @@ def round_on_moved_branch(tmp_path, conflict):
     git(seed, "push", "-q", "origin", BRANCH)
     # The agent's round, from the branch as it was.
     git(tmp_path, "clone", "-q", "-b", BRANCH, str(origin), str(agent))
+    start = git(agent, "rev-parse", "HEAD")
+    if rewrite:
+        git(agent, "commit", "-q", "--amend", "--allow-empty", "-m", "chore(autopilot): start on #7, reworded")
     if conflict:
         commit(agent, "a.txt", "agent\n", "fix: the agent's line (C1)")
     else:
@@ -88,7 +92,7 @@ def round_on_moved_branch(tmp_path, conflict):
                     files={".dx-central/scripts/autopilot.py": FAKE, ".dx-central/scripts/api-commit.py": FAKE},
                     env={"BRANCH": BRANCH, "DEFAULT": "main", "ENGINE": "false", "NUMBER": "7", "PR": "8",
                          "REWORD_OK": "false", "PREPR": "", "GH_TOKEN": "x", "DX_BOT_LOGIN": "dilux-bot[bot]",
-                         "DX_BOT_ID": "1", "DX_PUSHED": str(pushed), "GIT_CONFIG_GLOBAL": "/dev/null"})
+                         "DX_BOT_ID": "1", "DX_PUSHED": str(pushed), "START": start, "GIT_CONFIG_GLOBAL": "/dev/null"})
     return ran, work, moved, agent_head, pushed
 
 
@@ -121,3 +125,12 @@ def test_commits_that_do_not_apply_are_refused_and_the_question_still_posted(tmp
     assert applies == [["autopilot.py", "apply", ".dx-out/outbox.jsonl", "+ask,stop"]]
     # The repository is left as it was: no rebase in progress.
     assert not (work / ".git" / "rebase-merge").exists() and not (work / ".git" / "rebase-apply").exists()
+
+
+def test_a_rewrite_of_the_head_it_started_from_is_still_refused(tmp_path):
+    # Replayed, it would apply cleanly; but the agent rewrote the branch's
+    # history, which only a conventions fix round may do (#699).
+    ran, work, moved, agent_head, pushed = round_on_moved_branch(tmp_path, conflict=False, rewrite=True)
+    assert ran.code == 1, ran.stdout + ran.stderr
+    assert ran.output.get("refused") == "diverged"
+    assert ["autopilot.py", "push"] not in ran.calls and not pushed.exists()
