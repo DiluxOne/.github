@@ -39,7 +39,7 @@ class World:
     nothing, as it did on GitHub; the REST DELETE takes the label off,
     unless `stuck`."""
 
-    def __init__(self, tmp_path, monkeypatch, stuck=False, issue_label=True):
+    def __init__(self, tmp_path, monkeypatch, stuck=False, issue_label=True, stuck_on=("7", "8")):
         self.fx = tmp_path / "fx"
         self.fx.mkdir()
         self.calls = []
@@ -65,7 +65,7 @@ class World:
                 n = re.search(r"/issues/(\d+)/", a[3]).group(1)
                 if "needs-human" not in self.labels[n]:
                     raise RuntimeError("gh: Label does not exist (HTTP 404)")
-                if stuck:
+                if stuck and n in stuck_on:
                     raise RuntimeError("gh: Server Error (HTTP 502)")
                 self.labels[n].discard("needs-human")
             if a[:2] == ["issue", "edit"] and "--add-label" in a:
@@ -122,3 +122,13 @@ def test_c2_a_label_that_does_not_come_off_undoes_the_extension_and_says_so(tmp_
     said = w.replies()
     assert said and "It continues now" not in said[-1]
     assert "needs-human" in said[-1] and "could not come off" in said[-1]
+
+
+def test_c2_a_label_stuck_on_the_issue_leaves_the_stop_on_the_pull_request(tmp_path, monkeypatch):
+    w = World(tmp_path, monkeypatch, stuck=True, stuck_on=("7",))
+    w.more()
+    assert "autopilot:continue" not in w.labels["7"], w.calls
+    assert not board(w.fx, 8).get("extensions")
+    # Still a stop a maintainer answers, where it was.
+    assert "needs-human" in w.labels["8"]
+    assert "could not come off #7" in w.replies()[-1]

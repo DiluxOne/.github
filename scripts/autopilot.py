@@ -6795,6 +6795,13 @@ def main(argv):
             # Nothing would continue: the extension is undone, so the same
             # `/autopilot more` again extends it, and the reply says why.
             set_board(repo, target, "pr", extensions=extensions(st) or None)
+            # The stop stays one a maintainer answers: back on the pull
+            # request when it came off there and not on the issue.
+            if stuck != target:
+                try:
+                    gh("pr", "edit", target, "--repo", repo, "--add-label", "needs-human")
+                except RuntimeError as err:
+                    print(f"::warning::needs-human could not go back on #{target}: {err}")
             return reply("stuck", pr=stuck)
         subprocess.run(["gh", "label", "create", "autopilot:continue", "--repo", repo, "--color", "1D76DB", "--force",
                         "--description", "On an issue: the autopilot continues its draft pull request"], capture_output=True)
