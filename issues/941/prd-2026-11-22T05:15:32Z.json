@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 941,
+  "prd_sha256": "8c954be6f5e2436f72c00717bdc9f39b149fee803aac92cf74a7cab187795611",
+  "prd": "### Problem\n\nThe engine spends most of its model use testing itself, not working. In the 24 hours to 2026-11-22 04:00 UTC, of the model minutes of every AI job in DiluxOne/.github and DiluxOne/diluxone-test, the AI evaluation (evals.yml: whole autopilot and Spec replays with Opus) took 65% (2,721 min, 180 jobs) and the review evaluation (review-eval.yml: 3 plays of 20 reviews) 21% (888 min, 45 jobs), while the autopilot's real work on issues took 8% (351 min). Both evaluations run on every push to any pull request that touches an AI step's paths, including a push that only merges main: #925's ran 7 times, #930's 5. A Max subscription's 5-hour limit was spent in about an hour.\n\n### Scope\n\n- evals.yml and review-eval.yml no longer run on pull requests; they run once a week on main and by hand (workflow_dispatch).\n- The autopilot's replay runs one fix round, not the production's `autopilot-rounds` (5).\n- Tests and docs in step.\n\n### Out of scope\n\n- What the evaluations check, their sets and baselines.\n- The release lane, which stays after every merge to main: it spends little, since its autopilot calls no model.\n- The review of each pull request.\n\n### Acceptance criteria\n\n- C1: Given a pull request that touches an AI step's paths, when it is pushed, then neither evals.yml nor review-eval.yml starts.\n- C2: Given an autopilot case of the evaluation whose review blocks, when it is replayed, then it runs one fix round and is graded.\n\n### Criticality\n\nCritical",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-22T05:15:32Z",
+  "policy": "DiluxOne/.github@bccc24fef2c8"
+}
