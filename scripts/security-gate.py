@@ -297,7 +297,7 @@ def from_gitleaks(report, sev):
         out.append({"tool": "gitleaks", "rule": "gitleaks." + str(f.get("RuleID") or "secret"), "file": f.get("File") or "",
                     "line": int(f.get("StartLine") or 0), "severity": level(sev, "default"),
                     "message": clean(f.get("Description") or "A secret"),
-                    "fix": "Remove the secret from the change, revoke and rotate it, and read it from the environment or a secret store."})
+                    "fix": "Take it out, rotate it, and read it from the environment or a secret store."})
     return out
 
 
@@ -551,20 +551,23 @@ def ordered(findings):
 
 
 def line_of(f):
-    where = f"{clean(f.get('file'), 200)}:{int(f.get('line') or 0)}"
-    out = f"- [{f.get('severity')}] {where} {clean(f.get('rule'), 150)} ({f.get('tool')}, {f.get('status')})\n"
-    out += f"  {clean(f.get('message'))}\n  Fix: {clean(f.get('fix'))}\n"
+    """One finding in two lines: its level, file, line, rule, tool, status
+    and fingerprint (what a suppression names), then what it is and its
+    fix, each cut short. Pure."""
+    where = f"{clean(f.get('file'), 160)}:{int(f.get('line') or 0)}"
+    out = (f"- [{f.get('severity')}] {where} {clean(f.get('rule'), 120)} ({f.get('tool')}, {f.get('status')})"
+           f" fp {clean(f.get('fingerprint'), 12)}\n")
+    out += f"  {clean(f.get('message'), 90)} Fix: {clean(f.get('fix'), 100)}\n"
     if f.get("status") == "suppressed":
-        out += f"  Suppressed: {clean(f.get('reason'))}\n"
-    if f.get("status") == "new":
-        out += f"  Suppression: {{ rule: {clean(f.get('rule'), 150)}, file: {clean(f.get('file'), 200)}, fingerprint: {f.get('fingerprint')}, reason: … }}\n"
+        out += f"  Suppressed: {clean(f.get('reason'), 120)}\n"
     return out
 
 
 def report(result, caps=None):
     """The capped report: a head line, then the most severe findings, each
     with its file, line, rule, severity and fix, at most `findings` of them
-    and `bytes` in all, then how many more. Pure."""
+    and `bytes` in all, then how many more. A suppression names the rule,
+    the file and the fingerprint (`fp`) shown. Pure."""
     caps = caps or result.get("caps") or {}
     limit, size = int(caps.get("findings") or 30), int(caps.get("bytes") or 8192)
     findings = ordered(result.get("findings") or [])

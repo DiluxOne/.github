@@ -182,7 +182,7 @@ def test_c1_make_pre_pr_names_each_finding_with_its_file_line_rule_and_fix(tmp_p
     # Each finding says how to fix it.
     findings = [line for line in out.splitlines() if line.startswith("- [")]
     assert len(findings) >= 4
-    assert out.count("  Fix: ") == len(findings)
+    assert out.count(" Fix: ") == len(findings)
     if kind is None:
         assert ran.returncode == 0, out
 
@@ -242,3 +242,46 @@ def test_c3_the_setting_decides_in_make_pre_pr_and_in_the_pull_requests_check(tm
         assert {c[0] for c in calls(tmp_path)} == {"gitleaks", "semgrep", "osv-scanner", "zizmor"}
         # The check's report reaches the job summary too.
         assert "Security gate (" + mode + ")" in (tmp_path / "wf" / "summary").read_text()
+
+
+def recorded_findings():
+    """The four tools' recorded findings, read as the gate reads them."""
+    spec = __import__("importlib.util").util.spec_from_file_location("security_gate_c5", GATE)
+    mod = __import__("importlib.util").util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    sev = mod.load_policy()["severities"]
+    load = lambda name: json.loads((FIXTURES / f"{name}.json").read_text())  # noqa: E731
+    return mod, (mod.from_gitleaks(load("gitleaks"), sev["gitleaks"]) + mod.from_semgrep(load("semgrep"), sev["semgrep"])
+                 + mod.from_osv(load("osv-scanner"), sev["osv-scanner"]) + mod.from_zizmor(load("zizmor"), sev["zizmor"]))
+
+
+def test_c5_more_than_30_findings_give_the_30_most_severe_and_the_count_of_the_rest_within_8_kb(tmp_path):
+    assert GATE.is_file(), "scripts/security-gate.py is the gate"
+    mod, recorded = recorded_findings()
+    assert {f["severity"] for f in recorded} >= {"critical", "high", "medium"}
+    # 45 findings: the recorded ones, again and again on further lines.
+    many = []
+    for i in range(45):
+        f = dict(recorded[i % len(recorded)])
+        f.update(line=f["line"] + 100 * (i // len(recorded)), status="new", fingerprint=f"{i:012x}")
+        many.append(f)
+    path = tmp_path / "security-gate.json"
+    path.write_text(json.dumps({"mode": "report", "findings": many, "blocking": [], "caps": {"findings": 30, "bytes": 8192}}))
+    out = subprocess.run([sys.executable, str(GATE), "report", str(path)], capture_output=True, text=True, check=True).stdout
+    assert len(out.encode("utf-8")) <= 8192, len(out.encode("utf-8"))
+    shown = [line for line in out.splitlines() if line.startswith("- [")]
+    assert len(shown) == 30, out
+    assert "15 more not shown" in out
+    rank = ["critical", "high", "medium", "low"]
+    levels = [rank.index(line[3:].split("]")[0]) for line in shown]
+    assert levels == sorted(levels), "the most severe first"
+    every = sorted(rank.index(f["severity"]) for f in many)
+    assert levels == every[:30], "the 30 most severe"
+    # Each one shown still names its file, line, rule and fix.
+    assert out.count(" Fix: ") == 30
+    # Whatever their size, the report stays within 8 KB and says how many more.
+    huge = [dict(f, message="m" * 5000, fix="f" * 5000, rule="r" * 400) for f in many]
+    path.write_text(json.dumps({"mode": "block", "findings": huge, "blocking": [], "caps": {"findings": 30, "bytes": 8192}}))
+    big = subprocess.run([sys.executable, str(GATE), "report", str(path)], capture_output=True, text=True, check=True).stdout
+    kept = sum(1 for line in big.splitlines() if line.startswith("- ["))
+    assert len(big.encode("utf-8")) <= 8192 and f"{45 - kept} more not shown" in big
