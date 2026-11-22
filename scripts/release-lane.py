@@ -17,7 +17,9 @@ in the test repository; a breaking change waits on a person.
         scenarios would otherwise try vN's), checked to differ from main in
         nothing else, made through the API with GH_TOKEN (scripts/api-
         commit.py, so GitHub signs it: never `git commit` and a push from
-        the runner, #610), and the lightweight `vN-next` tag moved to it
+        the runner, #610), and the lightweight `vN-next` tag moved to it;
+        a `vN-next` already on such a commit of main's HEAD with the same
+        tree is kept, nothing moved (#929). Prints `vN-next`'s sha
   release-lane.py decide --plan F --results F [--run URL]
         from the plan and the scenarios' results (scripts/release-scenarios.py
         run): `release`, `bug` (one failed: nothing tagged, nothing moved,
@@ -124,6 +126,20 @@ def only_refs_differ(main_files, candidate_files, major):
     return out
 
 
+def same_candidate(root, major, tree, run=sh):
+    """The commit `vN-next` points at when it is the candidate this
+    checkout would build (its parent HEAD, its tree `tree`), else ""."""
+    try:
+        kept = run("git", "-C", root, "rev-parse", "-q", "--verify", f"refs/tags/{major}-next^{{commit}}").strip()
+        if not kept:
+            return ""
+        same = (run("git", "-C", root, "rev-parse", f"{kept}^{{tree}}").strip() == tree
+                and run("git", "-C", root, "rev-parse", f"{kept}^").strip() == run("git", "-C", root, "rev-parse", "HEAD").strip())
+    except RuntimeError:
+        return ""
+    return kept if same else ""
+
+
 def candidate(central, major, root=".", run=sh):
     files = {}
     for path in sorted(glob.glob(os.path.join(root, ".github", "workflows", "*.yml"))):
@@ -147,6 +163,12 @@ def candidate(central, major, root=".", run=sh):
     # runs from the checkout, which in release-lane.yml is `root`.
     run("git", "-C", root, "add", "-u")
     tree = run("git", "-C", root, "write-tree").strip()
+    # #929: a `vN-next` already built on this commit, with this tree, is
+    # the same candidate: kept, no tag moved, so the scenarios it passed
+    # (keyed on main's sha and `vN-next`'s) still count for it.
+    kept = same_candidate(root, major, tree, run)
+    if kept:
+        return kept
     sha = run("git", "-C", root, "commit-tree", tree, "-p", "HEAD", "-m", f"chore: release candidate, inner calls at @{major}-next").strip()
     run("git", "-C", root, "reset", "-q", "--soft", sha)
     run(sys.executable, os.path.join(HERE, "api-commit.py"), "push", CANDIDATE, "--onto", "HEAD~1", "--force")
@@ -831,18 +853,19 @@ def check_workflow(check, path=os.path.join(ROOT, ".github", "workflows", "relea
     # The move and back jobs wait on the callers pull request's checks with
     # the token each passes as DX_CALLERS_TOKEN: that token reads them (#627).
     used, minted = [], []
-    for job in ("move", "back"):
+    for job in ("move", "play", "back"):
         steps = jobs.get(job, {}).get("steps") or []
         mine = {st.get("id"): st.get("with") or {} for st in steps if "create-github-app-token" in str(st.get("uses"))}
         minted += list(mine.values()) or [{}]
         waits = [(st.get("env") or {}).get("DX_CALLERS_TOKEN") for st in steps if re.search(r"release-scenarios\.py (move|back)\b", str(st.get("run")))]
         used += [mine.get(m.group(1)) if (m := re.fullmatch(r"\$\{\{ steps\.([\w-]+)\.outputs\.token \}\}", str(w))) else None for w in waits] or [None]
-    check("workflow: the waits on the callers pull request, move's and back's, each use a token of its own job (#627)", len(used) == 2 and all(t is not None for t in used), True)
+    check("workflow: the waits on the callers pull request, move's, a re-run play job's (#929) and back's, each use a token of its own job (#627)",
+          len(used) == 3 and all(t is not None for t in used), True)
     check("workflow: the waits' tokens read the checks and the statuses (#627)",
-          [(t or {}).get("permission-checks") == "read" and (t or {}).get("permission-statuses") == "read" for t in used], [True, True])
+          [(t or {}).get("permission-checks") == "read" and (t or {}).get("permission-statuses") == "read" for t in used], [True, True, True])
     check("workflow: the waits' tokens are the test repository's alone (#627)",
-          [(t or {}).get("repositories") for t in used], ["${{ steps.test.outputs.repo }}"] * 2)
-    check("workflow: every App token of the move and back jobs asks for checks: read and statuses: read (#627)",
+          [(t or {}).get("repositories") for t in used], ["${{ steps.test.outputs.repo }}"] * 3)
+    check("workflow: every App token of the move, play and back jobs asks for checks: read and statuses: read (#627)",
           all(t.get("permission-checks") == "read" and t.get("permission-statuses") == "read" for t in minted), True)
     # The test identity (#739): the move job checks DX_TEST_LOGIN against
     # its token's owner before the callers move, so nothing plays when it differs.
@@ -861,11 +884,31 @@ def check_workflow(check, path=os.path.join(ROOT, ".github", "workflows", "relea
     check("#707 workflow: play runs on GitHub's runners, never DX_RUNNER_HEAVY, where the test repository's jobs it waits for run",
           play.get("runs-on"), "ubuntu-latest")
     needs = lambda job: [jobs.get(job, {}).get("needs")] if isinstance(jobs.get(job, {}).get("needs"), str) else jobs.get(job, {}).get("needs") or []
-    check("workflow: play needs move, and plays only once the callers moved", ("move" in needs("play"), play.get("if")), (True, "needs.move.outputs.moved == 'true'"))
+    check("workflow: play needs move, and plays only once the callers moved, and only a group left to play (#929)", ("move" in needs("play"), play.get("if")),
+          (True, "needs.move.outputs.moved == 'true' && needs.move.outputs.groups != '[]'"))
+    # #929: the candidate's key reaches the groups and the act steps, and
+    # the act job leaves its table for the next lane on the same candidate.
+    gstep = next((st for st in jobs.get("move", {}).get("steps") or [] if st.get("id") == "groups"), {})
+    astep = next((st for st in jobs.get("act", {}).get("steps") or [] if st.get("id") == "act"), {})
+    key = {"SHA": "${{ needs.plan.outputs.sha }}", "NEXT": "${{ needs.candidate.outputs.next }}"}
+    check("#929 workflow: the groups and act steps read the candidate's key, main's sha and v7-next's",
+          ([(gstep.get("env") or {}).get(k) for k in key], [(astep.get("env") or {}).get(k) for k in key]), (list(key.values()), list(key.values())))
+    check("#929 workflow: the move job reads its own repository's earlier runs, and nothing more",
+          (jobs.get("move", {}).get("permissions"), (gstep.get("env") or {}).get("GH_TOKEN")), ({"contents": "read", "actions": "read"}, "${{ github.token }}"))
+    check("#929 workflow: act uploads scenarios-results whatever it decided",
+          [(st.get("with") or {}).get("name") for st in jobs.get("act", {}).get("steps") or [] if "upload-artifact" in str(st.get("uses")) and st.get("if") == "always()"],
+          ["scenarios-results"])
     psteps = play.get("steps") or []
-    check("workflow: play mints no App token: the test identity's tokens alone (#694: its fork token, for the scenario from a fork)",
-          ([st for st in psteps if "create-github-app-token" in str(st.get("uses"))], [v for st in psteps for k, v in (st.get("env") or {}).items() if "token" in str(v).lower() or "TOKEN" in k]),
-          ([], ["${{ secrets.DX_TEST_TOKEN }}", "${{ secrets.DX_TEST_FORK_TOKEN }}"]))
+    # #929: on a re-run alone, play mints the callers' App token, used by
+    # its own step that moves them again, never by the scenarios.
+    papp = [st for st in psteps if "create-github-app-token" in str(st.get("uses"))]
+    check("#929 workflow: play mints an App token on a re-run alone, for the callers' move, never the scenarios'",
+          ([(st.get("id"), st.get("if")) for st in papp], [st.get("id") for st in psteps if "steps.callers.outputs.token" in json.dumps(st.get("env") or {})],
+           [st.get("if") for st in psteps if st.get("id") == "rerun"]),
+          ([("callers", "github.run_attempt != '1'")], ["rerun"], ["github.run_attempt != '1'"]))
+    check("workflow: the play step holds the test identity's tokens alone (#694: its fork token, for the scenario from a fork)",
+          [v for st in psteps if st.get("id") == "play" for k, v in (st.get("env") or {}).items() if "token" in str(v).lower() or "TOKEN" in k],
+          ["${{ secrets.DX_TEST_TOKEN }}", "${{ secrets.DX_TEST_FORK_TOKEN }}"])
     check("workflow: back needs play and runs under always(), so the callers come back whatever the groups did",
           ("play" in needs("back"), "always()" in str(jobs.get("back", {}).get("if"))), (True, True))
     check("workflow: act reads the move, the play and the back jobs", {"move", "play", "back"} <= set(needs("act")), True)
@@ -947,6 +990,18 @@ def self_test():
         check("candidate: no branch is pushed from the runner (#610)", [c for c in words if c[:1] == ["git"] and "push" in c and any(a.startswith("refs/heads/") or a.startswith("HEAD:") for a in c)], [])
         check("candidate: its commit goes through the API, signed (#610)", [c[2:] for c in words if c[1:2] and c[1].endswith("api-commit.py")], [["push", CANDIDATE, "--onto", "HEAD~1", "--force"]])
         check("candidate: v7-next is moved at the signed commit", fake.has("git", "-C", root, "push", "-f", "origin", "refs/tags/v7-next"), True)
+        # #929: v7-next already on a commit of this HEAD with this tree is kept.
+        def main_again():
+            with open(os.path.join(root, ".github", "workflows", "a.yml"), "w", encoding="utf-8") as fh:
+                fh.write("on:\n  workflow_call:\n" + text)
+        main_again()
+        same = Fake({"write-tree": "T\n", "v7-next^{commit}": "K\n", "K^{tree}": "T\n", "rev-parse K^": "M\n", "rev-parse HEAD": "M\n"})
+        check("#929 candidate: the same candidate keeps v7-next, pushes nothing and prints it",
+              (candidate(central, "v7", root=root, run=same), [c for c in same.calls if "push" in c]), ("K", []))
+        other = Fake({"write-tree": "T\n", "v7-next^{commit}": "K\n", "K^{tree}": "U\n", "rev-parse K^": "M\n", "rev-parse HEAD": "M\n"})
+        main_again()
+        candidate(central, "v7", root=root, run=other)
+        check("#929 candidate: another tree is a new candidate, v7-next moved to it", other.has("git", "-C", root, "push", "-f", "origin", "refs/tags/v7-next"), True)
 
     passed = [{"id": "issue-complete", "ok": True, "why": [], "run": "https://github.com/o/t/actions/runs/1"},
               {"id": "spec-to-draft", "ok": True, "why": [], "run": "https://github.com/o/t/actions/runs/2"}]
@@ -1227,7 +1282,10 @@ def self_test():
             ("fail-fast", lambda j: j["play"]["strategy"].update({"fail-fast": True}), "matrix"),
             ("one runner for every group", lambda j: j["play"].update({"runs-on": "self-hosted"}), "DX_RUNNER_HEAVY"),
             ("play before the move", lambda j: j["play"].update({"needs": ["plan"]}), "play needs move"),
-            ("an App token in play", lambda j: j["play"]["steps"].insert(0, app), "no App token"),
+            ("another App token in play", lambda j: j["play"]["steps"].insert(0, app), "re-run alone"),
+            ("play's App token on every attempt", lambda j: next(s for s in j["play"]["steps"] if s.get("id") == "callers").pop("if"), "re-run alone"),
+            ("the callers' token in the play step", lambda j: next(s for s in j["play"]["steps"] if s.get("id") == "play")["env"].update({"DX_CALLERS_TOKEN": "${{ steps.callers.outputs.token }}"}),
+             "re-run alone"),
             ("back only when play passed", lambda j: j["back"].update({"if": "needs.move.result != 'skipped'"}), "always()"),
             ("back before play", lambda j: j["back"].update({"needs": ["plan", "move"]}), "back needs play"),
             ("back's token without statuses", lambda j: next(s for s in j["back"]["steps"] if s.get("id") == "back")["with"].pop("permission-statuses"), "statuses"),
