@@ -34,7 +34,8 @@ if '"verdicts"' in schema:
     out = {"verdicts": [{"i": 0, "real": os.environ.get("FAKE_REAL", "true") == "true", "why": "a.py:3"}]}
 else:
     out = {"risk": "low", "complexity": "low", "blocking": True, "type": "fix", "description_matches": True, "summary": "s",
-           "findings": [{"severity": "major", "file": "a.py", "line": 3, "title": "t", "detail": "d"}], "lessons": [], "resolved_threads": []}
+           "findings": [{"severity": "major", "file": "a.py", "line": 3, "title": "t", "detail": "d"}], "lessons": [], "resolved_threads": [],
+           "examined": [{"file": "a.py", "checked": "the change of line 3"}]}
 print(json.dumps({"structured_output": out}))
 '''
 

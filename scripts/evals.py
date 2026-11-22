@@ -131,6 +131,7 @@ REVIEW_PATHS = (
     "scripts/review-brief.sh",
     "scripts/local-review.sh",
     "scripts/review-verify.py",
+    "scripts/review-examined.py",
     "scripts/review-count.py",
     "scripts/review-eval.py",
     "scripts/policy.py",

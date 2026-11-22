@@ -15,7 +15,9 @@ says `review: model` in tests/release/scenarios.yml and keeps the model's.
         Environment: FIXED (autopilot.py fixed: the fixed change's file,
         empty outside the test repository), REPO, PR, TITLE, FLOOR (the
         policy floor: low, medium or high), SCENARIOS (tests/release/
-        scenarios.yml of the engine's checkout), GH_TOKEN.
+        scenarios.yml of the engine's checkout), SHOWN (the brief's
+        shown-files.txt: the answer examines each of its files, #953),
+        GH_TOKEN.
   fixed-review.py --test     self-test
 
 A read that fails gives `hit=false`: the model reviews, as before.
@@ -89,8 +91,9 @@ def criteria(issue_body):
     return CRITERION.findall(text[at:end if end > 0 else None])
 
 
-def answer(sid, title, floor, ids):
-    """The fixed review's answer, in the schema the model answers in. Pure."""
+def answer(sid, title, floor, ids, shown=()):
+    """The fixed review's answer, in the schema the model answers in, with
+    an `examined` entry for each of the brief's shown files (#953). Pure."""
     risk = floor if floor in ("low", "medium", "high") else "high"
     return {
         "risk": risk, "complexity": "low", "blocking": False, "type": title_type(title),
@@ -98,7 +101,15 @@ def answer(sid, title, floor, ids):
         "summary": f"Fixed review (#943): the release scenario `{sid}` does not test the review, so no model reviewed this pull request in the test repository. Risk is the policy floor.",
         "findings": [], "lessons": [], "resolved_threads": [],
         "criteria": [{"id": c, "met": True, "evidence": f"fixed review of scenario {sid} (#943)"} for c in ids],
+        "examined": [{"file": f, "checked": "fixed review (#943)"} for f in shown],
     }
+
+
+def shown_files(path):
+    """The brief's shown files, one path per line (#953). Raises when the
+    list cannot be read, so the model reviews."""
+    with open(path, encoding="utf-8") as fh:
+        return [line.strip() for line in fh if line.strip()]
 
 
 def gh_json(*args):
@@ -124,7 +135,7 @@ def decide(env, read=gh_json, load=None):
                 continue
             if keeps_model(scenarios, sid):
                 return False, None
-            return True, answer(sid, env.get("TITLE", ""), env.get("FLOOR", ""), criteria(issue))
+            return True, answer(sid, env.get("TITLE", ""), env.get("FLOOR", ""), criteria(issue), shown_files(env["SHOWN"]))
     except Exception as e:  # a failed read: the model reviews, as before
         print(f"::notice::fixed review: {str(e)[:200]}; the model reviews", file=sys.stderr)
     return False, None
@@ -162,8 +173,15 @@ def test():
                 return v
         raise RuntimeError("404")
 
-    env = {"FIXED": "scenarios/{scenario}/{n}.test.md", "REPO": "o/t", "PR": "7", "TITLE": "feat: a greeting", "FLOOR": "medium", "SCENARIOS": "x"}
+    import tempfile
+    shown = os.path.join(tempfile.mkdtemp(), "shown-files.txt")
+    with open(shown, "w", encoding="utf-8") as fh:
+        fh.write("a.py\n\nlib/b.py\n")
+    env = {"FIXED": "scenarios/{scenario}/{n}.test.md", "REPO": "o/t", "PR": "7", "TITLE": "feat: a greeting", "FLOOR": "medium", "SCENARIOS": "x", "SHOWN": shown}
     hit, ans = decide(env, read, lambda p: scen)
+    check("it examines each of the brief's shown files (#953)", [e["file"] for e in ans["examined"]], ["a.py", "lib/b.py"])
+    check("an unreadable list of shown files: the model", decide(dict(env, SHOWN=shown + ".none"), read, lambda p: scen), (False, None))
+    check("no list of shown files: the model", decide({k: v for k, v in env.items() if k != "SHOWN"}, read, lambda p: scen), (False, None))
     check("a scenario that does not test the review: fixed, no model", hit, True)
     check("its risk is the floor, not blocking, matching", (ans["risk"], ans["blocking"], ans["description_matches"], ans["type"]), ("medium", False, True, "feat"))
     check("its criteria are the PRD's, met", [c["id"] for c in ans["criteria"] if c["met"]], ["C1", "C2"])
