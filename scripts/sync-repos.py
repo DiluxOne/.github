@@ -4369,7 +4369,8 @@ def dependabot_test(check, conf, labels, block):
         check("#479 C1: one with a Makefile keeps its own rules, the include last (its default goal kept)",
               wrote["own"].get("Makefile") == "check:\n\tphpunit\n\ninclude dx.mk\n", wrote["own"].get("Makefile"))
         check("#479 C1: one whose own pre-pr has a recipe gets dx.mk, its Makefile left as it is", sorted(wrote["recipe"]) == ["dx.mk"], wrote["recipe"])
-        check("#479 C1: a repository of no kind gets nothing", wrote["no kind"] == {}, wrote["no kind"])
+        check("#956: a repository of no kind gets dx.mk, the security gate's, and the include",
+              (wrote["no kind"].get("dx.mk") == pre_pr_mod.render_kind(None), wrote["no kind"].get("Makefile")) == (True, "include dx.mk\n"), wrote["no kind"])
     finally:
         globals()["gh"], ORG, globals()["listed"] = saved_gh, saved_org, saved_listed
     check("C3 (#178): a missing one is", any(f"`{DEPENDABOT}` is missing" in l for l in missing), missing)

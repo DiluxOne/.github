@@ -1,0 +1,105 @@
+{
+ "results": [
+  {
+   "source": {
+    "path": "package-lock.json",
+    "type": "lockfile"
+   },
+   "packages": [
+    {
+     "package": {
+      "name": "minimist",
+      "version": "1.2.5",
+      "ecosystem": "npm",
+      "purl": "pkg:npm/minimist@1.2.5?source=PUBLIC_REGISTRY"
+     },
+     "groups": [
+      {
+       "ids": [
+        "GHSA-xvch-5gv4-984h"
+       ],
+       "aliases": [
+        "CVE-2021-44906",
+        "GHSA-xvch-5gv4-984h"
+       ],
+       "max_severity": "9.8"
+      }
+     ],
+     "vulnerabilities": [
+      {
+       "affected": [
+        {
+         "package": {
+          "ecosystem": "npm",
+          "name": "minimist",
+          "purl": "pkg:npm/minimist"
+         },
+         "ranges": [
+          {
+           "events": [
+            {
+             "introduced": "1.0.0"
+            },
+            {
+             "fixed": "1.2.6"
+            }
+           ],
+           "type": "SEMVER"
+          }
+         ]
+        },
+        {
+         "package": {
+          "ecosystem": "npm",
+          "name": "minimist",
+          "purl": "pkg:npm/minimist"
+         },
+         "ranges": [
+          {
+           "events": [
+            {
+             "introduced": "0"
+            },
+            {
+             "fixed": "0.2.4"
+            }
+           ],
+           "type": "SEMVER"
+          }
+         ]
+        }
+       ],
+       "aliases": [
+        "CVE-2021-44906"
+       ],
+       "database_specific": {
+        "cwe_ids": [
+         "CWE-1321"
+        ],
+        "github_reviewed": true,
+        "github_reviewed_at": "2022-03-18T23:13:40Z",
+        "nvd_published_at": "2022-03-17T16:15:00Z",
+        "severity": "CRITICAL"
+       },
+       "id": "GHSA-xvch-5gv4-984h",
+       "schema_version": "1.9.0",
+       "severity": [
+        {
+         "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+         "type": "CVSS_V3"
+        }
+       ],
+       "summary": "Prototype Pollution in minimist"
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "experimental_config": {
+  "licenses": {
+   "summary": false,
+   "allowlist": null
+  }
+ }
+}

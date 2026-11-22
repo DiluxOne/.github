@@ -45,6 +45,15 @@ pre-pr: optional
 # `required` once the repositories are in step, so no open pull request is
 # stopped by the release that brings the check.
 attribution: warn
+# The security gate (#956, scripts/security-gate.py, policy/security-gate.yml):
+# leaked secrets, insecure code (the OWASP Top 10 and language rules),
+# dependencies with known vulnerabilities and unsafe GitHub workflows, on
+# what a change adds or modifies, in `make pre-pr` and in the pull
+# request's "security-gate / Security gate" check. `off` runs nothing;
+# `report` shows what it finds and never fails; `block` fails on a new
+# finding of a critical or high level. It starts at `report` and moves to
+# `block` by a person's change here.
+security-gate: report
 # Who decides (#588, scripts/deciders.py): whose answers the autopilot
 # takes as a maintainer's once an issue is accepted, and who may add
 # `accepted`, `autopilot:continue`, `/coauthor` and `/uncoauthor`. Anyone

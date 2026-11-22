@@ -26,9 +26,12 @@ What it must cover is data: a kind's pack says it (kinds/<kind>/pack.yml
                                none by design)
   pre-pr.py check NAME [DIR]   for the conventions check: exit 1 when NAME
                                must have one (`required`) and DIR has none
-  pre-pr.py render KIND        the dx.mk of a repository of KIND, from its
-                               pack's `pre-pr-make` (nothing, exit 1, when
-                               the pack has none)
+  pre-pr.py render [KIND]      the dx.mk of a repository of KIND, from its
+                               pack's `pre-pr-make`, after the security
+                               gate's lines (#956), every kind's; with no
+                               KIND, that of a repository of no kind, the
+                               gate alone (nothing, exit 1, for a KIND with
+                               no pack)
   pre-pr.py tools [DIR]        the packages DIR's `make pre-pr` needs that
                                the runner lacks (#682): its kind's pack
                                `pre-pr-tools`, the package of each command
@@ -63,24 +66,37 @@ INCLUDE = f"include {FRAGMENT}"
 INCLUDE_RE = re.compile(r"^-?include[ \t]+(?:\S+[ \t]+)*dx\.mk[ \t]*$", re.M)
 
 
-def render(make):
+# The security gate (#956, scripts/security-gate.py), first in every dx.mk,
+# whatever the kind: it installs the pinned tools (once, from the cache
+# after), then reads what the change adds or modifies. Its result goes to
+# the git directory, where the local review and the autopilot read it.
+GATE = [
+    "dx_central=${DX_CENTRAL:-.dx-central}",
+    'test -f "$dx_central/scripts/security-gate.py" || { echo "pre-pr: DX_CENTRAL ($dx_central) is not a checkout of DiluxOne/.github" >&2; exit 1; }',
+    'python3 "$dx_central/scripts/security-gate.py" install',
+    'python3 "$dx_central/scripts/security-gate.py" run --json "$(git rev-parse --git-dir)/dx-review/security-gate.json"',
+]
+
+
+def render(make, gate=True):
     """The dx.mk text for a pack's `pre-pr-make` ({run: [...], finally:
-    [...]}), or None when it has no `run`. The lines run as one bash script,
+    [...]}): the security gate's lines (GATE), then its `run`; the gate
+    alone when it has none (GATE left out with GATE=False, for a test
+    of the rest). The lines run as one bash script,
     stopping at the first failure; `finally` after it either way, keeping
     the exit code of `run`. Make expands `$`, so each one is doubled; the
     script travels in an exported variable, never on the command line."""
     make = make if isinstance(make, dict) else {}
-    run = [str(x) for x in make.get("run") or []]
-    if not run:
-        return None
+    run = (GATE if gate else []) + [str(x) for x in make.get("run") or []]
     after = [str(x) for x in make.get("finally") or []]
     body = []
     if after:
         body += ["dx_finally() {", "  rc=$?"] + [f"  {line} || true" for line in after] + ["  exit $rc", "}", "trap dx_finally EXIT"]
     body += run
     esc = [line.replace("$", "$$") for line in body]
-    return ("# Managed by DiluxOne/.github (scripts/sync-repos.py pre-pr, #479), from its kind's pack\n"
-            "# (kinds/<kind>/pack.yml `pre-pr-make`): do not edit it here, it is rewritten.\n"
+    return ("# Managed by DiluxOne/.github (scripts/sync-repos.py pre-pr, #479): the security gate\n"
+            "# (#956), then its kind's pack (kinds/<kind>/pack.yml `pre-pr-make`), when it has\n"
+            "# a kind. Do not edit it here, it is rewritten.\n"
             "# `make pre-pr` is the one check before a pull request. This repository's\n"
             "# Makefile includes it, and adds its own checks as prerequisites:\n"
             "#   pre-pr: my-check\n"
@@ -92,8 +108,11 @@ def render(make):
 
 
 def render_kind(kind):
-    """render() for a kind's pack; None for no kind, no pack or no steps."""
-    if not kind or not os.path.isfile(policy.pack_path(str(kind))):
+    """render() for a kind's pack; the gate alone for no kind (#956); None
+    for a kind with no pack."""
+    if not kind:
+        return render({})
+    if not os.path.isfile(policy.pack_path(str(kind))):
         return None
     return render(policy.load_yaml(policy.pack_path(str(kind))).get("pre-pr-make"))
 
@@ -126,7 +145,8 @@ def own_recipe(text):
 def wanted(kind, have_fragment, have_makefile, name="Makefile"):
     """The files a repository of KIND needs for its `make pre-pr`, {path:
     text}, given its dx.mk and its Makefile (text, None for none; `name` the
-    one make picks). Empty for a kind with no `pre-pr-make`, or one in step."""
+    one make picks). Empty for a kind with no pack, or one in step; a
+    repository of no kind gets the gate's (#956)."""
     fragment = render_kind(kind)
     if fragment is None:
         return {}
@@ -268,7 +288,12 @@ def self_test():
     check("C1 the wordpress-plugin pack renders a dx.mk with a pre-pr target", has_target(frag), True)
     for step in ("composer lint", "composer stan", "composer test:unit", "phpunit-integration.xml", "e2e-run.sh", "repro-ways.py\" affected", "review-rules.php"):
         check(f"C1 its pre-pr runs {step}", step.replace("$", "$$") in (frag or ""), True)
-    check("C1 a kind with no pack, or no kind, gets none", (render_kind("no-such-kind"), render_kind(None), render({})), (None, None, None))
+    check("C1 a kind with no pack gets none", render_kind("no-such-kind"), None)
+    check("#956 no kind, or a pack with no steps, gets the security gate alone",
+          (render_kind(None), render({}), render_kind("engine-test")), (render({"run": []}),) * 3)
+    for kind in (None, "wordpress-plugin", "ai-agent-plugin", "engine-test"):
+        check(f"#956 the {kind or 'no-kind'} dx.mk runs the security gate first",
+              [line.replace("$$", "$") for line in render_kind(kind).split("define DX_PRE_PR\n", 1)[1].split("trap dx_finally EXIT\n")[-1].split("\n")[:len(GATE)]], GATE)
     check("C1 a Makefile without the include gets it last, its own rules kept", (with_include("check:\n\ttrue\n"), with_include("check:\n\ttrue")), ("check:\n\ttrue\n\ninclude dx.mk\n",) * 2)
     check("C1 one that includes it is unchanged, as is -include", (with_include("x:\ninclude dx.mk\n"), with_include("-include dx.mk\n")), ("x:\ninclude dx.mk\n", "-include dx.mk\n"))
     check("C1 no Makefile gets one that includes it", with_include(None), "include dx.mk\n")
@@ -277,10 +302,11 @@ def self_test():
     check("C1 a Makefile with its own pre-pr recipe gets dx.mk, not the include (two recipes)",
           (own_recipe("pre-pr:\n\tnpm test\n"), own_recipe("pre-pr: ; npm test\n"), own_recipe("pre-pr: lint test\nlint:\n\tx\n"), sorted(wanted("wordpress-plugin", None, "pre-pr:\n\tnpm test\n"))),
           (True, True, False, ["dx.mk"]))
-    check("C1 a repository of no kind gets nothing", (wanted(None, None, None), wanted("no-such-kind", None, None)), ({}, {}))
+    check("C1 a repository of a kind with no pack gets nothing", wanted("no-such-kind", None, None), {})
+    check("#956 a repository of no kind gets dx.mk, the gate's, and the include", sorted(wanted(None, None, None)), ["Makefile", "dx.mk"])
     if shutil.which("make") and shutil.which("bash"):
         with tempfile.TemporaryDirectory() as d:
-            mk = render({"run": ["x=${PWD##*/}", "echo \"run $x\" >> log", "test ! -f broken"], "finally": ["echo finally >> log"]})
+            mk = render({"run": ["x=${PWD##*/}", "echo \"run $x\" >> log", "test ! -f broken"], "finally": ["echo finally >> log"]}, gate=False)
             with open(os.path.join(d, FRAGMENT), "w") as fh:
                 fh.write(mk)
             with open(os.path.join(d, "Makefile"), "w") as fh:
@@ -296,7 +322,7 @@ def self_test():
         # The include must not take the default goal: a bare `make` runs the repository's first target, not pre-pr.
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, FRAGMENT), "w") as fh:
-                fh.write(render({"run": ["echo pre-pr >> log"]}))
+                fh.write(render({"run": ["echo pre-pr >> log"]}, gate=False))
             with open(os.path.join(d, "Makefile"), "w") as fh:
                 fh.write(with_include(".PHONY: all\nall:\n\t@echo all >> log\npre-pr: all\n"))
             bare = subprocess.run(["make", "-s"], cwd=d, capture_output=True, text=True)
@@ -312,6 +338,8 @@ def self_test():
     # runs them first, in order, and stops at the first that fails.
     frag = render_kind("ai-agent-plugin")
     check("C4 the ai-agent-plugin pack renders a dx.mk with a pre-pr target", has_target(frag), True)
+    # The gate is tested on its own (tests/workflows/test_security_gate.py); here, the pack's lines.
+    frag = render(policy.load_yaml(policy.pack_path("ai-agent-plugin")).get("pre-pr-make"), gate=False)
     for step in ("test -f \"$$central/scripts/agent-manifests.py\" || {", "agent-manifests.py\" check .", "review-rules.php\" --kind ai-agent-plugin --repo ."):
         check(f"C4 its pre-pr runs {step}", step in (frag or ""), True)
     items = [str(x) for x in policy.load_yaml(policy.pack_path("ai-agent-plugin")).get("pre-pr") or []]
@@ -401,10 +429,13 @@ def main(argv):
         for package in tools(argv[1] if len(argv) == 2 else "."):
             print(package)
         return 0
-    if argv[:1] == ["render"] and len(argv) == 2:
+    if argv[:1] == ["render"] and len(argv) <= 2:
+        if len(argv) == 1:
+            sys.stdout.write(render_kind(None))
+            return 0
         text = render_kind(argv[1])
         if text is None:
-            print(f"The {argv[1]} kind's pack has no `pre-pr-make`.", file=sys.stderr)
+            print(f"The {argv[1]} kind has no pack.", file=sys.stderr)
             return 1
         sys.stdout.write(text)
         return 0

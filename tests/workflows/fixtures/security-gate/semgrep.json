@@ -1,0 +1,269 @@
+{
+ "version": "1.186.0",
+ "results": [
+  {
+   "check_id": "yaml.github-actions.security.run-shell-injection",
+   "path": ".github/workflows/ci.yml",
+   "start": {
+    "line": 7,
+    "col": 9,
+    "offset": 90
+   },
+   "end": {
+    "line": 7,
+    "col": 59,
+    "offset": 140
+   },
+   "extra": {
+    "message": "Using variable interpolation `${{...}}` with `github` context data in a `run:` step could allow an attacker to inject their own code into the runner. This would allow them to steal secrets and code. `github` context data can have arbitrary user input and should be treated as untrusted. Instead, use an intermediate environment variable with `env:` to store the data and use the environment variable in the `run:` script. Be sure to use double-quotes the environment variable, like this: \"$ENVVAR\".",
+    "severity": "ERROR",
+    "lines": "requires login",
+    "metadata": {
+     "category": "security",
+     "owasp": [
+      "A01:2017 - Injection",
+      "A03:2021 - Injection",
+      "A05:2025 - Injection"
+     ],
+     "cwe": [
+      "CWE-78: Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')"
+     ],
+     "references": [
+      "https://docs.github.com/en/actions/learn-github-actions/security-hardening-for-github-actions#understanding-the-risk-of-script-injections",
+      "https://securitylab.github.com/research/github-actions-untrusted-input/"
+     ],
+     "confidence": "HIGH",
+     "impact": "HIGH",
+     "likelihood": "HIGH"
+    }
+   }
+  },
+  {
+   "check_id": "python.django.security.injection.command.subprocess-injection",
+   "path": "app.py",
+   "start": {
+    "line": 6,
+    "col": 5,
+    "offset": 89
+   },
+   "end": {
+    "line": 6,
+    "col": 37,
+    "offset": 121
+   },
+   "extra": {
+    "message": "Detected user input entering a `subprocess` call unsafely. This could result in a command injection vulnerability. An attacker could use this vulnerability to execute arbitrary commands on the host, which allows them to download malware, scan sensitive data, or run any command they wish on the server. Do not let users choose the command to run. In general, prefer to use Python API versions of system commands. If you must use subprocess, use a dictionary to allowlist a set of commands.",
+    "severity": "ERROR",
+    "lines": "requires login",
+    "metadata": {
+     "category": "security",
+     "owasp": [
+      "A01:2017 - Injection",
+      "A03:2021 - Injection",
+      "A05:2025 - Injection"
+     ],
+     "cwe": [
+      "CWE-78: Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')"
+     ],
+     "references": [
+      "https://semgrep.dev/docs/cheat-sheets/python-command-injection/"
+     ],
+     "confidence": "HIGH",
+     "impact": "HIGH",
+     "likelihood": "MEDIUM"
+    }
+   }
+  },
+  {
+   "check_id": "python.lang.security.audit.dangerous-subprocess-use-audit",
+   "path": "app.py",
+   "start": {
+    "line": 6,
+    "col": 5,
+    "offset": 89
+   },
+   "end": {
+    "line": 6,
+    "col": 37,
+    "offset": 121
+   },
+   "extra": {
+    "message": "Detected subprocess function 'call' without a static string. If this data can be controlled by a malicious actor, it may be an instance of command injection. Audit the use of this call to ensure it is not controllable by an external resource. You may consider using 'shlex.escape()'.",
+    "severity": "ERROR",
+    "lines": "requires login",
+    "metadata": {
+     "category": "security",
+     "owasp": [
+      "A01:2017 - Injection",
+      "A03:2021 - Injection",
+      "A05:2025 - Injection"
+     ],
+     "cwe": [
+      "CWE-78: Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')"
+     ],
+     "references": [
+      "https://stackoverflow.com/questions/3172470/actual-meaning-of-shell-true-in-subprocess",
+      "https://docs.python.org/3/library/subprocess.html",
+      "https://docs.python.org/3/library/shlex.html",
+      "https://semgrep.dev/docs/cheat-sheets/python-command-injection/"
+     ],
+     "confidence": "LOW",
+     "impact": "HIGH",
+     "likelihood": "LOW"
+    }
+   }
+  },
+  {
+   "check_id": "python.lang.security.dangerous-subprocess-use",
+   "path": "app.py",
+   "start": {
+    "line": 6,
+    "col": 21,
+    "offset": 105
+   },
+   "end": {
+    "line": 6,
+    "col": 24,
+    "offset": 108
+   },
+   "extra": {
+    "message": "Detected subprocess function 'handler' with user controlled data. A malicious actor could leverage this to perform command injection. You may consider using 'shlex.escape()'.",
+    "severity": "ERROR",
+    "lines": "requires login",
+    "metadata": {
+     "category": "security",
+     "owasp": [
+      "A01:2017 - Injection",
+      "A03:2021 - Injection",
+      "A05:2025 - Injection"
+     ],
+     "cwe": [
+      "CWE-78: Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')"
+     ],
+     "references": [
+      "https://stackoverflow.com/questions/3172470/actual-meaning-of-shell-true-in-subprocess",
+      "https://docs.python.org/3/library/subprocess.html",
+      "https://docs.python.org/3/library/shlex.html",
+      "https://semgrep.dev/docs/cheat-sheets/python-command-injection/"
+     ],
+     "confidence": "MEDIUM",
+     "impact": "HIGH",
+     "likelihood": "MEDIUM"
+    }
+   }
+  },
+  {
+   "check_id": "python.lang.security.audit.subprocess-shell-true",
+   "path": "app.py",
+   "start": {
+    "line": 6,
+    "col": 32,
+    "offset": 116
+   },
+   "end": {
+    "line": 6,
+    "col": 36,
+    "offset": 120
+   },
+   "extra": {
+    "message": "Found 'subprocess' function 'call' with 'shell=True'. This is dangerous because this call will spawn the command using a shell process. Doing so propagates current shell settings and variables, which makes it much easier for a malicious actor to execute commands. Use 'shell=False' instead.",
+    "severity": "ERROR",
+    "fix": "False",
+    "lines": "requires login",
+    "metadata": {
+     "category": "security",
+     "owasp": [
+      "A01:2017 - Injection",
+      "A03:2021 - Injection",
+      "A05:2025 - Injection"
+     ],
+     "cwe": [
+      "CWE-78: Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')"
+     ],
+     "references": [
+      "https://stackoverflow.com/questions/3172470/actual-meaning-of-shell-true-in-subprocess",
+      "https://docs.python.org/3/library/subprocess.html"
+     ],
+     "confidence": "MEDIUM",
+     "impact": "LOW",
+     "likelihood": "HIGH"
+    }
+   }
+  },
+  {
+   "check_id": "python.django.security.injection.code.user-eval",
+   "path": "app.py",
+   "start": {
+    "line": 7,
+    "col": 12,
+    "offset": 133
+   },
+   "end": {
+    "line": 7,
+    "col": 39,
+    "offset": 160
+   },
+   "extra": {
+    "message": "Found user data in a call to 'eval'. This is extremely dangerous because it can enable an attacker to execute arbitrary remote code on the system. Instead, refactor your code to not use 'eval' and instead use a safe library for the specific functionality you need.",
+    "severity": "WARNING",
+    "lines": "requires login",
+    "metadata": {
+     "category": "security",
+     "owasp": [
+      "A03:2021 - Injection",
+      "A05:2025 - Injection"
+     ],
+     "cwe": [
+      "CWE-95: Improper Neutralization of Directives in Dynamically Evaluated Code ('Eval Injection')"
+     ],
+     "references": [
+      "https://nedbatchelder.com/blog/201206/eval_really_is_dangerous.html",
+      "https://owasp.org/www-community/attacks/Code_Injection"
+     ],
+     "confidence": "MEDIUM",
+     "impact": "HIGH",
+     "likelihood": "MEDIUM"
+    }
+   }
+  },
+  {
+   "check_id": "python.lang.security.audit.eval-detected",
+   "path": "app.py",
+   "start": {
+    "line": 7,
+    "col": 12,
+    "offset": 133
+   },
+   "end": {
+    "line": 7,
+    "col": 39,
+    "offset": 160
+   },
+   "extra": {
+    "message": "Detected the use of eval(). eval() can be dangerous if used to evaluate dynamic content. If this content can be input from outside the program, this may be a code injection vulnerability. Ensure evaluated content is not definable by external sources.",
+    "severity": "WARNING",
+    "lines": "requires login",
+    "metadata": {
+     "category": "security",
+     "owasp": [
+      "A03:2021 - Injection",
+      "A05:2025 - Injection"
+     ],
+     "cwe": [
+      "CWE-95: Improper Neutralization of Directives in Dynamically Evaluated Code ('Eval Injection')"
+     ],
+     "references": [
+      "https://owasp.org/Top10/A03_2021-Injection"
+     ],
+     "confidence": "LOW",
+     "impact": "HIGH",
+     "likelihood": "LOW"
+    }
+   }
+  }
+ ],
+ "errors": [],
+ "paths": {
+  "scanned": []
+ }
+}

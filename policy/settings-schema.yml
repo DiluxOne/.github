@@ -119,6 +119,13 @@ files:
       read-by: [scripts/org.py]
       issue: "#491"
       says: What the conventions check does with a model named as a co-author.
+    - key: security-gate
+      org: any
+      repo: never
+      limit: "`off`, `report` or `block`; the tools, rules and levels are policy/security-gate.yml's"
+      read-by: [scripts/security-gate.py]
+      issue: "#956"
+      says: "What the security gate does with what it finds: `off` runs nothing, `report` shows it, `block` fails on a new critical or high finding."
     - key: test-repo
       identity: true
       default: "`<org lowercased>-test`"
