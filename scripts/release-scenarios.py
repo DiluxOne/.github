@@ -2181,10 +2181,11 @@ def passes_of(rows, ids, url):
     return out
 
 
-# The events a run of the lane on main's own code comes from: a run on
+# The events a run of the lane on main's own code comes from (its daily
+# schedule since #941; workflow_run before it): a run on
 # another event or branch (a dispatch from a branch whose release-lane.yml
 # was changed) may have uploaded anything, so its passes never count.
-LANE_EVENTS = ("workflow_run", "workflow_dispatch")
+LANE_EVENTS = ("workflow_run", "workflow_dispatch", "schedule")
 
 
 def main_run(r, repo, branch="main"):

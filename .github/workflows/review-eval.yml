@@ -1,7 +1,9 @@
 name: Review evaluation
 
-# Not reusable. A change to the review is scored before it merges (#234,
-# phase 13): the review's prompts, profiles, brief, model or verification.
+# Not reusable. A change to the review (#234, phase 13: its prompts,
+# profiles, brief, model or verification) is scored by hand only (#941): a
+# maintainer runs it when such a change should be scored, never on every
+# push to a pull request.
 # Every case of evals/review/cases.json, real pull requests of the public
 # repositories (a bug the review found and was fixed, which it must find
 # again in the hunk its fix changed or within 10 lines of the lines it
@@ -31,8 +33,8 @@ name: Review evaluation
 #
 # Paid: each case is one review per play, and one verification when it
 # raised a blocker or major (60 reviews for 20 cases). It runs only
-# when a pull request touches the review, from a branch of this repository
-# (a fork's code never runs with the keys), and by hand. Private
+# by hand, on a branch of this repository (a fork's code never runs with
+# the keys). Private
 # repositories are never cases: their code would show in this public
 # repository's logs.
 #
@@ -49,21 +51,6 @@ name: Review evaluation
 # pull request to commit.
 
 on:
-  pull_request:
-    paths:
-      - review-profiles/**
-      - kinds/*/review-profile.md
-      - kinds/*/rules.yml
-      - policy/review-policy.default.yml
-      - scripts/review-brief.sh
-      - scripts/local-review.sh
-      - scripts/review-verify.py
-      - scripts/review-count.py
-      - scripts/review-eval.py
-      - scripts/policy.py
-      - .github/workflows/claude-review.yml
-      - policy/autonomy.yml
-      - evals/review/**
   workflow_dispatch:
     inputs:
       mode:

@@ -156,15 +156,16 @@ def test_c2_the_steps_listed_are_those_with_a_set():
     assert mod.steps_here(["review-profiles/general.md"]) == []
 
 
-def test_c2_evals_yml_runs_on_the_union_of_the_paths():
+def test_c1_941_the_evaluations_never_run_on_a_pull_request():
+    # #941: replaying whole autopilot rounds and 60 reviews on every push
+    # spent most of the engine's model use; both run by hand only.
     mod = evals()
     wf = yaml.safe_load((need(".github/workflows/evals.yml")).read_text(encoding="utf-8"))
     on = wf.get("on") or wf.get(True)
-    assert sorted(on["pull_request"]["paths"]) == sorted(mod.all_paths())
+    assert set(on) == {"workflow_dispatch"}
     assert "review" not in on["workflow_dispatch"]["inputs"]["step"]["options"]
-    # The review's paths are review-eval.yml's, policy/autonomy.yml among them.
     review = yaml.safe_load((ROOT / ".github" / "workflows" / "review-eval.yml").read_text(encoding="utf-8"))
-    assert sorted((review.get("on") or review.get(True))["pull_request"]["paths"]) == sorted(mod.paths_of("review"))
+    assert set(review.get("on") or review.get(True)) == {"workflow_dispatch"}
     assert "policy/autonomy.yml" in mod.paths_of("review")
 
 
@@ -489,9 +490,6 @@ def test_c2_the_runner_counts_for_every_step(path):
     # Every step evals.yml runs; the review's runner is review-eval.py.
     mod = evals()
     assert mod.steps_of([path]) == [s for s in SIX if s != "review"]
-    wf = yaml.safe_load((need(".github/workflows/evals.yml")).read_text(encoding="utf-8"))
-    on = wf.get("on") or wf.get(True)
-    assert path in on["pull_request"]["paths"]
 
 
 # Each spec and autopilot case pins its issue: the replay never reads it live.

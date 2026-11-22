@@ -1,12 +1,11 @@
 name: AI evaluation
 
-# Not reusable. Every AI step is measured (#735): a change to a step (its
-# workflow, the prompts it reads, its model in policy/autonomy.yml, its set
-# under evals/<step>/) is scored before it merges. scripts/evals.py says
-# which paths count for which step (`evals.py steps`), and this workflow's
-# `paths:` are their union (tests/workflows/test_evals.py holds them equal):
-# a pull request that touches none runs nothing, and one that touches one
-# step's paths runs that step's set alone. Each case of
+# Not reusable. Every AI step is measured (#735), by hand only (#941): a
+# maintainer runs it for one step when a change to that step (its workflow,
+# the prompts it reads, its model in policy/autonomy.yml, its set under
+# evals/<step>/) should be scored. It never runs on a pull request: replaying
+# whole autopilot rounds on every push spent most of the engine's model use.
+# scripts/evals.py says which paths count for which step (`evals.py steps`). Each case of
 # evals/<step>/cases.json, a real one of the public repositories, is
 # replayed in a job of its own, with its step's time (`evals.py matrix`,
 # `evals.py run <step> <case>`), with the step as this pull request has it,
@@ -31,8 +30,8 @@ name: AI evaluation
 #
 # Paid: each case is one model run (the autopilot's, a whole work round
 # and the review and fix rounds after it).
-# It runs only on a pull request from a branch of this repository (a fork's
-# code never runs with the keys), and by hand for one step. The first job
+# It runs only by hand, for one step, on a branch of this repository (a
+# fork's code never runs with the keys). The first job
 # lists the steps with no secret; private repositories are never cases.
 #
 # The slack is none when the baseline is not above it (autopilot's 1 of 6
@@ -58,23 +57,6 @@ name: AI evaluation
 # commits them in a pull request.
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/issue-triage.yml
-      - scripts/triage-brief.sh
-      - policy/autonomy.yml
-      - scripts/evals.py
-      - .github/workflows/evals.yml
-      - evals/triage/**
-      - .github/workflows/issue-repro.yml
-      - scripts/repro-ways.py
-      - evals/repro/**
-      - .github/workflows/autopilot.yml
-      - scripts/autopilot.py
-      - evals/spec/**
-      - evals/autopilot/**
-      - .github/workflows/review-reply.yml
-      - evals/reply/**
   workflow_dispatch:
     inputs:
       step:
