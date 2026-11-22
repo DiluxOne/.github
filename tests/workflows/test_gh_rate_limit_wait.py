@@ -281,3 +281,40 @@ def test_every_token_that_writes_a_board_can_read_the_receipts_branch():
                 checked += 1
                 assert inputs.get("permission-contents") in ("read", "write"), f"{path.name}:{name}: {s.get('name')}"
     assert checked
+
+
+def test_the_key_comes_off_whether_or_not_the_run_goes():
+    """The review of #926: a continue the sweep asked for that `may` then
+    refuses (needs-human, a cap, the budget, the queue) still clears
+    `rate_limited`, or the hourly sweep would ask for it again every hour.
+    The clearing step is in prep before `may`, on the issue alone."""
+    steps = yaml.safe_load((ROOT / ".github" / "workflows" / "autopilot.yml").read_text())["jobs"]["prep"]["steps"]
+    clear = [i for i, s in enumerate(steps) if "state set rate_limited=" in str(s.get("run"))]
+    may = next(i for i, s in enumerate(steps) if s.get("id") == "may")
+    assert len(clear) == 1 and clear[0] < may, "cleared once, before `may` decides"
+    cond = steps[clear[0]].get("if") or ""
+    assert "steps.may" not in cond and "steps.what.outputs.issue" in cond, cond
+
+
+def test_a_long_note_is_cut_and_a_long_reset_is_skipped(tmp_path):
+    """The note is under $RUNNER_TEMP, where the agent can write: the `rate`
+    steps keep 12 digits at most, and the `rate-limited` job skips a value
+    longer, so `[ -le ]` never meets a number it cannot read."""
+    wf = yaml.safe_load((ROOT / ".github" / "workflows" / "autopilot.yml").read_text())
+    note = tmp_path / "note"
+    note.write_text("9" * 40 + "\n")
+    for j in ("prep", "spec", "draft", "work", "verify", "apply"):
+        rate = next(s for s in wf["jobs"][j]["steps"] if s.get("id") == "rate")
+        out = tmp_path / f"{j}.out"
+        ran = subprocess.run(["bash", "-c", rate["run"]], capture_output=True, text=True, timeout=30,
+                             env={**os.environ, "DX_RATE_NOTE": str(note), "GITHUB_OUTPUT": str(out)})
+        assert ran.returncode == 0, ran.stderr
+        assert out.read_text().strip() == "reset=" + "9" * 12, j
+    until = next(s for s in wf["jobs"]["rate-limited"]["steps"] if s.get("id") == "reset")
+    loop = next(l for l in until["run"].splitlines() if l.strip().startswith("for r in"))
+    out = tmp_path / "at"
+    script = f'set -euo pipefail\nat=0\n{loop}\necho "at=$at" > "{out}"'
+    ran = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30,
+                         env={**os.environ, "RESETS": "1700000000 " + "9" * 40 + " x12"})
+    assert ran.returncode == 0, ran.stderr
+    assert out.read_text().strip() == "at=1700000000"

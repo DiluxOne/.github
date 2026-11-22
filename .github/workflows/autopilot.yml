@@ -233,7 +233,8 @@ name: Autopilot
 # call (the limit is spent) in the job's `rate-limited` output; the
 # `rate-limited` job sleeps until it, then writes `rate_limited` on the
 # issue's board with a fresh limit: the hourly sweep (autopilot-sweep.yml)
-# continues the issue, and the run it starts clears the key.
+# continues the issue, and the run it starts clears the key, whether it
+# goes or `may` refuses it, so no refusal is asked for again.
 
 on:
   workflow_call:
@@ -551,6 +552,22 @@ jobs:
             : > "$RUNNER_TEMP/repo-policy.yml"
           fi
           echo "go=true" >> "$GITHUB_OUTPUT"
+      # The run GitHub's API rate limit left to the next (#925,
+      # scripts/gh-wait.sh) is this one: the key comes off the board
+      # whether or not the run goes, so a continue that `may` refuses
+      # (needs-human, a cap, the budget, the queue) is not asked for again
+      # by the hourly sweep. A run that hits the limit again writes it anew.
+      - name: The rate limit's key (#925)
+        if: steps.what.outputs.issue != ''
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          ISSUE: ${{ steps.what.outputs.issue }}
+        run: |
+          set -euo pipefail
+          if grep -q '"rate_limited"' .dx-central/scripts/receipts.py \
+            && [ -n "$(NUMBER="$ISSUE" python3 .dx-central/scripts/receipts.py state get rate_limited 2>/dev/null | jq -r '. // empty' 2>/dev/null)" ]; then
+            NUMBER="$ISSUE" python3 .dx-central/scripts/receipts.py state set rate_limited= >/dev/null || echo "::warning::#$ISSUE's board: its rate limit could not be cleared."
+          fi
       - name: May it start
         id: may
         if: steps.what.outputs.go == 'true'
@@ -830,12 +847,6 @@ jobs:
           # A fix round's head before it: the end rule tells a round that
           # pushed from one that did not.
           if [ -n "$PR" ]; then echo "head=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq .headRefOid)" >> "$GITHUB_OUTPUT"; fi
-          # The run GitHub's API rate limit left to the next (#925,
-          # scripts/gh-wait.sh) is this one: the key comes off the board.
-          if [ -n "$ISSUE" ] && grep -q '"rate_limited"' .dx-central/scripts/receipts.py \
-            && [ -n "$(NUMBER="$ISSUE" python3 .dx-central/scripts/receipts.py state get rate_limited 2>/dev/null | jq -r '. // empty' 2>/dev/null)" ]; then
-            NUMBER="$ISSUE" python3 .dx-central/scripts/receipts.py state set rate_limited= >/dev/null || echo "::warning::#$ISSUE's board: its rate limit could not be cleared."
-          fi
 
       # Counted before the agent runs: a round or run that fails or times out
       # after pushing still counts, so the caps hold. On the pull request's
@@ -1043,7 +1054,7 @@ jobs:
         if: always()
         run: |
           f="${DX_RATE_NOTE:-}"
-          if [ -n "$f" ] && [ -s "$f" ]; then echo "reset=$(tr -dc 0-9 < "$f")" >> "$GITHUB_OUTPUT"; fi
+          if [ -n "$f" ] && [ -s "$f" ]; then echo "reset=$(tr -dc 0-9 < "$f" | cut -c1-12)" >> "$GITHUB_OUTPUT"; fi
 
   # --- start: the Spec, by the agent, with no key ---------------------------
   spec:
@@ -1185,7 +1196,7 @@ jobs:
         if: always()
         run: |
           f="${DX_RATE_NOTE:-}"
-          if [ -n "$f" ] && [ -s "$f" ]; then echo "reset=$(tr -dc 0-9 < "$f")" >> "$GITHUB_OUTPUT"; fi
+          if [ -n "$f" ] && [ -s "$f" ]; then echo "reset=$(tr -dc 0-9 < "$f" | cut -c1-12)" >> "$GITHUB_OUTPUT"; fi
 
   # --- start: the Spec on the issue, and the draft, with the key ------------
   draft:
@@ -1414,7 +1425,7 @@ jobs:
         if: always()
         run: |
           f="${DX_RATE_NOTE:-}"
-          if [ -n "$f" ] && [ -s "$f" ]; then echo "reset=$(tr -dc 0-9 < "$f")" >> "$GITHUB_OUTPUT"; fi
+          if [ -n "$f" ] && [ -s "$f" ]; then echo "reset=$(tr -dc 0-9 < "$f" | cut -c1-12)" >> "$GITHUB_OUTPUT"; fi
 
   # --- the work, by the agent, with no key ----------------------------------
   work:
@@ -1672,7 +1683,7 @@ jobs:
         if: always()
         run: |
           f="${DX_RATE_NOTE:-}"
-          if [ -n "$f" ] && [ -s "$f" ]; then echo "reset=$(tr -dc 0-9 < "$f")" >> "$GITHUB_OUTPUT"; fi
+          if [ -n "$f" ] && [ -s "$f" ]; then echo "reset=$(tr -dc 0-9 < "$f" | cut -c1-12)" >> "$GITHUB_OUTPUT"; fi
 
   # --- after the work: `make pre-pr` in full, with no key (#673) ------------
   # A repository whose `make pre-pr` outlasts the agent's step: `check` stops
@@ -1812,7 +1823,7 @@ jobs:
         if: always()
         run: |
           f="${DX_RATE_NOTE:-}"
-          if [ -n "$f" ] && [ -s "$f" ]; then echo "reset=$(tr -dc 0-9 < "$f")" >> "$GITHUB_OUTPUT"; fi
+          if [ -n "$f" ] && [ -s "$f" ]; then echo "reset=$(tr -dc 0-9 < "$f" | cut -c1-12)" >> "$GITHUB_OUTPUT"; fi
 
   # --- every mode: the agent's work on GitHub, and the verdict --------------
   apply:
@@ -2115,7 +2126,7 @@ jobs:
         if: always()
         run: |
           f="${DX_RATE_NOTE:-}"
-          if [ -n "$f" ] && [ -s "$f" ]; then echo "reset=$(tr -dc 0-9 < "$f")" >> "$GITHUB_OUTPUT"; fi
+          if [ -n "$f" ] && [ -s "$f" ]; then echo "reset=$(tr -dc 0-9 < "$f" | cut -c1-12)" >> "$GITHUB_OUTPUT"; fi
 
   # --- GitHub's API rate limit: the board, once the limit reset (#925) ------
   # A job of this run gave up on a reset past its own time: scripts/gh-wait.sh
@@ -2150,7 +2161,7 @@ jobs:
         run: |
           set -euo pipefail
           at=0
-          for r in $RESETS; do case $r in *[!0-9]*) ;; *) [ "$r" -le "$at" ] || at=$r ;; esac; done
+          for r in $RESETS; do case $r in *[!0-9]*|?????????????*) ;; *) [ "$r" -le "$at" ] || at=$r ;; esac; done
           echo "at=$at" >> "$GITHUB_OUTPUT"
           bash .dx-central/scripts/gh-wait.sh --until "$at"
 
