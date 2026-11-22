@@ -25,7 +25,10 @@ GH_TOKEN, read), then claude-review.yml's own review step (its `prompt`
 and `claude_args`, read from the workflow at run time, so the two cannot
 drift; an expression in them the evaluation does not fill in fails the run
 by its name), then its verify step (scripts/review-verify.py), and the
-verified output is scored. Only earlier threads and a previous verdict are
+verified output is scored. An answer that does not account for every
+changed file the brief showed (`examined`, scripts/review-examined.py,
+#953) is a review that did not finish, as production blocks it: the play
+is not reviewed ("did not examine every changed file"), never clean. Only earlier threads and a previous verdict are
 left out (they would hand the answer over), and nothing is posted. PLAYS
 (3) times, each on a fresh checkout, and
 scored on its median: found, or blocked, when 2 of 3 plays say so (a play
@@ -623,7 +626,38 @@ def play_review(case, repo_dir, work, steps):
         values["steps.verify-task.outputs.prompt"] = verify.stdout
         # Out of time, no answer: it rejects nothing, as in production.
         verdicts = ask(fill(steps["verify"]["prompt"], values), fill(steps["verify"]["args"], values), repo_dir, deadline - time.monotonic())
-    return verify_apply(review, verdicts)
+    return finished(case, verify_apply(review, verdicts), work)
+
+
+# The reason of a play whose answer left a changed file out (#953).
+UNFINISHED = "did not examine every changed file"
+
+
+def unfinished(review, work):
+    """The files of the brief's shown-files.txt in WORK that the review's
+    `examined` leaves out (scripts/review-examined.py); [] when it covers
+    them all, or when the brief wrote no list."""
+    path = os.path.join(work, "shown-files.txt")
+    if not os.path.isfile(path):
+        return []
+    spec = importlib.util.spec_from_file_location("review_examined", os.path.join(HERE, "review-examined.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.missing(review, mod.read_shown(path))
+
+
+def finished(case, review, work):
+    """The review, or None when it did not examine every changed file: a
+    review that did not finish, as production treats it (#953); its play
+    is not reviewed, with the reason UNFINISHED."""
+    if isinstance(review, dict) and unfinished(review, work):
+        LEFT.add(case["id"])
+        return None
+    return review
+
+
+# The cases whose last play left a changed file out, for run_case's reason.
+LEFT = set()
 
 
 def verify_apply(review, verdicts):
@@ -653,8 +687,13 @@ def run_case(case, central, work, steps=None):
     if git("checkout", "-q", "-f", "-B", f"eval/{case['pr']}", case["head"]).returncode != 0:
         return None
     case_work = tempfile.mkdtemp(prefix="dx-case-", dir=work)
+    LEFT.discard(case["id"])
     review = play_review(case, repo_dir, case_work, steps)
-    WHY[case["id"]] = reason(case, review)
+    if case["id"] in LEFT:
+        LEFT.discard(case["id"])
+        WHY[case["id"]] = UNFINISHED if case.get("expect") == "flag" else ""
+    else:
+        WHY[case["id"]] = reason(case, review)
     return verdict(case, review)
 
 
@@ -845,6 +884,14 @@ def self_test():
           [reason(rc, r) for r in ({"findings": [{"severity": "major", "file": "a.php", "line": 6}]}, {"findings": [{"severity": "major", "file": "a.php", "line": 19}]},
                                    {"findings": [{"severity": "minor", "file": "a.php", "line": 5, "rejected": "w"}]}, {"findings": [{"severity": "major", "file": "b.php", "line": 5}]}, None)],
           ["found", "outside the fixed lines, 13 lines away", "rejected by verification", "no finding in the file", "not reviewed"])
+    with tempfile.TemporaryDirectory() as d:
+        with open(os.path.join(d, "shown-files.txt"), "w", encoding="utf-8") as fh:
+            fh.write("a.php\nb.php\n")
+        half = {"findings": [], "examined": [{"file": "a.php", "checked": "x"}]}
+        whole = dict(half, examined=half["examined"] + [{"file": "b.php", "checked": "y"}])
+        check("finished: an answer that leaves a changed file out did not finish (#953)",
+              (finished({"id": "u"}, half, d), "u" in LEFT, finished({"id": "w"}, whole, d) is whole, unfinished(half, os.path.join(d, "none"))), (None, True, True, []))
+        LEFT.clear()
     check("reasons: each once, with its plays", reasons({"expect": "flag", "plays": [True, False, None], "why": ["found", "no finding in the file", ""]}), "found (1), no finding in the file (1), not reviewed (1)")
     check("short: fewer than MIN_CASES of a kind", (short(res), short([{"expect": k} for k in ("flag", "clean") for _ in range(MIN_CASES)])), (f"2 flag cases, fewer than {MIN_CASES}; 2 clean cases, fewer than {MIN_CASES}", ""))
     check("unplayed: a case not played PLAYS times", unplayed(res + [{"id": "5", "expect": "flag", "plays": [True]}]), ["5"])

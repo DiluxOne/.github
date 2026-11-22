@@ -40,7 +40,10 @@ name: Review evaluation
 #
 # The table gives each flag case its reason per play (#930): found, a
 # finding in the file outside the fixed lines and how far, one rejected by
-# verification, no finding in the file, or not reviewed. The summary ends
+# verification, no finding in the file, or not reviewed; a play whose
+# answer does not examine every changed file the brief showed (its
+# `examined`, scripts/review-examined.py, #953) did not finish: not
+# reviewed ("did not examine every changed file"), never clean. The summary ends
 # with this run's results as a baseline, between `--- baseline review ---`
 # and `--- end ---`. A change that should move the score commits that new
 # baseline (or writes it from the artifacts, `scripts/review-eval.py

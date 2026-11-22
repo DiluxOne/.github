@@ -14,7 +14,7 @@ ISSUE = ("<!-- dx-scenario: {sid} -->\n### Problem\n\nx\n\n### Acceptance criter
          "- C1: Given a, when b, then c.\n\n### Criticality\n\nNormal\n")
 
 
-def test_c1_a_scenario_that_does_not_test_the_review_gets_no_model():
+def test_c1_a_scenario_that_does_not_test_the_review_gets_no_model(tmp_path):
     import importlib.util
     path = ROOT / "scripts" / "fixed-review.py"
     assert path.exists(), "no scripts/fixed-review.py"
@@ -28,7 +28,10 @@ def test_c1_a_scenario_that_does_not_test_the_review_gets_no_model():
         return {"body": ISSUE.format(sid="claim-and-release")}
 
     env = {"FIXED": "scenarios/{scenario}/{n}.test.md", "REPO": "o/t", "PR": "7", "TITLE": "feat: a greeting",
-           "FLOOR": "low", "SCENARIOS": str(ROOT / "tests" / "release" / "scenarios.yml")}
+           "FLOOR": "low", "SCENARIOS": str(ROOT / "tests" / "release" / "scenarios.yml"),
+           "SHOWN": str(tmp_path / "shown-files.txt")}
+    # The brief's changed files, each examined (#953).
+    (tmp_path / "shown-files.txt").write_text("greeting.md\n", encoding="utf-8")
     hit, ans = mod.decide(env, read)
     assert hit is True
     assert ans["risk"] == "low" and ans["blocking"] is False and ans["findings"] == []
