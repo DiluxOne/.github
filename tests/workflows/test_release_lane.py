@@ -194,7 +194,8 @@ def earlier_run(tmp_path, key, failed):
     where every scenario passed but FAILED."""
     rows = ok("callers-check") + [{"id": i, "ok": i != failed, "why": [] if i != failed else ["no label"], "run": f"https://github.com/o/t/actions/runs/{n}"}
                                   for n, i in enumerate(IDS)]
-    return fake_gh(tmp_path, {"runs": [{"id": 100, "html_url": RUN_URL}, {"id": 7, "html_url": EARLIER}],
+    lane = {"event": "workflow_run", "head_branch": "main", "head_repository": {"full_name": "o/r"}}
+    return fake_gh(tmp_path, {"runs": [dict(lane, id=100, html_url=RUN_URL), dict(lane, id=7, html_url=EARLIER)],
                               "artifacts": {"7": {"key.json": json.dumps(key), "results.md": rows_text(rows)}}, "files": {}})
 
 

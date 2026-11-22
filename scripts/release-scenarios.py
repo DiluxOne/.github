@@ -2138,18 +2138,32 @@ def passes_of(rows, ids, url):
     return out
 
 
+# The events a run of the lane on main's own code comes from: a run on
+# another event or branch (a dispatch from a branch whose release-lane.yml
+# was changed) may have uploaded anything, so its passes never count.
+LANE_EVENTS = ("workflow_run", "workflow_dispatch")
+
+
+def main_run(r, repo, branch="main"):
+    """Whether run `r` (the API's) is the lane on `repo`'s own `branch`.
+    Pure."""
+    head = (r.get("head_repository") or {}).get("full_name")
+    return r.get("event") in LANE_EVENTS and r.get("head_branch") == branch and head in (None, repo)
+
+
 def earlier_passes(repo, sha, nxt, run_id, ids, run=gh, limit=EARLIER_RUNS):
     """What passed on this candidate before (#929): the completed earlier
     runs of release-lane.yml in `repo` (not `run_id`), newest first, read
     until the first whose `scenarios-results` has the key (`sha`, `nxt`),
-    and its passing rows of the scenarios `ids` (`passes_of`). [] when
+    and its passing rows of the scenarios `ids` (`passes_of`); a run of
+    another event, branch or repository is never read (`main_run`). [] when
     none matches, or when the key is not whole: a new candidate plays
     everything. A run with no such artifact is skipped."""
     import tempfile
     if not sha or not nxt:
         return []
     got = json.loads(run("api", f"repos/{repo}/actions/workflows/release-lane.yml/runs?status=completed&per_page={limit + 1}") or "{}")
-    runs = [r for r in (got.get("workflow_runs") or []) if str(r.get("id")) != str(run_id)][:limit]
+    runs = [r for r in (got.get("workflow_runs") or []) if str(r.get("id")) != str(run_id) and main_run(r, repo)][:limit]
     for r in runs:
         with tempfile.TemporaryDirectory() as d:
             try:
@@ -4478,7 +4492,9 @@ def self_test():
     def lane_gh(*a, input=None):
         calls929.append(a)
         if a[0] == "api":
-            return json.dumps({"workflow_runs": [{"id": 9, "html_url": "u9"}, {"id": 8, "html_url": "u8"}, {"id": 7, "html_url": "u7"}]})
+            lane = {"event": "workflow_run", "head_branch": "main", "head_repository": {"full_name": "o/r"}}
+            return json.dumps({"workflow_runs": [dict(lane, id=9, html_url="u9"), dict(lane, id=6, event="pull_request"), dict(lane, id=5, head_branch="x"),
+                                                 dict(lane, id=4, head_repository={"full_name": "f/r"}), dict(lane, id=8, html_url="u8"), dict(lane, id=7, html_url="u7")]})
         d = a[a.index("--dir") + 1]
         if a[2] == "8":
             raise GhError("no artifact", 1, "", "no valid artifacts")
@@ -4486,7 +4502,7 @@ def self_test():
         open(os.path.join(d, "key.json"), "w").write(json.dumps(key))
         write_results([{"id": "a", "ok": True, "run": ""}], os.path.join(d, "results.md"), echo=False)
         return ""
-    check("#929 C1: earlier_passes reads the runs newest first, skips this run and one with no artifact, and takes the first with the key",
+    check("#929 C1: earlier_passes reads main's own lane runs newest first, skips this run, another event's, branch's or repository's, and one with no artifact, and takes the first with the key",
           (earlier_passes("o/r", "S", "N", "9", ["a"], lane_gh), [a[2] for a in calls929 if a[:2] == ("run", "download")]), ([{"id": "a", "in": "u7"}], ["8", "7"]))
     check("#929 C1: no key, no earlier passes", earlier_passes("o/r", "S", "", "9", ["a"], lambda *a, input=None: 1 / 0), [])
     # #929 C2: a re-run's artifacts over the first's, and its moves.
