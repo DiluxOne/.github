@@ -176,7 +176,7 @@ def test_c1_make_pre_pr_names_each_finding_with_its_file_line_rule_and_fix(tmp_p
     assert "[high] app.py:6 python.lang.security.audit.subprocess-shell-true (semgrep, new)" in out
     # A dependency with a known critical vulnerability, and its fix.
     assert "[critical] package-lock.json:" in out and "GHSA-xvch-5gv4-984h (osv-scanner, new)" in out
-    assert "Fix: Upgrade minimist to" in out
+    assert "Fix: Upgrade minimist to 1.2.6 or later." in out, "the fix of the installed version's range"
     # An untrusted value inside `run:`.
     assert ".github/workflows/ci.yml:7 zizmor.template-injection (zizmor, new)" in out
     assert "Fix: Pass the value through env:" in out

@@ -351,6 +351,18 @@ def fixed_versions(vuln, name):
     return out
 
 
+def version_key(text):
+    """A version as numbers to compare (1.2.10 after 1.2.9), loosely. Pure."""
+    return tuple(int(n) for n in re.findall(r"\d+", str(text))[:6])
+
+
+def first_fix(version, fixes):
+    """The lowest fixed version above VERSION, else the last one listed,
+    "" for none. Pure."""
+    above = sorted((f for f in fixes if version_key(f) > version_key(version)), key=version_key)
+    return above[0] if above else (fixes[-1] if fixes else "")
+
+
 def from_osv(report, sev, lines_of=None):
     """Findings of osv-scanner's JSON; LINES_OF(file) gives the lockfile's
     lines, to point at the package's."""
@@ -366,8 +378,8 @@ def from_osv(report, sev, lines_of=None):
             for v in pkg.get("vulnerabilities") or []:
                 vid = str(v.get("id") or "")
                 group = next((g for g in groups if vid in (g.get("ids") or []) or vid in (g.get("aliases") or [])), {})
-                fixes = fixed_versions(v, name)
-                fix = (f"Upgrade {name} to {fixes[-1]} or later." if fixes else f"No fixed version of {name} yet: replace it or remove it.")
+                fixed = first_fix(version, fixed_versions(v, name))
+                fix = (f"Upgrade {name} to {fixed} or later." if fixed else f"No fixed version of {name} yet: replace it or remove it.")
                 out.append({"tool": "osv-scanner", "rule": vid, "file": path, "line": line, "package": f"{name}@{version}",
                             "severity": osv_level(sev, v, group.get("max_severity")),
                             "message": clean(f"{name} {version}: {v.get('summary') or vid}"), "fix": clean(fix)})
@@ -409,6 +421,31 @@ def call(argv, timeout, env=None, cwd=None):
         raise SystemExit(f"security-gate: {os.path.basename(argv[0])} ran past {timeout}s")
 
 
+# The exit codes each tool ends with when it ran: anything else is a
+# failure, never read as "nothing found". gitleaks runs with --exit-code 0;
+# Semgrep exits 1 on findings with some options; zizmor 10-14 by its worst
+# finding; osv-scanner 1 on vulnerabilities, 128 when a lockfile has no
+# package.
+OK_CODES = {"gitleaks": (0,), "semgrep": (0, 1), "zizmor": (0, 10, 11, 12, 13, 14), "osv-scanner": (0, 1, 128)}
+
+
+def output(name, rc, text, stderr, errors):
+    """The JSON tool NAME printed (TEXT), or None, with why in ERRORS, when
+    it failed: an exit code not its own, or output that is not JSON. Empty
+    output with an exit code of its own is nothing found. Pure but for
+    ERRORS."""
+    text = (text or "").strip()
+    if rc in OK_CODES.get(name, (0,)) and not text:
+        return None
+    try:
+        if rc not in OK_CODES.get(name, (0,)):
+            raise ValueError(f"exit {rc}")
+        return json.loads(text)
+    except ValueError as err:
+        errors.append(f"{name} did not run ({clean(err, 40)}): {clean((stderr or '')[-300:], 300)}")
+        return None
+
+
 def read_json(path, default):
     try:
         with open(path, encoding="utf-8") as fh:
@@ -443,7 +480,7 @@ def stage(repo, rev, paths, into):
 
 def scan(repo, base, data, env=os.environ):
     """Every finding of the tools on the files the change touches, each with
-    its status and fingerprint, and the merge base."""
+    its status and fingerprint, the merge base, and the tools that failed."""
     merge_base = git(repo, "merge-base", base, "HEAD").strip()
     adds = added_lines(git(repo, "diff", "-U0", "--no-color", "--no-ext-diff", merge_base, "HEAD"))
     sec = pack_security(kind_of(repo))
@@ -451,7 +488,7 @@ def scan(repo, base, data, env=os.environ):
     files = sorted(p for p in adds if not (excluded and pol.matches(p, excluded)))
     sev = data.get("severities") or {}
     timeout = int(data.get("timeout") or 600)
-    findings = []
+    findings, errors = [], []
     with tempfile.TemporaryDirectory() as tmp:
         head_dir, base_dir, out_dir = (os.path.join(tmp, d) for d in ("head", "base", "out"))
         for d in (head_dir, base_dir, out_dir):
@@ -459,9 +496,10 @@ def scan(repo, base, data, env=os.environ):
         staged = stage(repo, "HEAD", files, head_dir)
         if staged:
             report = os.path.join(out_dir, "gitleaks.json")
-            call([tool_path("gitleaks", data, env), "dir", "--no-banner", "--redact", "--exit-code", "0",
-                  "--report-format", "json", "--report-path", report, head_dir], timeout, env)
-            found = from_gitleaks(read_json(report, []), sev.get("gitleaks"))
+            ran = call([tool_path("gitleaks", data, env), "dir", "--no-banner", "--redact", "--exit-code", "0",
+                        "--report-format", "json", "--report-path", report, head_dir], timeout, env)
+            got = output("gitleaks", ran.returncode, open(report).read() if os.path.isfile(report) else "", ran.stderr, errors)
+            found = from_gitleaks(got if isinstance(got, list) else [], sev.get("gitleaks"))
             configs = [os.path.join(cache_dir(data, env), "rules")] + [os.path.join(repo, str(r)) for r in sec.get("rules") or []]
             argv = [tool_path("semgrep", data, env), "scan", "--json", "--metrics", "off", "--disable-version-check",
                     "--quiet", "--no-git-ignore", "--timeout", "30"]
@@ -469,12 +507,14 @@ def scan(repo, base, data, env=os.environ):
                 argv += ["--config", c]
             # Run from the staged tree, so its paths are the repository's.
             ran = call(argv + ["."], timeout, dict(env, SEMGREP_SEND_METRICS="off"), cwd=head_dir)
-            found += from_semgrep(json.loads(ran.stdout) if ran.stdout.strip().startswith("{") else {}, sev.get("semgrep"), configs)
+            got = output("semgrep", ran.returncode, ran.stdout, ran.stderr, errors)
+            found += from_semgrep(got if isinstance(got, dict) else {}, sev.get("semgrep"), configs)
             flows = [p for p in staged if WORKFLOW_RE.match(p)]
             if flows:
                 ran = call([tool_path("zizmor", data, env), "--format", "json", "--offline", "--no-progress", *flows],
                            timeout, env, cwd=head_dir)
-                found += from_zizmor(json.loads(ran.stdout) if ran.stdout.strip().startswith("[") else [], sev.get("zizmor"))
+                got = output("zizmor", ran.returncode, ran.stdout, ran.stderr, errors)
+                found += from_zizmor(got if isinstance(got, list) else [], sev.get("zizmor"))
             for f in found:
                 f["file"] = repo_path(f["file"], head_dir)
             findings += found
@@ -485,7 +525,8 @@ def scan(repo, base, data, env=os.environ):
                 if had:
                     ran = call([tool_path("osv-scanner", data, env), "scan", "source", "--format", "json"]
                                + [a for p in had for a in ("-L", os.path.join(base_dir, p))], timeout, env)
-                    for f in from_osv(json.loads(ran.stdout) if ran.stdout.strip().startswith("{") else {}, sev.get("osv-scanner")):
+                    got = output("osv-scanner", ran.returncode, ran.stdout, ran.stderr, errors)
+                    for f in from_osv(got if isinstance(got, dict) else {}, sev.get("osv-scanner")):
                         before.add((repo_path(f["file"], base_dir), f["package"], f["rule"]))
                 ran = call([tool_path("osv-scanner", data, env), "scan", "source", "--format", "json"]
                            + [a for p in locks for a in ("-L", os.path.join(head_dir, p))], timeout, env)
@@ -496,7 +537,8 @@ def scan(repo, base, data, env=os.environ):
                         return open(path, encoding="utf-8", errors="replace").read().splitlines()
                     except OSError:
                         return []
-                for f in from_osv(json.loads(ran.stdout) if ran.stdout.strip().startswith("{") else {}, sev.get("osv-scanner"), lines_of):
+                got = output("osv-scanner", ran.returncode, ran.stdout, ran.stderr, errors)
+                for f in from_osv(got if isinstance(got, dict) else {}, sev.get("osv-scanner"), lines_of):
                     f["file"] = repo_path(f["file"], head_dir)
                     f["status"] = "pre-existing" if (f["file"], f["package"], f["rule"]) in before else "new"
                     findings.append(f)
@@ -511,7 +553,7 @@ def scan(repo, base, data, env=os.environ):
             if "status" not in f:
                 f["status"] = "new" if f["line"] in adds.get(f["file"], set()) else "pre-existing"
     suppress(findings, suppressions(repo))
-    return findings, merge_base
+    return findings, merge_base, errors
 
 
 def suppressions(repo):
@@ -549,15 +591,22 @@ def ordered(findings):
     def key(f):
         return (LEVELS.index(f["severity"]) if f.get("severity") in LEVELS else len(LEVELS),
                 STATUSES.index(f["status"]) if f.get("status") in STATUSES else len(STATUSES),
-                f.get("file") or "", int(f.get("line") or 0), f.get("rule") or "")
+                str(f.get("file") or ""), as_int(f.get("line")), str(f.get("rule") or ""))
     return sorted(findings, key=key)
+
+
+def as_int(value):
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def line_of(f):
     """One finding in two lines: its level, file, line, rule, tool, status
     and fingerprint (what a suppression names), then what it is and its
     fix, each cut short. Pure."""
-    where = f"{clean(f.get('file'), 160)}:{int(f.get('line') or 0)}"
+    where = f"{clean(f.get('file'), 160)}:{as_int(f.get('line'))}"
     out = (f"- [{clean(f.get('severity'), 10)}] {where} {clean(f.get('rule'), 120)} ({clean(f.get('tool'), 12)}, {clean(f.get('status'), 12)})"
            f" fp {clean(f.get('fingerprint'), 12)}\n")
     out += f"  {clean(f.get('message'), 90)} Fix: {clean(f.get('fix'), 100)}\n"
@@ -573,11 +622,14 @@ def report(result, caps=None):
     the file and the fingerprint (`fp`) shown. Pure."""
     caps = caps or result.get("caps") or {}
     limit, size = int(caps.get("findings") or 30), int(caps.get("bytes") or 8192)
-    findings = ordered(result.get("findings") or [])
+    findings = ordered([f for f in result.get("findings") or [] if isinstance(f, dict)])
     counts = {s: sum(1 for f in findings if f.get("status") == s) for s in STATUSES}
     head = (f"Security gate ({clean(result.get('mode'), 10)}): {counts['new']} new, {counts['pre-existing']} pre-existing, "
             f"{counts['suppressed']} suppressed; {len(result.get('blocking') or [])} new at a blocking level"
             + (" (it fails the gate)" if result.get("mode") == "block" and result.get("blocking") else "") + ".\n")
+    errors = [clean(e, 400) for e in result.get("errors") or []][:4]
+    if errors:
+        head += "It could not vouch for everything: " + "; ".join(errors) + "\n"
     out, shown = head, 0
     for f in findings[:limit]:
         entry = line_of(f)
@@ -608,9 +660,9 @@ def brief(result):
 
 
 def run(repo, base, data, mode_value, env=os.environ):
-    findings, merge_base = scan(repo, base, data, env)
+    findings, merge_base, errors = scan(repo, base, data, env)
     result = {"mode": mode_value, "base": merge_base, "head": git(repo, "rev-parse", "HEAD").strip(),
-              "caps": data.get("caps") or {}, "findings": ordered(findings)}
+              "caps": data.get("caps") or {}, "findings": ordered(findings), "errors": errors}
     result["blocking"] = [f["fingerprint"] for f in blocking(findings, data)]
     return result
 
@@ -659,7 +711,9 @@ def main(argv):
             with open(opts["json"], "w", encoding="utf-8") as fh:
                 json.dump(result, fh, indent=1)
         sys.stdout.write(report(result))
-        return 1 if value == "block" and result["blocking"] else 0
+        for err in result["errors"]:
+            print(f"::warning::security gate: {err}", file=sys.stderr)
+        return 1 if value == "block" and (result["blocking"] or result["errors"]) else 0
     print(__doc__, file=sys.stderr)
     return 64
 
@@ -711,7 +765,10 @@ def self_test():
         z = from_zizmor(read_json(os.path.join(fixtures, "zizmor.json"), []), sev["zizmor"])
         check("zizmor's recorded output names the template injection", any(f["rule"] == "zizmor.template-injection" for f in z), True)
         o = from_osv(read_json(os.path.join(fixtures, "osv-scanner.json"), {}), sev["osv-scanner"])
-        check("osv-scanner's recorded output gives a critical vulnerability with a fix", any(f["severity"] == "critical" and f["fix"].startswith("Upgrade") for f in o), True)
+        check("osv-scanner's recorded output gives a critical vulnerability, and the fix of the installed version's range",
+              [f["fix"] for f in o if f["severity"] == "critical"], ["Upgrade minimist to 1.2.6 or later."])
+    check("the lowest fix above the version", (first_fix("1.2.5", ["0.2.4", "1.2.6", "1.3.0"]), first_fix("1.2.10", ["1.2.9"]), first_fix("1", [])),
+          ("1.2.6", "1.2.9", ""))
     many = [{"tool": "semgrep", "rule": f"r{i}", "file": "a.py", "line": i, "severity": LEVELS[i % 4], "status": "new",
              "message": "m" * 200, "fix": "f" * 200, "fingerprint": "0" * 12} for i in range(45)]
     text = report({"mode": "report", "findings": many, "blocking": []}, {"findings": 30, "bytes": 8192})
@@ -719,6 +776,13 @@ def self_test():
     check("and says how many more", bool(re.search(r"^\d+ more not shown", text, re.M)), True)
     check("the brief's section names the classes checked and fences the report",
           (CLASSES in brief({"mode": "report", "findings": many[:1], "blocking": []}), brief({}), brief(None)), (True, "", ""))
+    errs = []
+    check("a tool's own exit codes are read, anything else is a failure, never nothing found",
+          (output("zizmor", 14, "[]", "", errs), output("semgrep", 0, "", "", errs), len(errs), output("osv-scanner", 2, "{}", "boom", errs), len(errs),
+           output("semgrep", 0, "not json", "", errs), len(errs), "boom" in errs[0]), ([], None, 0, None, 1, None, 2, True))
+    check("the report says what could not run, and reads a broken result safely",
+          ("could not vouch" in report({"mode": "block", "findings": [None, {"line": "x", "severity": "high", "status": "new"}], "errors": ["semgrep did not run"]}),),
+          (True,))
     sup = suppress([dict(many[0])], [{"rule": "r0", "file": "a.py", "fingerprint": "0" * 12, "reason": "test data"}])
     check("an entry with a reason suppresses its finding", (sup[0]["status"], sup[0]["reason"]), ("suppressed", "test data"))
     print("all tests passed" if not fails else f"{len(fails)} failed")
