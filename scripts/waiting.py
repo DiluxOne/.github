@@ -172,10 +172,10 @@ def checks_state(rollup):
 
 
 # The checks a fix round starts on (#741, autopilot.py FIX_JOBS), as the
-# check runs are named: the conventions' and the review's jobs, and in the
-# central repository (its own pull-request.yml) actionlint and the scripts
-# too. A repository's own workflow is not among them: nothing re-runs it.
-FIX_CHECKS = ("conventions /", "review /", "actionlint", "Scripts (self-tests)")
+# check runs are named: the conventions', the review's and the security
+# gate's jobs (#956), and in the central repository (its own
+# pull-request.yml) actionlint and the scripts too. A repository's own workflow is not among them: nothing re-runs it.
+FIX_CHECKS = ("conventions /", "review /", "security-gate /", "actionlint", "Scripts (self-tests)")
 CENTRAL_ONLY = ("actionlint", "Scripts (self-tests)")
 FIX_ROUND, ROUNDS_SPENT, NOT_RERUN = "the autopilot's fix round", "its checks fail after its rounds", "a check no fix round runs again"
 BOARD_EDITED = "its board edited by hand"
@@ -627,10 +627,10 @@ def self_test():
     check("C4 (#741) an autopilot draft whose check failed waits on its own work, never on a fix round that a draft does not get",
           blocker(dict(scripts5, isDraft=True)), ("the autopilot's work", AUTOPILOT))
     check("C4 (#741) actionlint and the scripts start a round only in the central repository, whose pipeline runs them",
-          ([fix_check("actionlint", r) for r in (org.CENTRAL, "DiluxOne/other", None)], fix_check("review / Claude review", "DiluxOne/other"),
+          ([fix_check("actionlint", r) for r in (org.CENTRAL, "DiluxOne/other", None)], fix_check("review / Claude review", "DiluxOne/other"), fix_check("security-gate / Security gate", "DiluxOne/other"),
            blocker(dict(scripts5, repository=dict(scripts5["repository"], nameWithOwner="DiluxOne/other")))[0],
            blocker(dict(scripts5, repository=dict(scripts5["repository"], nameWithOwner=org.CENTRAL)))[0]),
-          ([True, False, True], True, NOT_RERUN, FIX_ROUND))
+          ([True, False, True], True, True, NOT_RERUN, FIX_ROUND))
     ap = _module("autopilot", "autopilot.py")
     check("C4 (#741) the checks the board waits on a round for are the ones a round starts on (autopilot.py FIX_JOBS)",
           (FIX_CHECKS == ap.FIX_JOBS, [fix_check(n) for n in ("review / Claude review", "Scripts (self-tests)", "Scripts on macOS (the contributor's tools)", "gates / G2")]),
