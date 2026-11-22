@@ -482,3 +482,9 @@ def test_c1_evals_yml_collects_a_new_set_by_hand_and_pushes_nothing():
     assert len(keep) == 1
     path = keep[0]["with"]["path"]
     assert all(f in path for f in ("new-cases.json", "cases.json", "results.json"))
+
+
+def test_941_an_autopilot_job_has_one_round_and_one_review_of_slack():
+    mod = evals()
+    a, r = mod.STEPS["autopilot"]["minutes"], mod.STEPS["review"]["minutes"]
+    assert mod.job_minutes("autopilot") == min(mod.MAX_JOB_MINUTES, a * 2 + r * 2 + mod.JOB_MINUTES)

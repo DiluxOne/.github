@@ -8,7 +8,7 @@ name: AI evaluation
 # scripts/evals.py says which paths count for which step (`evals.py steps`). Each case of
 # evals/<step>/cases.json, a real one of the public repositories, is
 # replayed in a job of its own, with its step's time (`evals.py matrix`,
-# `evals.py run <step> <case>`), with the step as this pull request has it,
+# `evals.py run <step> <case>`), with the step as the branch run has it,
 # and graded deterministically where a grade exists; then one job per step
 # merges its cases' results (`evals.py merge`) and scores them against
 # evals/<step>/baseline.json (`evals.py score`): worse by more than one case
@@ -17,7 +17,7 @@ name: AI evaluation
 # check by its name, as the runner's failure, never the step's score. The
 # review is one of the steps, but its set is run by its own workflow,
 # review-eval.yml (scripts/review-eval.py, 3 plays per case, #847), whose
-# `paths:` are the review's; this one never runs it.
+# by hand or weekly too (#941); this one never runs it.
 #
 # Before any case is replayed, `evals.py validate` (#840) holds every case
 # of the sets to the rule of docs/testing-and-quality.md: it passes on its
