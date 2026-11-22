@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 941,
+  "prd_sha256": "22401fe86a99cc70658e5cd292a5e8bd43def5f3bbaa034d82636d6141e40848",
+  "prd": "### Problem\n\nThe engine spends most of its model use testing itself, not working. In the 24 hours to 2026-11-22 04:00 UTC, of the model minutes of every AI job in DiluxOne/.github and DiluxOne/diluxone-test, the AI evaluation (evals.yml: whole autopilot and Spec replays with Opus) took 65% (2,721 min, 180 jobs) and the review evaluation (review-eval.yml: 3 plays of 20 reviews) 21% (888 min, 45 jobs), while the autopilot's real work on issues took 8% (351 min). Both evaluations run on every push to any pull request that touches an AI step's paths, including a push that only merges main: #925's ran 7 times, #930's 5. A Max subscription's 5-hour limit was spent in about an hour. The release lane also starts after every merge to main.\n\n### Scope\n\n- evals.yml and review-eval.yml no longer run on pull requests; they run by hand (workflow_dispatch), as they already can.\n- The release lane runs once a day and by hand, not after every merge to main.\n- Tests and docs in step.\n\n### Out of scope\n\n- What the evaluations and the lane check, their sets and baselines.\n- The review of each pull request.\n\n### Acceptance criteria\n\n- C1: Given a pull request that touches an AI step's paths, when it is pushed, then neither evals.yml nor review-eval.yml starts.\n- C2: Given a merge to main, when its checks finish, then the release lane does not start; it starts on its daily schedule or by hand.\n\n### Criticality\n\nCritical",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-22T04:29:19Z",
+  "policy": "DiluxOne/.github@bccc24fef2c8f788ea9ed743cb1ce0a8ccafec22",
+  "how": "own-bug"
+}
