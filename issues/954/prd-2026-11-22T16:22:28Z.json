@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 954,
+  "prd_sha256": "a24952300ad15c64bd20347cde281a4dcb72cbbe7d2e2e4cd3f0f29423330b29",
+  "prd": "### Problem\n\n`scripts/gh-wait.sh --test` fails now and then in CI (the scripts job). Its first case sets the fake reset one second ahead (`RESET=now+1`) and a deadline 60 seconds ahead. When the clock ticks past the reset before the wrapper reads it, the wrapper sees a reset already passed, falls back to its default back-off of 60 seconds, finds that past the deadline and gives up: the case gets `1` instead of `0 ok 2`. The test depends on the clock, not on what the wrapper does.\n\n### Scope\n\n- The self-test's cases give the same answer however fast or slow the runner is: no case depends on a second boundary.\n- What gh-wait.sh does outside its self-test does not change.\n\n### Out of scope\n\n- gh-wait.sh's waits and limits.\n\n### Acceptance criteria\n\n- C1: Given a primary limit whose reset has just passed when the wrapper reads it, when the self-test's first case runs, then it still waits and runs the call again, and the case passes.\n- C2: Given the self-test run many times in a row, when it runs, then every run passes.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-22T16:22:28Z",
+  "policy": "DiluxOne/.github@a57f9362056557d28694e2c5d2bd53f16dfe772d",
+  "how": "own-bug"
+}
