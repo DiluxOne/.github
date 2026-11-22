@@ -393,12 +393,32 @@ jobs:
         if: steps.cached.outputs.automatic == 'true'
         run: python3 .dx-central/scripts/model-cache.py reuse --dir "$RUNNER_TEMP/model-cache" >> "$GITHUB_OUTPUT"
 
+      # #946: in the test repository, an issue a release scenario opened is
+      # triaged with no model: a `fix` title is an unconfirmed bug of the
+      # logic layer (its fixed reproduction decides it), anything else an
+      # enhancement, with the canned reply. A scenario with `triage: model` in
+      # tests/release/scenarios.yml keeps the model's; elsewhere, and on any
+      # read that fails, the model triages as before.
+      - name: A scenario's fixed triage (#946)
+        id: fixedtri
+        if: steps.cap.outputs.over != 'true' && steps.reuse.outputs.hit != 'true'
+        env:
+          TITLE: ${{ github.event.issue.title }}
+          BODY: ${{ github.event.issue.body }}
+          SCENARIOS: .dx-central/tests/release/scenarios.yml
+        run: |
+          set -uo pipefail
+          [ -f .dx-central/scripts/fixed-triage.py ] || { echo "hit=false" >> "$GITHUB_OUTPUT"; exit 0; }
+          FIXED="$(python3 .dx-central/scripts/autopilot.py fixed 2>/dev/null || true)" \
+            REPLY="$(bash .dx-central/scripts/triage-reply.sh enhancement en 2>/dev/null || true)" \
+            python3 .dx-central/scripts/fixed-triage.py answer >> "$GITHUB_OUTPUT" || echo "hit=false" >> "$GITHUB_OUTPUT"
+
       # With the paid roadmap in its brief, this run answers with labels and
       # numbers only: no free text of a run that read the roadmap exists, not
       # in a reply, not in a summary, not in a step's logged environment.
       - name: Classify
         id: claude
-        if: steps.cap.outputs.over != 'true' && steps.reuse.outputs.hit != 'true'
+        if: steps.cap.outputs.over != 'true' && steps.reuse.outputs.hit != 'true' && steps.fixedtri.outputs.hit != 'true'
         continue-on-error: true
         timeout-minutes: 8
         env:
@@ -507,7 +527,7 @@ jobs:
         if: steps.cap.outputs.over != 'true'
         env:
           PAID: ${{ steps.brief.outputs.paid }}
-          OUT: ${{ steps.claude.outputs.structured_output || steps.reuse.outputs.answer }}
+          OUT: ${{ steps.claude.outputs.structured_output || steps.reuse.outputs.answer || steps.fixedtri.outputs.answer }}
           EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
         run: |
           set -euo pipefail
@@ -551,7 +571,7 @@ jobs:
           AUTHOR: ${{ github.event.issue.user.login }}
           SECURITY_REPO: ${{ steps.sec.outputs.repo }}
           SECURITY_TOKEN: ${{ steps.sectoken.outputs.token }}
-          OUT: ${{ steps.claude.outputs.structured_output || steps.reuse.outputs.answer }}
+          OUT: ${{ steps.claude.outputs.structured_output || steps.reuse.outputs.answer || steps.fixedtri.outputs.answer }}
           NUMBER: ${{ github.event.issue.number }}
           MAINTAINER: ${{ inputs.maintainer }}
           PRIVATE: ${{ github.event.repository.private }}
