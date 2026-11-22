@@ -8,7 +8,10 @@ name: Pull request
 # request itself: it can change conventions.yml anyway. An autopilot pull
 # request whose review blocks gets its fix round here (autopilot-fix, #504),
 # as org-pull-request.yml gives it everywhere else, and so does one whose
-# gate fails or whose review ends without a verdict (#741). A merge into main
+# gate fails or whose review ends without a verdict (#741); a review an
+# edit or `review:full` starts gets it in pull-request-edited.yml, when that
+# run reviewed it rather than reused this one's verdict (#928), as
+# org-pull-request.yml does on an edit. A merge into main
 # brings the open autopilot pull requests in step with it from issues.yml's
 # `autopilot-sweep` job, here as in every repository (#561, #669).
 # After the review, whom the pull request waits on goes on its board, with

@@ -61,13 +61,20 @@ class World:
             state["extensions"] = list(extensions)
         ap.set_board("o/r", 8, "pr", **state)
 
+        self.pr_labels = ["autopilot", "needs-human"]
+
         def fake_gh(*args, input_text=None):
             line = " ".join(str(a) for a in args)
             self.calls.append(line)
             if args[:2] == ("issue", "view"):
                 return json.dumps({"url": ISSUE_URL, "comments": self.comments, "closedByPullRequestsReferences": [{"number": 8}]})
             if args[:2] == ("pr", "view"):
-                return json.dumps({"state": "OPEN", "labels": [{"name": "autopilot"}, {"name": "needs-human"}], "author": {"login": BOT}})
+                return json.dumps({"state": "OPEN", "labels": [{"name": l} for l in self.pr_labels], "author": {"login": BOT}})
+            # #928 C2: the REST call takes needs-human off; adding puts it back.
+            if line == "api -X DELETE repos/o/r/issues/8/labels/needs-human" and "needs-human" in self.pr_labels:
+                self.pr_labels.remove("needs-human")
+            if args[:2] == ("pr", "edit") and "--add-label" in args:
+                self.pr_labels.append(args[list(args).index("--add-label") + 1])
             return ""
 
         monkeypatch.setattr(ap, "gh", fake_gh)
@@ -123,7 +130,7 @@ def test_c2_a_decider_extends_it_and_the_next_run_starts(tmp_path, monkeypatch):
     assert w.ap.may_continue(["autopilot"], body, w.ap.run_numbers(st)[1], w.ap.runs_cap(5, st))[0] is True
     # needs-human off the pull request, the bot's continue on the issue, and
     # no `answered`: the run counts against the new cap.
-    assert any(c.startswith("pr edit 8") and "--remove-label needs-human" in c for c in w.calls)
+    assert "api -X DELETE repos/o/r/issues/8/labels/needs-human" in w.calls and "needs-human" not in w.pr_labels
     assert any(c.startswith("issue edit 7") and "--add-label autopilot:continue" in c for c in w.calls)
     assert "answered" not in board(w.fx, 7)
     assert len(w.replies()) == 1 and "10" in w.replies()[0]

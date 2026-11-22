@@ -27,9 +27,11 @@ name: Issue claims
 #                   the claim's) gives the issue's autopilot pull request,
 #                   at its cap, `autopilot-runs` more runs, at most twice,
 #                   when `who-decides` allows who commented: the extension
-#                   on its board, `needs-human` off it, `autopilot:continue`
-#                   on the issue, and the rest of the comment the next run's
-#                   hint. Anyone else gets one reply that a maintainer
+#                   on its board, `needs-human` off it and off the issue
+#                   (REST, read back before the continue, #928 C2; when it
+#                   does not come off, the extension is undone and the
+#                   reply says so), `autopilot:continue` on the issue, and
+#                   the rest of the comment the next run's hint. Anyone else gets one reply that a maintainer
 #                   decides; a third is refused, naming `/claim` and
 #                   closing it.
 #   issues          the form's checkbox ("I want to work on this myself")

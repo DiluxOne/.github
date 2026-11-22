@@ -158,11 +158,12 @@ jobs:
     # verdict (no outputs) as on one that blocks.
     needs: [conventions, review]
     # Only dilux-bot's own pull requests, only once ready (a draft's own run
-    # checks its work), and only for a new commit (an edit of the
-    # description keeps the review's verdict and must not spend a round).
+    # checks its work), and for an edit only when its review read the pull
+    # request in this run (`fresh`, #928): one that kept the push's verdict
+    # must not spend a round, the push's run has it.
     # #888: nor on a run whose commit is no longer the head: the head's run
     # starts the round.
-    if: always() && github.event_name == 'pull_request' && github.repository != 'DiluxOne/.github' && (needs.review.outputs.blocking == 'true' || needs.review.result == 'failure' || needs.conventions.result == 'failure' || needs.review.outputs.description-mismatch == 'true') && needs.review.outputs.current != 'false' && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN && github.event.action != 'edited'
+    if: always() && github.event_name == 'pull_request' && github.repository != 'DiluxOne/.github' && (needs.review.outputs.blocking == 'true' || needs.review.result == 'failure' || needs.conventions.result == 'failure' || needs.review.outputs.description-mismatch == 'true') && needs.review.outputs.current != 'false' && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (github.event.action != 'edited' || needs.review.outputs.fresh == 'true')
     # The agent's jobs read the repository with the job's own token (#287).
     permissions:
       contents: read

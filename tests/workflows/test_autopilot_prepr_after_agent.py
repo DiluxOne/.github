@@ -253,6 +253,9 @@ def test_a_quick_check_that_passed_at_the_head_skips_verify_and_the_work_keeps_i
     assert "needs.work.outputs.verify == 'true'" in wf["jobs"]["verify"]["if"]
     left = step("work", step_id="left")
     assert left["if"] == "always()" and "autopilot.py verify need" in left["run"]
+    # Its outputs are written in one redirect: a third `>> "$GITHUB_OUTPUT"`
+    # in a row is shellcheck's SC2129, which fails actionlint (#935).
+    assert left["run"].count('"$GITHUB_OUTPUT"') == 1 and "autopilot.py verify passed" in left["run"]
     assert wf["jobs"]["work"]["outputs"]["verify"] == "${{ steps.left.outputs.verify }}"
     assert ap.ready_goes({"kind": "ready", "text": "Ran it."}, "")
     # The work's limits are what they were before #673.

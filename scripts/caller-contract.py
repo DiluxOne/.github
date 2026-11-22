@@ -49,8 +49,9 @@ ALL = ("actions", "attestations", "checks", "contents", "deployments", "discussi
 TOKENS = {
     "waiting-update.yml": {
         "update": {"repositories": "${{ github.event.repository.name }}",
+                   # #928 C3: actions: write, a failed job's log and its one rerun.
                    "permissions": {"issues": "write", "pull-requests": "write", "checks": "read", "contents": "read", "statuses": "read",
-                                   "metadata": "read"}},
+                                   "actions": "write", "metadata": "read"}},
     },
 }
 APP_TOKEN = "actions/create-github-app-token@"
