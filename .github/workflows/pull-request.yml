@@ -345,13 +345,13 @@ jobs:
     # jobs' log, rather than leave the pull request to stall; so does a
     # review that ended without a verdict, whether its verdict step said so
     # (blocking, "did not finish") or the job died before it (no outputs).
-    needs: [conventions, actionlint, scripts, review]
+    needs: [conventions, actionlint, scripts, security-gate, review]
     # Only dilux-bot's own pull requests, only once ready (a draft's own run
     # checks its work), and only for a new commit (an edit of the
     # description keeps the review's verdict and must not spend a round).
     # #888: nor on a run whose commit is no longer the head: the head's run
     # starts the round.
-    if: always() && github.event_name == 'pull_request' && github.repository == 'DiluxOne/.github' && (needs.review.outputs.blocking == 'true' || needs.review.result == 'failure' || needs.conventions.result == 'failure' || needs.actionlint.result == 'failure' || needs.scripts.result == 'failure' || needs.review.outputs.description-mismatch == 'true') && needs.review.outputs.current != 'false' && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN && github.event.action != 'edited'
+    if: always() && github.event_name == 'pull_request' && github.repository == 'DiluxOne/.github' && (needs.review.outputs.blocking == 'true' || needs.review.result == 'failure' || needs.conventions.result == 'failure' || needs.actionlint.result == 'failure' || needs.scripts.result == 'failure' || needs.security-gate.result == 'failure' || needs.review.outputs.description-mismatch == 'true') && needs.review.outputs.current != 'false' && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN && github.event.action != 'edited'
     # The agent's jobs read the repository with the job's own token (#287).
     permissions:
       contents: read

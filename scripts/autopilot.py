@@ -3131,7 +3131,7 @@ def queue_log_text(pr, logs):
 # the conventions, the review and, in this repository, actionlint and the
 # scripts. A repository's own workflow is not among them: nothing re-runs it.
 CHECKS_LOG = "checks.md"
-FIX_JOBS = ("conventions /", "review /", "actionlint", "Scripts (self-tests)")
+FIX_JOBS = ("conventions /", "review /", "security-gate /", "actionlint", "Scripts (self-tests)")
 REVIEW_JOB = "review /"
 REVIEW_RECORD = re.compile(r"<!-- dx-review-record (.*?) -->", re.S)
 
@@ -4826,7 +4826,7 @@ Clamp the value in Sum::add.
               (here_fix.get("needs"), "needs.scripts.result == 'failure'" in here_trigger, [f"needs.{g}.result == 'failure'" in here_trigger for g in ("conventions", "actionlint")],
                "needs.review.outputs.blocking == 'true'" in here_trigger, trigger(here_fix).startswith("("), "!github.event.pull_request.draft" in guards(here_fix),
                sorted(here_fix.get("needs")) == sorted(yaml.safe_load(open(os.path.join(HERE, "..", ".github", "workflows", "pull-request.yml"), encoding="utf-8"))["jobs"]["review"]["needs"] + ["review"])),
-              (["conventions", "actionlint", "scripts", "review"], True, [True, True], True, True, True, True))
+              (["conventions", "actionlint", "scripts", "security-gate", "review"], True, [True, True], True, True, True, True))
         # #928 C5: the edited workflow's round, with this repository's
         # guards but the edit's own (it runs only on `edited`), on a review
         # that run made (`fresh`), after the jobs that workflow has.
@@ -4916,9 +4916,10 @@ Clamp the value in Sum::add.
               (True, False, True, True, {"mode": "fix", "pr": "${{ format('{0}', github.event.pull_request.number) }}",
                                          "description-ok": "${{ needs.review.outputs.description-mismatch == 'true' && 'false' || 'true' }}"}, {"contents": "read"}, "inherit", True, True))
         org_jobs = yaml.safe_load(open(os.path.join(HERE, "..", ".github", "workflows", "org-pull-request.yml"), encoding="utf-8"))["jobs"]
-        check("#741 C5: every other repository's round waits for the conventions and the review, and starts on either failing or a blocking review, on a ready pull request",
+        check("#741 C5: every other repository's round waits for the conventions, the security gate (#956) and the review, and starts on any failing or a blocking review, on a ready pull request",
               (org_fix.get("needs"), org_trigger, sorted(org_fix.get("needs")) == sorted(org_jobs["review"]["needs"] + ["review"]), "!github.event.pull_request.draft" in guards(org_fix)),
-              (["conventions", "review"], ["needs.review.outputs.blocking == 'true'", "needs.review.result == 'failure'", gate_clause("conventions"), DESCRIPTION_FIX], True, True))
+              (["conventions", "security-gate", "review"], ["needs.review.outputs.blocking == 'true'", "needs.review.result == 'failure'", gate_clause("conventions"),
+                                                             gate_clause("security-gate"), DESCRIPTION_FIX], True, True))
         check("#741 C5: the two triggers are the same apart from the gate list, which is each pipeline's own",
               ([c for c in here_trigger if c not in [gate_clause(g) for g in here_fix.get("needs") if g != "review"]],
                [c for c in org_trigger if c not in [gate_clause(g) for g in org_fix.get("needs") if g != "review"]],
