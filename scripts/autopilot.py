@@ -4653,7 +4653,7 @@ Clamp the value in Sum::add.
         check("#504 C1: this repository's autopilot-fix runs the round here, after its review, with the organisation's guards but the repository",
               (here_fix.get("uses"), "review" in here_fix.get("needs"), (here_fix.get("with") or {}).get("mode"), (here_fix.get("with") or {}).get("central-ref"),
                here_fix.get("permissions"), here_fix.get("secrets"), mine in cond(here_fix),
-               guards(here_fix) == [g.replace(theirs, mine) for g in guards(org_fix)]),
+               guards(here_fix) == [g.replace(theirs, mine) for g in guards(org_fix)] + ["github.event.action != 'edited'"]),
               ("./.github/workflows/autopilot.yml", True, "fix", "main", {"contents": "read"}, "inherit", True, True))
         clauses = ["github.event_name == 'pull_request'", "needs.review.outputs.blocking == 'true'", "contains(github.event.pull_request.labels.*.name, 'autopilot')",
                    "github.event.pull_request.user.login == vars.DX_BOT_LOGIN", "github.event.action != 'edited'"]
@@ -4747,12 +4747,15 @@ Clamp the value in Sum::add.
         # the round too, in both pipelines.
         DESCRIPTION_FIX = "needs.review.outputs.description-mismatch == 'true'"
         gate_clause = lambda gate: f"needs.{gate}.result == 'failure'"
+        # #928 C5: an edit rounds there only on a review it made (`fresh`),
+        # never on the push's verdict it reused; a push's run as before.
         check("#504 C3: every other repository's round never runs here, and is called as it was",
               (theirs in cond(org_fix), mine in cond(org_fix), "review" in org_fix.get("needs"), bool(re.fullmatch(r"DiluxOne/\.github/\.github/workflows/autopilot\.yml@v\d+", str(org_fix.get("uses")))),
                org_fix.get("with"), org_fix.get("permissions"), org_fix.get("secrets"),
-               guards(org_fix) == ["always()", clauses[0], theirs, "!github.event.pull_request.draft"] + clauses[2:]),
+               guards(org_fix) == ["always()", clauses[0], theirs, "!github.event.pull_request.draft"] + clauses[2:4],
+               top_and(cond(org_fix))[-1] == "(github.event.action != 'edited' || needs.review.outputs.fresh == 'true')"),
               (True, False, True, True, {"mode": "fix", "pr": "${{ format('{0}', github.event.pull_request.number) }}",
-                                         "description-ok": "${{ needs.review.outputs.description-mismatch == 'true' && 'false' || 'true' }}"}, {"contents": "read"}, "inherit", True))
+                                         "description-ok": "${{ needs.review.outputs.description-mismatch == 'true' && 'false' || 'true' }}"}, {"contents": "read"}, "inherit", True, True))
         org_jobs = yaml.safe_load(open(os.path.join(HERE, "..", ".github", "workflows", "org-pull-request.yml"), encoding="utf-8"))["jobs"]
         check("#741 C5: every other repository's round waits for the conventions and the review, and starts on either failing or a blocking review, on a ready pull request",
               (org_fix.get("needs"), org_trigger, sorted(org_fix.get("needs")) == sorted(org_jobs["review"]["needs"] + ["review"]), "!github.event.pull_request.draft" in guards(org_fix)),
