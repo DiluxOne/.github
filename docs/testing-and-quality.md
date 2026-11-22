@@ -43,6 +43,8 @@ A fix or a feature here comes with a pytest test under `tests/repro/` or `tests/
 
 The scripts job of `pull-request.yml` runs every script's `--test` and the whole of `tests/` with pytest; `make pre-pr` runs what the pull request and the merge queue run.
 
+A release scenario's cleanup (`cleanup` and `clear` in `scripts/release-scenarios.py`) never closes a pull request while it sits in the test repository's merge queue, where closing it would knock the other scenarios' pull requests of its merge group out unmerged: it waits for it to leave (at most `QUEUE_LEAVE`, 120 seconds), closes nothing once it merged, and closes it otherwise (#936).
+
 ## How the AI is measured
 
 Every AI step of the flow has its evaluation set (#735), so a change to a step's AI is scored, once a week and by hand (#941), not found out from the flow's failures. A set is data under `evals/<step>/`: `cases.json`, real cases from the organisation's public repositories (a private one's code would show in this public repository's logs), each with its `expect`ed outcome, and `baseline.json`, the score of the last whole run. One runner, [`scripts/evals.py`](../scripts/evals.py), replays each case with the step as the checked-out branch has it (its own prompt and its workflow's arguments: what is measured is what ships) and grades it deterministically wherever a grade exists; a model judges only where none does, with its rubric in the case.
