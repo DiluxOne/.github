@@ -47,7 +47,11 @@ name: Autopilot
 #                   so is one whose `make pre-pr` failed after the agent's
 #                   step (#673), or whose commits `apply` refused because
 #                   they do not build on the branch as GitHub has it (#856:
-#                   free, and it stops).
+#                   free, and it stops). A branch that moved on GitHub while
+#                   the agent worked (the sweep's merge of main, a person's
+#                   push) gets the agent's commits replayed on top when they
+#                   apply cleanly, and is refused only when they do not
+#                   (#934).
 #                   A maintainer's answer after a stop or a silent end
 #                   brings it back the same way: review-reply.yml takes
 #                   `needs-human` off and dilux-bot adds the continue (#561),
@@ -1975,7 +1979,29 @@ jobs:
                 REWORD=true
                 echo "The agent reworded the branch's commits (the same tree): pushed with a lease."
               else
-                echo "refused=diverged" >> "$GITHUB_OUTPUT"; echo "::error::The agent's commits do not build on $BRANCH as GitHub has it: nothing is pushed."; exit 1
+                # #934 C2: the branch moved on GitHub while the agent
+                # worked (the sweep merged main, a person pushed): the
+                # agent's own commits, from the head it started from, are
+                # replayed on top when they apply cleanly (a rebase, in a
+                # worktree of its own; a merge of the agent's is dropped:
+                # api-commit.py pushes no merge but one of main, #550).
+                # Only when they do not is the round refused.
+                replayed=""
+                fork=$(git merge-base "origin/$BRANCH" "$new") || fork=""
+                replay="$RUNNER_TEMP/dx-replay"
+                if [ -n "$fork" ] && git worktree add -q --detach "$replay" "$new"; then
+                  if git -C "$replay" rebase -q --onto "origin/$BRANCH" "$fork" >/dev/null 2>&1; then
+                    replayed=$(git -C "$replay" rev-parse HEAD)
+                  else
+                    git -C "$replay" rebase --abort >/dev/null 2>&1 || true
+                  fi
+                  git worktree remove --force "$replay" || true
+                fi
+                if [ -z "$replayed" ]; then
+                  echo "refused=diverged" >> "$GITHUB_OUTPUT"; echo "::error::The agent's commits do not build on $BRANCH as GitHub has it: nothing is pushed."; exit 1
+                fi
+                new=$replayed
+                echo "$BRANCH moved on GitHub while the agent worked: its $(git rev-list --count "origin/$BRANCH..$new") commit(s) are replayed on top."
               fi
             fi
             # Read whole, then searched: a pipe into grep -q could end early
