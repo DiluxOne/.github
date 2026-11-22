@@ -202,3 +202,18 @@ def test_c1_the_end_step_reads_where_make_pre_pr_passed():
     assert "needs.work.outputs.head" in passed and "needs.verify.outputs.verdict" in passed, passed
     assert "needs.work.outputs.checked" in passed, passed
     assert "checked" in jobs["work"]["outputs"]
+
+
+def test_c1_the_end_does_not_ready_a_reproduced_bug(tmp_path, monkeypatch):
+    # A reproduced bug's test is proven in the sandbox by the agent's own
+    # `finish ready`; the end, which did not run it, leaves the pull request
+    # a draft and continues, and never writes that the agent ran it.
+    w = World(tmp_path, monkeypatch)
+    monkeypatch.setattr(w.ap, "repro_needed", lambda body, labels, seal: ("", "tests/test_repro.py"))
+    w.end()
+    assert w.state["draft"] is True, w.calls
+    assert not any(c.startswith("pr ready 8") for c in w.calls), w.calls
+    said = " ".join(c for c in w.calls if c.startswith("pr comment 8"))
+    assert "tests/test_repro.py" in said and "finish ready" in said, w.calls
+    assert "ran it in the sandbox" not in w.state["body"]
+    assert w.verdict() == ["continue"]

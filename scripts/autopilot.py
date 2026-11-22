@@ -6090,12 +6090,14 @@ def superseded_of(repo, pr):
     return superseded(run, run_head, head, review, runs)
 
 
-def mark_ready(repo, pr, number, text):
+def mark_ready(repo, pr, number, text, agent=True):
     """The pull request marked ready (#928 C1: one path for `finish ready`
     and the end): every box ticked, its Credits block, "How I tested it"
     (`text`) set, a reproduced bug's test checked, the ready push that
     starts the review, the board refreshed. "" once ready, else why not
-    (it stays, or is again, a draft)."""
+    (it stays, or is again, a draft). The end (`agent` false) never
+    readies a reproduced bug: its test's proof in the sandbox is the
+    agent's `finish ready` (agent_helper), which the end did not run."""
     body = pr_json(repo, pr, "body")["body"]
     done, total = progress(body)
     if total == 0 or done < total:
@@ -6117,6 +6119,9 @@ def mark_ready(repo, pr, number, text):
     need, test = repro_needed(issue.get("body") or "", [l["name"] for l in issue.get("labels") or []], seal)
     if need and not test:
         return f"Not ready: {need}."
+    if test and not agent:
+        return (f"Not ready: the reproduction test `{test}` passes in the sandbox only through the agent's own `finish ready`; "
+                "`make pre-pr` passing is not that proof, so the next round finishes it.")
     # #820: the agent's commits not yet pushed go in one push with
     # the ready commit, after the pull request is marked ready.
     ahead = unpushed(os.environ.get("BRANCH", ""))
@@ -6949,7 +6954,8 @@ def main(argv):
             # #928 C1: green, every box ticked, and still a draft: the end
             # marks it ready the way `finish ready` does. When that path
             # refuses, it says why and keeps the verdict it had.
-            refused_ready = mark_ready(repo, pr, number, end_tested(os.environ.get("OUTBOX", OUTBOX_FILE), run_url, tail_file, passed_at))
+            refused_ready = mark_ready(repo, pr, number, end_tested(os.environ.get("OUTBOX", OUTBOX_FILE), run_url, tail_file, passed_at),
+                                       agent=False)
             if refused_ready:
                 print(refused_ready)
                 gh("pr", "comment", str(pr), "--repo", repo, "--body", not_ready_comment(refused_ready, run_url))
