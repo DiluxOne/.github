@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 946,
+  "prd_sha256": "2676f244917f95c332c3f413709aaac3c3001b836ff3ef9d1212732aaeee1ba3",
+  "prd": "### Problem\n\nIn the release lane, the triage of every issue a scenario opens in the test repository (DiluxOne/diluxone-test) runs the model (issue-triage.yml, \"Classify\"), although no scenario tests the triage: the model always answers an enhancement for a feature, docs or chore title and an unconfirmed bug for a `fix` title, whose fixed reproduction then decides it. It took about 29 model minutes in the test repository in the 24 hours to 2026-11-22 04:00 UTC. The autopilot and, since #943, the review there already answer without the model.\n\n### Scope\n\n- A fixed triage for a release scenario's issue in the test repository: no model; a `fix` title is an unconfirmed bug of the logic layer, anything else an enhancement, with the canned reply.\n- A scenario that tests the triage can say `triage: model` in tests/release/scenarios.yml and keep the model's; outside the test repository, and on any read that fails, the model triages as before.\n- Tests, and kinds/README.md and docs in step.\n\n### Out of scope\n\n- The triage in every other repository.\n- What the scenarios check.\n\n### Acceptance criteria\n\n- C1: Given an issue a release scenario opened in the test repository, when it is triaged, then no model runs and a `fix` title is an unconfirmed bug of the logic layer, anything else an enhancement.\n- C2: Given an issue with no scenario mark, or outside the test repository, when it is triaged, then the model triages it as today.\n\n### Criticality\n\nCritical",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-22T06:39:31Z",
+  "policy": "DiluxOne/.github@79f80f836f54fc0e684ecb7c37849d96cf549544",
+  "how": "own-bug"
+}
