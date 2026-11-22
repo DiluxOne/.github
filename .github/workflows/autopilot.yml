@@ -1661,11 +1661,14 @@ jobs:
           # pass at this head (it ran out of the step's time, or ran at an
           # earlier head): `verify` runs it in full. Passed here, it is
           # skipped, and the run takes no longer than before.
-          echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "verify=$(python3 .dx-central/scripts/autopilot.py verify need || echo false)" >> "$GITHUB_OUTPUT"
-          # #928 C1: the agent's own `make pre-pr` passed at this head, so
-          # the end may mark the pull request ready though it did not finish.
-          echo "checked=$(python3 .dx-central/scripts/autopilot.py verify passed || echo false)" >> "$GITHUB_OUTPUT"
+          # #928 C1: `checked`, the agent's own `make pre-pr` passed at this
+          # head, so the end may mark the pull request ready though it did
+          # not finish.
+          {
+            echo "head=$(git rev-parse HEAD)"
+            echo "verify=$(python3 .dx-central/scripts/autopilot.py verify need || echo false)"
+            echo "checked=$(python3 .dx-central/scripts/autopilot.py verify passed || echo false)"
+          } >> "$GITHUB_OUTPUT"
           # Best effort: the log wherever it is (the action's output, the
           # file it writes, or the CLI's session when the step was killed).
           WORK_LOG=$(python3 .dx-central/scripts/autopilot.py work-log) || WORK_LOG=""
