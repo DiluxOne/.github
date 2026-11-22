@@ -399,9 +399,9 @@ def test_c2_the_autopilot_replay_plans_the_merged_tests_from_the_real_base(tmp_p
 
 
 def test_c2_an_empty_file_list_fails_steps_not_selects_nothing():
-    # pr-files.py prints nothing when it could not list the files; the
-    # workflow only starts when `paths:` matched one, so "none" is "could
-    # not tell", and the check must fail rather than score nothing.
+    # evals.py steps given no file is "could not tell": it fails rather than
+    # select nothing (the workflow no longer maps a pull request's files,
+    # #941, but the command stays for choosing what to run by hand).
     import subprocess
     import sys
     out = subprocess.run([sys.executable, str(need("scripts/evals.py")), "steps"], input="\n", capture_output=True, text=True)
@@ -409,7 +409,7 @@ def test_c2_an_empty_file_list_fails_steps_not_selects_nothing():
     ok = subprocess.run([sys.executable, str(need("scripts/evals.py")), "steps"], input="README.md\n", capture_output=True, text=True)
     assert ok.returncode == 0 and ok.stdout.strip() == ""
     text = (need(".github/workflows/evals.yml")).read_text(encoding="utf-8")
-    assert "set -euo pipefail" in text and "pr-files.py | python3 scripts/evals.py steps" in text
+    assert "set -euo pipefail" in text and "pr-files.py" not in text
 
 
 # C3: the review's gate is review-eval.yml's, exactly: a slack of one case
@@ -541,4 +541,3 @@ def test_c1_collect_pins_the_issue_of_each_spec_and_autopilot_case(monkeypatch):
         got = ev.collect(step, 6)
         assert [(c["title"], c["body"]) for c in got] == [("feat: b", "the text")]
     assert ev.collect("repro", 6) and len(calls) == 2
-

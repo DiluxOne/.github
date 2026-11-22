@@ -103,7 +103,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: The steps the change touches
+      - name: The steps to run
         id: list
         env:
           GH_TOKEN: ${{ github.token }}
@@ -119,15 +119,11 @@ jobs:
             # The weekly run (#941): every step with a set, but the review,
             # whose set review-eval.yml runs.
             for f in evals/*/cases.json; do d=${f#evals/}; d=${d%%/*}; [ "$d" = review ] || printf '%s\n' "$d"; done > "$RUNNER_TEMP/steps.txt"
-          elif [ "$EVENT" = workflow_dispatch ]; then
-            # A step with no set yet runs nothing, and says so.
+          else
+            # By hand: the step named. A step with no set yet runs nothing,
+            # and says so.
             : > "$RUNNER_TEMP/steps.txt"
             if [ -f "evals/$STEP/cases.json" ]; then printf '%s\n' "$STEP" > "$RUNNER_TEMP/steps.txt"; else echo "::notice::$STEP has no set yet (evals/$STEP/cases.json)."; fi
-          else
-            # No file listed is "could not tell" (this only runs when one
-            # matched `paths:`): evals.py steps then fails, and pipefail
-            # fails the check rather than skip every set.
-            python3 scripts/pr-files.py | python3 scripts/evals.py steps > "$RUNNER_TEMP/steps.txt"
           fi
           steps=$(jq -Rnc '[inputs | select(length > 0)]' < "$RUNNER_TEMP/steps.txt")
           # One replay job per case, so each case gets its job's whole time.
