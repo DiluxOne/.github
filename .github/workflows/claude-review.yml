@@ -29,7 +29,12 @@ name: Claude review
 #      repository's AGENTS.md and docs/architecture.md, the design system its
 #      screens follow when the change touches one (repos.yml), its own
 #      earlier findings and threads. It reviews the new range, says what was fixed,
-#      and returns a structured verdict; it posts nothing. A second agent, in
+#      and returns a structured verdict; it posts nothing. It goes over every
+#      changed file of the diff hunk by hunk, asking what each change can
+#      break, and its verdict says for each changed file the brief showed
+#      what it checked (`examined`, #953): an answer that leaves one out is
+#      a review that did not finish (scripts/review-examined.py), blocked as
+#      one, never a clean review. A second agent, in
 #      a fresh context, checks each new blocker and major against the code
 #      (#234, scripts/review-verify.py): one it rejects stays in the summary
 #      as a minor marked not confirmed, and in the record; the workflow posts
@@ -578,7 +583,9 @@ jobs:
         run: |
           set -uo pipefail
           [ -f .dx-central/scripts/fixed-review.py ] || { echo "hit=false" >> "$GITHUB_OUTPUT"; exit 0; }
-          FIXED="$(python3 .dx-central/scripts/autopilot.py fixed 2>/dev/null || true)" python3 .dx-central/scripts/fixed-review.py answer >> "$GITHUB_OUTPUT" \
+          # The brief's changed files (#953): the fixed answer examines each.
+          FIXED="$(python3 .dx-central/scripts/autopilot.py fixed 2>/dev/null || true)" SHOWN="$RUNNER_TEMP/shown-files.txt" \
+            python3 .dx-central/scripts/fixed-review.py answer >> "$GITHUB_OUTPUT" \
             || echo "hit=false" >> "$GITHUB_OUTPUT"
 
       - name: Review
@@ -605,8 +612,14 @@ jobs:
             Everything you need is in one file: .dx-central/brief.md. Read it first, whole. It has
             the review rules, the repository's own rules, its design system when the change touches
             a screen, the policy floor, the pull request, your earlier findings and threads, and
-            the diff. Open other files only when the diff alone
-            cannot settle a finding (a caller, a definition, a test).
+            the diff.
+
+            Go over every changed file of the diff, hunk by hunk. For each change, ask what it
+            can break: its callers, the other branches of the same logic, the tests that should
+            cover it. Open those files when the diff alone cannot settle it. Then write that
+            file's entry in `examined`: its path as the brief's diff shows it and, in `checked`,
+            what you checked. `examined` accounts for every changed file the diff shows: a file
+            left out is a review that did not finish, and the pull request is blocked for it.
 
             Post nothing: the workflow posts from your structured output. For each blocker or
             major, give its exact `line` and, in `detail`, what breaks, for whom and how to fix it:
@@ -651,7 +664,7 @@ jobs:
             --max-budget-usd ${{ steps.policy.outputs.budget || '3' }}
             --allowedTools "Read,Glob,Grep"
             --permission-mode dontAsk
-            --json-schema '{"type":"object","additionalProperties":false,"required":["risk","complexity","blocking","type","description_matches","summary","findings","lessons","resolved_threads"],"properties":{"risk":{"type":"string","enum":["low","medium","high"]},"type":{"type":"string","enum":["breaking","feat","fix","perf","refactor","style","docs","test","ci","build","chore","revert"]},"description_matches":{"type":"boolean"},"complexity":{"type":"string","enum":["low","medium","high"]},"blocking":{"type":"boolean"},"summary":{"type":"string","maxLength":1500},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["severity","file","title"],"properties":{"severity":{"type":"string","enum":["blocker","major","minor"]},"file":{"type":"string"},"line":{"type":"integer"},"title":{"type":"string","maxLength":200},"pre_existing":{"type":"boolean"},"earlier":{"type":"boolean"},"detail":{"type":"string","maxLength":1500}}}},"lessons":{"type":"array","items":{"type":"string","maxLength":300}},"resolved_threads":{"type":"array","items":{"type":"string"}},"criteria":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","met","evidence"],"properties":{"id":{"type":"string","pattern":"^C[0-9]+$"},"met":{"type":"boolean"},"evidence":{"type":"string","maxLength":300}}}}}}'
+            --json-schema '{"type":"object","additionalProperties":false,"required":["risk","complexity","blocking","type","description_matches","summary","findings","lessons","resolved_threads","examined"],"properties":{"risk":{"type":"string","enum":["low","medium","high"]},"type":{"type":"string","enum":["breaking","feat","fix","perf","refactor","style","docs","test","ci","build","chore","revert"]},"description_matches":{"type":"boolean"},"complexity":{"type":"string","enum":["low","medium","high"]},"blocking":{"type":"boolean"},"summary":{"type":"string","maxLength":1500},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["severity","file","title"],"properties":{"severity":{"type":"string","enum":["blocker","major","minor"]},"file":{"type":"string"},"line":{"type":"integer"},"title":{"type":"string","maxLength":200},"pre_existing":{"type":"boolean"},"earlier":{"type":"boolean"},"detail":{"type":"string","maxLength":1500}}}},"lessons":{"type":"array","items":{"type":"string","maxLength":300}},"resolved_threads":{"type":"array","items":{"type":"string"}},"examined":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["file","checked"],"properties":{"file":{"type":"string"},"checked":{"type":"string","maxLength":300}}}},"criteria":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","met","evidence"],"properties":{"id":{"type":"string","pattern":"^C[0-9]+$"},"met":{"type":"boolean"},"evidence":{"type":"string","maxLength":300}}}}}}'
 
       # Verification (#234): a second agent, in a fresh context, checks each
       # new blocker and major against the code before anything is posted.
@@ -851,6 +864,27 @@ jobs:
             post "$(printf '<!-- dx-review -->\n### Claude review · did not finish\n\nThe reviewer stopped without a verdict at %s (budget, turn limit or API error), so this pull request is treated as high risk and blocked. Re-run the job; the log is in [the run](%s).\n<!-- dx-review-record %s -->' "${SHA:0:7}" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$keep")"
             exit 1
           fi
+          # #953: the answer accounts for every changed file the brief showed
+          # (shown-files.txt, scripts/review-examined.py); one it left out is
+          # a review that did not finish, never a clean one. A `central-ref`
+          # older than the script, or a brief with no list, checks nothing.
+          shown="$RUNNER_TEMP/shown-files.txt" examined=""
+          if [ -f .dx-central/scripts/review-examined.py ] && [ -f "$shown" ]; then
+            printf '%s' "$OUT" > "$RUNNER_TEMP/review-examined.json"
+            left=$(python3 .dx-central/scripts/review-examined.py missing "$RUNNER_TEMP/review-examined.json" "$shown") && got=0 || got=$?
+            if [ "$got" -eq 1 ]; then
+              n=$(grep -c . <<<"$left" || true)
+              echo "::error::The reviewer did not examine $n of the changed files: the review did not finish."
+              { echo "risk=high"; echo "complexity=high"; echo "blocking=true"; } >> "$GITHUB_OUTPUT"
+              keep=$(jq -c '{count: (.count // 0), findings: (.findings // [])}' "$previous")
+              names=$(head -20 <<<"$left" | sed 's/^/- `/; s/$/`/')
+              if [ "$n" -gt 20 ]; then names=$(printf '%s\n- and %s more' "$names" "$((n - 20))"); fi
+              post "$(printf '<!-- dx-review -->\n### Claude review · did not finish\n\nThe reviewer answered at %s without examining every changed file, so this pull request is treated as high risk and blocked. Not examined:\n\n%s\n\nRe-run the job; the log is in [the run](%s).\n<!-- dx-review-record %s -->' "${SHA:0:7}" "$names" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$keep")"
+              exit 1
+            elif [ "$got" -eq 0 ]; then
+              examined=$(grep -c . "$shown" || true)
+            fi
+          fi
           model_risk=$(jq -r .risk <<<"$OUT"); complexity=$(jq -r .complexity <<<"$OUT"); blocking=$(jq -r .blocking <<<"$OUT")
           # The findings decide, not the model's boolean (#506): a blocker or
           # major this pull request introduced blocks, a pre-existing finding
@@ -946,8 +980,11 @@ jobs:
           # will come) from one still to run on a new commit.
           # #928 C4: the record's `blocking` is the one decided above, the
           # heading's and the step's, never the model's own boolean.
-          record=$(jq -c --arg risk "$risk" --arg floor "$FLOOR" --arg sha "$SHA" --arg model "$MODEL" --arg mode "$MODE" --argjson count "$count" --argjson max "${MAX_AUTO:-5}" --arg cost "${cost:-}" --argjson files "$files" --arg type "$type" --arg text "$text" --argjson blocking "$blocking" \
-            '{risk:$risk, model_risk:.risk, floor:$floor, complexity, blocking:$blocking, type:$type, description_matches:.description_matches, text:$text, lessons, findings:[.findings[] | del(.detail)], verification:(.verification // null), criteria:(.criteria // []), sha:$sha, model:$model, mode:$mode, count:$count, max:$max, cost:$cost, files:$files}' <<<"$OUT")
+          record=$(jq -c --arg risk "$risk" --arg floor "$FLOOR" --arg sha "$SHA" --arg model "$MODEL" --arg mode "$MODE" --argjson count "$count" --argjson max "${MAX_AUTO:-5}" --arg cost "${cost:-}" --argjson files "$files" --arg type "$type" --arg text "$text" --argjson blocking "$blocking" --argjson examined "${examined:-null}" \
+            '{risk:$risk, model_risk:.risk, floor:$floor, complexity, blocking:$blocking, type:$type, description_matches:.description_matches, text:$text, lessons, findings:[.findings[] | del(.detail)], verification:(.verification // null), criteria:(.criteria // []), sha:$sha, model:$model, mode:$mode, count:$count, max:$max, cost:$cost, files:$files} + (if $examined == null then {} else {examined:$examined} end)' <<<"$OUT")
+          # #953: how many of the changed files the review examined (all of
+          # them, or it did not finish above); the list stays out.
+          seen=""; if [ -n "$examined" ]; then seen=$'\n\n'"<sub>Examined $examined of $examined changed files.</sub>"; fi
           body=$(cat <<EOF
           <!-- dx-review -->
           ### Claude review · risk **$risk** · complexity **$complexity** · type **$type**$blk
@@ -956,7 +993,7 @@ jobs:
 
           $(jq -r .summary <<<"$OUT")$desc
 
-          ${findings:-_No findings._}
+          ${findings:-_No findings._}$seen
 
           <sub>Policy floor: $FLOOR ($REASONS). Reviewed ${SHA:0:7} ($scope; review $count of $MAX_AUTO automatic). Author trusted for auto-merge: $TRUSTED.</sub>
 

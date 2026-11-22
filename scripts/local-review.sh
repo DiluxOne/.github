@@ -93,7 +93,9 @@ if [ "${1:-}" = "--test" ]; then
 printf '{"structured_output": %s}\n' "$FAKE_VERDICT"
 FAKE
   chmod +x "$fake"
-  verdict() { printf '{"risk":"low","complexity":"low","blocking":false,"type":"%s","description_matches":%s,"summary":"s","findings":%s}' "$1" "$2" "$3"; }
+  # Every changed file examined (#953), unless the fourth argument says otherwise.
+  examined_all='[{"file":"a.md","checked":"the line"}]'
+  verdict() { printf '{"risk":"low","complexity":"low","blocking":false,"type":"%s","description_matches":%s,"summary":"s","findings":%s,"examined":%s}' "$1" "$2" "$3" "${4:-$examined_all}"; }
   major='[{"severity":"major","file":"a.md","line":1,"title":"a real problem"}]'
   review_case() {
     local name=$1 want=$2 grep_for=$3 setup=$4; shift 4
@@ -115,6 +117,8 @@ FAKE
     "FAKE_VERDICT='$(verdict docs true '[]')' $run; cat .git/dx-review/findings.md" || fail=1
   review_case "a major is not ready, and is a box to tick in the file" 1 '- [ ] **major** `a.md:1`: a real problem' \
     "FAKE_VERDICT='$(verdict docs true "$major")' $run; cat .git/dx-review/findings.md; exit 1" || fail=1
+  review_case "a changed file the review did not examine: it did not finish, not ready" 1 "the review did not finish" \
+    "FAKE_VERDICT='$(verdict docs true '[]' '[]')' $run" || fail=1
   review_case "a title of another type than the change is not ready" 1 "retitle it" \
     "FAKE_VERDICT='$(verdict fix true '[]')' $run" || fail=1
   review_case "a description that does not match is not ready" 1 "does not match the code" \
@@ -268,10 +272,12 @@ if ! command -v "$reviewer" >/dev/null; then
 fi
 
 echo; echo "== Review ($model, effort $effort, $mode)"
-schema='{"type":"object","additionalProperties":false,"required":["risk","complexity","blocking","type","description_matches","summary","findings"],"properties":{"risk":{"type":"string","enum":["low","medium","high"]},"type":{"type":"string","enum":["breaking","feat","fix","perf","refactor","style","docs","test","ci","build","chore","revert"]},"description_matches":{"type":"boolean"},"complexity":{"type":"string","enum":["low","medium","high"]},"blocking":{"type":"boolean"},"summary":{"type":"string","maxLength":1500},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["severity","file","title"],"properties":{"severity":{"type":"string","enum":["blocker","major","minor"]},"file":{"type":"string"},"line":{"type":"integer"},"title":{"type":"string","maxLength":200},"pre_existing":{"type":"boolean"}}}}}}'
+schema='{"type":"object","additionalProperties":false,"required":["risk","complexity","blocking","type","description_matches","summary","findings","examined"],"properties":{"risk":{"type":"string","enum":["low","medium","high"]},"type":{"type":"string","enum":["breaking","feat","fix","perf","refactor","style","docs","test","ci","build","chore","revert"]},"description_matches":{"type":"boolean"},"complexity":{"type":"string","enum":["low","medium","high"]},"blocking":{"type":"boolean"},"summary":{"type":"string","maxLength":1500},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["severity","file","title"],"properties":{"severity":{"type":"string","enum":["blocker","major","minor"]},"file":{"type":"string"},"line":{"type":"integer"},"title":{"type":"string","maxLength":200},"pre_existing":{"type":"boolean"}}}},"examined":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["file","checked"],"properties":{"file":{"type":"string"},"checked":{"type":"string","maxLength":300}}}}}}'
 prompt="You are the code reviewer for this repository, reviewing a change before its pull request is opened.
 
-Everything you need is in one file: $work/brief.md. Read it first, whole. It has the review rules, the repository's own rules, its design system when the change touches a screen, the policy floor, the pull request's title and description, and the diff. Open other files only when the diff alone cannot settle a finding (a caller, a definition, a test).
+Everything you need is in one file: $work/brief.md. Read it first, whole. It has the review rules, the repository's own rules, its design system when the change touches a screen, the policy floor, the pull request's title and description, and the diff.
+
+Go over every changed file of the diff, hunk by hunk. For each change, ask what it can break: its callers, the other branches of the same logic, the tests that should cover it. Open those files when the diff alone cannot settle it. Then write that file's entry in \`examined\`: its path as the brief's diff shows it and, in \`checked\`, what you checked. \`examined\` accounts for every changed file the diff shows: a file left out is a review that did not finish.
 
 Change nothing and post nothing: answer only with the structured output. In findings, list every problem still open (blocker, major, minor) with its file and line: new ones, and, when the brief says the review is incremental, every earlier finding the new commits did not fix. Set \`pre_existing\` true on a finding about code this change did not introduce (it was there before, and the diff neither adds nor changes it): it never stops the change. Do not open the summary with a count: the script writes it. In the summary, say in one line what the new commits fixed when the review is incremental.
 
@@ -299,6 +305,13 @@ serious=$(jq -c '.findings' <<<"$verdict" | python3 "$CENTRAL/scripts/review-cou
 [ "$serious" -eq 0 ] || reasons_not+=("$serious blocker or major finding(s)")
 if [ -n "$body_file" ] && [ "$(jq -r .description_matches <<<"$verdict")" != true ]; then
   reasons_not+=("the description does not match the code (see the summary)")
+fi
+# A changed file the brief showed that the review did not examine (#953):
+# the review did not finish, never a clean one.
+if [ -f "$work/shown-files.txt" ]; then
+  printf '%s' "$verdict" > "$work/verdict.json"
+  left=$(python3 "$CENTRAL/scripts/review-examined.py" missing "$work/verdict.json" "$work/shown-files.txt") || true
+  [ -z "$left" ] || reasons_not+=("the review did not finish: it did not examine $(grep -c . <<<"$left") changed file(s): $(head -5 <<<"$left" | paste -sd, - | sed 's/,/, /g'); run it again")
 fi
 read_type=$(jq -r .type <<<"$verdict")
 title_type=$(sed -nE 's/^([a-z]+)(\([^)]*\))?(!?):.*/\1\3/p' <<<"$title")
