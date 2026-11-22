@@ -877,6 +877,7 @@ jobs:
               echo "::error::The reviewer did not examine $n of the changed files: the review did not finish."
               { echo "risk=high"; echo "complexity=high"; echo "blocking=true"; } >> "$GITHUB_OUTPUT"
               keep=$(jq -c '{count: (.count // 0), findings: (.findings // [])}' "$previous")
+              # shellcheck disable=SC2016 # sed's end of line, not a shell expression.
               names=$(head -20 <<<"$left" | sed 's/^/- `/; s/$/`/')
               if [ "$n" -gt 20 ]; then names=$(printf '%s\n- and %s more' "$names" "$((n - 20))"); fi
               post "$(printf '<!-- dx-review -->\n### Claude review · did not finish\n\nThe reviewer answered at %s without examining every changed file, so this pull request is treated as high risk and blocked. Not examined:\n\n%s\n\nRe-run the job; the log is in [the run](%s).\n<!-- dx-review-record %s -->' "${SHA:0:7}" "$names" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$keep")"
