@@ -558,9 +558,32 @@ jobs:
         env:
           KEY: ${{ steps.cached.outputs.key }}
 
+      # #943: in the test repository, a release scenario that does not test
+      # the review gets a fixed answer, with no model: risk at the policy
+      # floor, not blocking, the PRD's criteria met. A scenario that tests the
+      # review, or reads its verdict, says `review: model` in
+      # tests/release/scenarios.yml and keeps the model's. Outside the test
+      # repository (autopilot.py fixed is empty), and on any failed read, the
+      # model reviews as before.
+      - name: A scenario's fixed review (#943)
+        id: fixedrev
+        if: (steps.scope.outputs.mode == 'full' || steps.scope.outputs.mode == 'incremental') && steps.reuse.outputs.hit != 'true'
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          TITLE: ${{ github.event.pull_request.title }}
+          FLOOR: ${{ steps.policy.outputs.floor }}
+          SCENARIOS: .dx-central/tests/release/scenarios.yml
+        run: |
+          set -uo pipefail
+          [ -f .dx-central/scripts/fixed-review.py ] || { echo "hit=false" >> "$GITHUB_OUTPUT"; exit 0; }
+          FIXED="$(python3 .dx-central/scripts/autopilot.py fixed 2>/dev/null || true)" python3 .dx-central/scripts/fixed-review.py answer >> "$GITHUB_OUTPUT" \
+            || echo "hit=false" >> "$GITHUB_OUTPUT"
+
       - name: Review
         id: claude
-        if: (steps.scope.outputs.mode == 'full' || steps.scope.outputs.mode == 'incremental') && steps.reuse.outputs.hit != 'true'
+        if: (steps.scope.outputs.mode == 'full' || steps.scope.outputs.mode == 'incremental') && steps.reuse.outputs.hit != 'true' && steps.fixedrev.outputs.hit != 'true'
         # A review that does not finish (turn limit, API error) must still
         # leave a comment saying so; the verdict step fails the job for it.
         continue-on-error: true
@@ -655,10 +678,10 @@ jobs:
 
       - name: The verifier's task
         id: verify-task
-        if: (steps.claude.outcome == 'success' && steps.claude.outputs.structured_output != '') || steps.reuse.outputs.hit == 'true'
+        if: (steps.claude.outcome == 'success' && steps.claude.outputs.structured_output != '') || steps.reuse.outputs.hit == 'true' || steps.fixedrev.outputs.hit == 'true'
         continue-on-error: true # the verdict runs whatever happens here
         env:
-          OUT: ${{ steps.claude.outputs.structured_output || steps.reuse.outputs.answer }}
+          OUT: ${{ steps.claude.outputs.structured_output || steps.reuse.outputs.answer || steps.fixedrev.outputs.answer }}
         run: |
           set -euo pipefail
           printf '%s' "$OUT" > "$RUNNER_TEMP/review.json"
@@ -736,7 +759,7 @@ jobs:
           BODY: ${{ github.event.pull_request.body }}
           BOT: ${{ steps.bot.outputs.app-slug }}[bot]
           PR: ${{ github.event.pull_request.number }}
-          OUT: ${{ steps.claude.outputs.structured_output || steps.reuse.outputs.answer }}
+          OUT: ${{ steps.claude.outputs.structured_output || steps.reuse.outputs.answer || steps.fixedrev.outputs.answer }}
           EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
           VERIFY_EXECUTION_FILE: ${{ steps.verify.outputs.execution_file }}
           FLOOR: ${{ steps.policy.outputs.floor }}
