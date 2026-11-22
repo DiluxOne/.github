@@ -103,7 +103,7 @@ FIELDS = """__typename
         comments(first: 20) { totalCount nodes { author { login } body } } lastComments: comments(last: 20) { nodes { author { login } body } }
         commits(last: 1) { nodes { commit { oid statusCheckRollup { state contexts(first: 100) {
           pageInfo { hasNextPage }
-          nodes { __typename ... on CheckRun { name conclusion status } ... on StatusContext { context state } } } } } } }
+          nodes { __typename ... on CheckRun { name conclusion status databaseId } ... on StatusContext { context state } } } } } } }
         closingIssuesReferences(first: 10) { nodes { number repository { nameWithOwner } labels(first: 30) { nodes { name } }
           comments(first: 20) { totalCount nodes { author { login } body } } lastComments: comments(last: 20) { nodes { author { login } body } } } }
       }"""
@@ -261,7 +261,9 @@ def blocker(pr, rounds=None):
             return "the autopilot's work", AUTOPILOT
         repo = (pr.get("repository") or {}).get("nameWithOwner") or None
         if not any(fix_check(n, repo) for n in failed_checks(rollup)):
-            return NOT_RERUN, MAINTAINER
+            # #928 C3: run again once on a transient error (update): the
+            # checks, not a person.
+            return ("checks running", CHECKS) if pr.get("rerun") else (NOT_RERUN, MAINTAINER)
         if rounds_spent(labels, board) >= (rounds_cap() if rounds is None else rounds):
             return ROUNDS_SPENT, MAINTAINER
         return FIX_ROUND, AUTOPILOT
@@ -447,6 +449,72 @@ def fetch(owner):
         after = page["pageInfo"]["endCursor"]
 
 
+# GitHub's transient errors (#928 C3), in a failed job's log: an HTTP 5xx
+# from gh or the API, a time-out, a connection reset. A failure of the
+# repository's own whose log shows one is run again once.
+TRANSIENT = re.compile(r"\bHTTP[ /]*(?:1\.[01] |2 )?(?:500|502|503|504)\b|\b(?:500|502|503|504) (?:Internal Server Error|Bad Gateway|"
+                       r"Service Unavailable|Gateway Time-?out)\b|timed out|\btimeout\b|ETIMEDOUT|connection reset", re.I)
+
+
+def transient(log):
+    """Whether a failed job's log shows a transient GitHub error. Pure."""
+    return bool(TRANSIENT.search(log or ""))
+
+
+def rerun_plan(failed, attempts):
+    """The jobs to run again (#928 C3): `failed`, (job id, its log) for each
+    failed check of the repository's own; `attempts`, each job's run
+    attempt. All of them, when every one failed on a transient error on
+    its run's first attempt (so once, with nothing stored); else none, and
+    the maintainer decides as before. Pure."""
+    if not failed or any(not transient(log) or attempts.get(job) != 1 for job, log in failed):
+        return []
+    return [job for job, _ in failed]
+
+
+def own_failed_runs(pr):
+    """The databaseIds (the Actions job ids) of the head's failed check runs
+    no fix round runs again; None when one has no id (a status, or another
+    app's check), which cannot be run again from here. Pure."""
+    commits = (pr.get("commits") or {}).get("nodes") or []
+    rollup = ((commits[-1] if commits else {}).get("commit") or {}).get("statusCheckRollup")
+    repo = (pr.get("repository") or {}).get("nameWithOwner") or None
+    ids = []
+    for c in ((rollup or {}).get("contexts") or {}).get("nodes") or []:
+        if not c:
+            continue
+        if c.get("__typename") == "StatusContext" or "context" in c:
+            if (c.get("state") or "").upper() in FAILED_STATUS:
+                return None
+        elif (c.get("conclusion") or "").upper() in FAILED_RUN and not fix_check(c.get("name"), repo):
+            if not isinstance(c.get("databaseId"), int):
+                return None
+            ids.append(c["databaseId"])
+    return ids
+
+
+def rerun_transient(repo, pr):
+    """#928 C3: where the board would mention the maintainer for a failed
+    check of the repository's own, its job's log is read first; a transient
+    error on the first attempt is run again (`rerun` on the item). A read or
+    a rerun that fails leaves it to the maintainer, as before."""
+    ids = own_failed_runs(pr)
+    if not ids:
+        return
+    try:
+        failed = [(job, gh("api", f"repos/{repo}/actions/jobs/{job}/logs")) for job in ids]
+        attempts = {job: json.loads(gh("api", f"repos/{repo}/actions/jobs/{job}")).get("run_attempt") for job, log in failed if transient(log)}
+        plan = rerun_plan(failed, attempts)
+        for job in plan:
+            gh("api", "-X", "POST", f"repos/{repo}/actions/jobs/{job}/rerun")
+    except (RuntimeError, ValueError) as err:
+        print(f"::warning::The failed check could not be run again: {err}")
+        return
+    if plan:
+        print(f"A transient error: job(s) {', '.join(map(str, plan))} run again, once.")
+        pr["rerun"] = plan
+
+
 def update(repo, number, maintainers, read=None, put=None):
     """One item: whom it waits on now, handed to receipts.py waits (its
     board and one mention). A closed one waits on nobody. read and put are
@@ -455,6 +523,8 @@ def update(repo, number, maintainers, read=None, put=None):
         owner, name = repo.split("/", 1)
         read = lambda: json.loads(gh("api", "graphql", "-f", f"query={ONE}", "-F", f"o={owner}", "-F", f"n={name}", "-F", f"i={number}"))["data"]["repository"]["issueOrPullRequest"]
     item = read()
+    if item and item.get("state") == "OPEN" and is_pr(item) and blocker(item) == (NOT_RERUN, MAINTAINER):
+        rerun_transient(repo, item)
     waits = waits_of(item, maintainers) if item and item.get("state") == "OPEN" else None
     (put or receipts_waits)(repo, number, item or {}, waits)
     return waits
@@ -534,7 +604,7 @@ def self_test():
     check("C1 (#713) a rollup without its contexts, or with more than were read, keeps GitHub's state",
           (checks_state({"state": "FAILURE"}), checks_state({"state": "FAILURE", "contexts": {"pageInfo": {"hasNextPage": True}, "nodes": [roll["contexts"]["nodes"][2]]}})),
           ("FAILURE", "FAILURE"))
-    check("C1 (#713) the query reads the head's check runs and statuses", ("... on CheckRun { name conclusion status }" in FIELDS, "... on StatusContext { context state }" in FIELDS, FIELDS in ONE), (True, True, True))
+    check("C1 (#713) the query reads the head's check runs and statuses", ("... on CheckRun { name conclusion status databaseId }" in FIELDS, "... on StatusContext { context state }" in FIELDS, FIELDS in ONE), (True, True, True))
     # #741 C4: the autopilot's own failed check waits on its fix round only
     # when one starts; else on the maintainer. Never "fix the failed check".
     mine = [p for p in fx["prs"] if "autopilot" in names(p.get("labels")) and checks_state(p["commits"]["nodes"][-1]["commit"].get("statusCheckRollup")) == "FAILURE"]

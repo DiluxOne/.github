@@ -7,8 +7,11 @@ name: What waits (update)
 # after the review): whom the item waits on now (scripts/waiting.py update:
 # needs-human, an acceptance, the autopilot's question, a failed check, an
 # open thread, a person's merge; for an outside contributor their answer or
-# their claimed work), on its board, the one bot comment of the issue or the
-# pull request, which mentions that person once per waiting step
+# their claimed work; a failed check of the repository's own whose job log
+# shows a transient GitHub error, an HTTP 5xx or a time-out, is run again
+# once first, and waits on the checks, #928 C3), on its board, the one bot
+# comment of the issue or the pull request, which mentions that person once
+# per waiting step
 # (scripts/receipts.py waits); then the "What waits" issue of DiluxOne/.github,
 # pinned, rewritten from every open issue and pull request of the
 # organisation, grouped by person, one line per action with its full URL
@@ -79,6 +82,7 @@ jobs:
           permission-checks: read # the heads' checks, for a failed one
           permission-contents: read # the seals, for the board
           permission-statuses: read # the heads' commit statuses, in statusCheckRollup (#641)
+          permission-actions: write # a failed check's job log, and its one rerun on a transient error (#928 C3)
           permission-metadata: read
       - name: The organisation's scripts
         env:
