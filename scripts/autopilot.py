@@ -941,6 +941,20 @@ def unread_said(comments):
     return bool(mine) and str(max(mine, key=_at).get("body") or "").startswith(MORE_UNREAD)
 
 
+def remove_needs_human(repo, n, run=None):
+    """`needs-human` off issue or pull request `n` (#928 C2), with the REST
+    call `reaccept` uses; a 404 means it is already off. "" when it is off,
+    else why not."""
+    run = run or gh
+    try:
+        run("api", "-X", "DELETE", f"repos/{repo}/issues/{n}/labels/needs-human")
+    except RuntimeError as err:
+        if "404" in str(err):
+            return ""
+        return str(err)[:300]
+    return ""
+
+
 def more_reply(kind, issue_url, pr="", cap=0, runs=0, policy_cap=5, n=0, unread=""):
     """dilux-bot's answer to a `/autopilot more` on the issue (#856). Pure."""
     claim = (f"Anyone may `/claim` this issue and finish it with their own code (CONTRIBUTING.md), "
@@ -957,6 +971,8 @@ def more_reply(kind, issue_url, pr="", cap=0, runs=0, policy_cap=5, n=0, unread=
                   f"(its cap is {cap}). {claim}"),
         "below": (f"{MORE_MARK}\nThe autopilot gets no more runs on #{pr}: it is not at its cap (it ran {runs} of {cap} times), "
                   f"so `{MORE}` waits until it is. A stop is answered on the pull request."),
+        "stuck": (f"{MORE_MARK}\nThe autopilot gets no more runs for now: `needs-human` could not come off #{pr}, and the autopilot "
+                  f"does not go on while it is there. Comment `{MORE}` again in a while."),
         "extended": (f"{MORE_MARK}\nThe autopilot gets {policy_cap} more runs on #{pr}: its cap is now {cap}, extension "
                      f"{n} of {MAX_EXTENSIONS}. It continues now, with the rest of the comment as its hint."),
     }
@@ -6703,7 +6719,7 @@ def main(argv):
             # (`/autopilot moreover`): nothing to do, nothing said.
             print(f"Not a `{MORE}` comment: nothing to do.")
             return 0
-        view = json.loads(gh("issue", "view", str(number), "--repo", repo, "--json", "url,comments,closedByPullRequestsReferences") or "{}")
+        view = json.loads(gh("issue", "view", str(number), "--repo", repo, "--json", "url,comments,labels,closedByPullRequestsReferences") or "{}")
         issue_url = view.get("url") or f"https://github.com/{repo}/issues/{number}"
 
         def reply(kind, **k):
@@ -6745,10 +6761,29 @@ def main(argv):
         entry = {"by": login, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "comment": os.environ.get("COMMENT_URL", "")}
         # The board first: a write that fails changes nothing else.
         set_board(repo, target, "pr", extensions=extensions(st) + [entry])
-        try:
-            gh("pr", "edit", target, "--repo", repo, "--remove-label", "needs-human")
-        except RuntimeError as err:
-            print(f"::warning::needs-human could not come off #{target}: {err}")
+        # #928 C2: needs-human off the pull request, and off the issue when
+        # it carries it too, with the REST call `reaccepted` uses, then read
+        # back: the continue run stays out while it is on.
+        stuck = ""
+        on_issue = "needs-human" in [l.get("name") for l in view.get("labels") or []]
+        for n in [target] + ([str(number)] if on_issue else []):
+            err = remove_needs_human(repo, n)
+            if err:
+                print(f"::warning::needs-human could not come off #{n}: {err}")
+                stuck = stuck or n
+        if not stuck:
+            try:
+                now = json.loads(gh("pr", "view", target, "--repo", repo, "--json", "labels") or "{}")
+                if "needs-human" in [l.get("name") for l in now.get("labels") or []]:
+                    stuck = target
+            except (RuntimeError, ValueError) as err:
+                print(f"::warning::#{target}'s labels could not be read back: {err}")
+                stuck = target
+        if stuck:
+            # Nothing would continue: the extension is undone, so the same
+            # `/autopilot more` again extends it, and the reply says why.
+            set_board(repo, target, "pr", extensions=extensions(st) or None)
+            return reply("stuck", pr=stuck)
         subprocess.run(["gh", "label", "create", "autopilot:continue", "--repo", repo, "--color", "1D76DB", "--force",
                         "--description", "On an issue: the autopilot continues its draft pull request"], capture_output=True)
         # No `answered` on the issue's board: the run counts, against the new cap.
