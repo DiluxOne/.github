@@ -1,0 +1,82 @@
+name: Security gate
+
+# Reusable. The "Security gate" check (#956, scripts/security-gate.py): leaked
+# secrets (gitleaks), insecure code with the OWASP Top 10 and language rules
+# (Semgrep), dependencies with known vulnerabilities (osv-scanner) and unsafe
+# GitHub workflows (zizmor), on what the pull request adds or modifies. The
+# same command as in `make pre-pr`, so what the check finds the branch found
+# first. What it runs (the tools pinned to a version and a SHA-256, the
+# rules, the levels, the caps) is policy/security-gate.yml; what a finding
+# does is org.yml `security-gate`: `off` runs nothing, `report` shows the
+# findings and passes, `block` fails on a new critical or high one. A
+# finding on a line the pull request did not touch is pre-existing and never
+# fails it.
+#
+# A fork's pull request too, so it runs on `pull_request` only, with a
+# read-only token not kept in the checkout and no secret: the gate's script
+# and policy come from the organisation's checkout at `central-ref`, never
+# from the pull request's tree, which the tools only read. Its result,
+# security-gate.json, is uploaded as the artifact `security-gate`; the
+# review (claude-review.yml) downloads it into its brief, as data, and
+# runs none of it.
+#
+#   Called by org-pull-request.yml, the organisation's required pipeline
+#   (and workflow-templates/test-pull-request.yml, job for job with it),
+#   and by this repository's own pull-request.yml, as the check
+#   "security-gate / Security gate".
+
+on:
+  workflow_call:
+    inputs:
+      central-ref:
+        description: The ref of DiluxOne/.github whose scripts run. Empty (the default) means the very commit this workflow runs from, job.workflow_sha (#287).
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: Security gate
+    if: github.event_name == 'pull_request'
+    # A fork's code is read here: GitHub's fresh runner only.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      # The merge of the pull request into its base: its first parent is the
+      # base, so what the gate reads is what the pull request changes.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiluxOne/.github
+          ref: ${{ inputs.central-ref || job.workflow_sha }}
+          path: .dx-central
+          persist-credentials: false
+      - name: The organisation's configuration (#197)
+        run: test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh
+      - name: The pinned tools
+        # Downloads checked against policy/security-gate.yml's SHA-256s;
+        # nothing under `off`.
+        run: python3 .dx-central/scripts/security-gate.py install
+      - name: The gate
+        id: gate
+        # Under `report` it passes whatever it finds; under `block` it
+        # fails on a new critical or high finding. The report goes to the
+        # log and to the job summary.
+        run: |
+          set -o pipefail
+          python3 .dx-central/scripts/security-gate.py run --base HEAD^1 --json "$RUNNER_TEMP/security-gate.json" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Keep the result for the review
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: security-gate
+          path: ${{ runner.temp }}/security-gate.json
+          if-no-files-found: ignore
+          retention-days: 7

@@ -14,6 +14,9 @@ from pathlib import Path
 
 import pytest
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from steps import run as run_step, step  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[2]
 GATE = ROOT / "scripts" / "security-gate.py"
 FIXTURES = ROOT / "tests" / "workflows" / "fixtures" / "security-gate"
@@ -111,12 +114,12 @@ def git(repo, env, *args):
     return subprocess.run(["git", "-C", str(repo), *args], env=env, capture_output=True, text=True, check=True).stdout
 
 
-def scratch(tmp_path, env, kind, base_files, change):
+def scratch(tmp_path, env, kind, base_files, change, where="repo"):
     """A repository of KIND (None: of no kind) on a branch off main: BASE_FILES
     committed on main, CHANGE committed on the branch, and the dx.mk
     `pre-pr.py render` writes for it, with the Makefile that includes it."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
+    repo = tmp_path / where
+    repo.mkdir(parents=True)
     git(repo, env, "init", "-q", "-b", "main")
     files = dict(base_files)
     if kind:
@@ -209,3 +212,33 @@ def test_c2_a_finding_on_a_line_the_change_did_not_touch_is_pre_existing_and_nev
     git(repo, env, "commit", "-qm", "app")
     again = pre_pr(repo, env)
     assert "(semgrep, new)" in again.stdout and again.returncode != 0, again.stdout + again.stderr
+
+
+@pytest.mark.parametrize("mode", ["report", "block", "off"])
+def test_c3_the_setting_decides_in_make_pre_pr_and_in_the_pull_requests_check(tmp_path, mode):
+    assert GATE.is_file(), "scripts/security-gate.py is the gate"
+    assert (ROOT / ".github" / "workflows" / "security-gate.yml").is_file(), "security-gate.yml is the pull request's check"
+    cent = central(tmp_path, mode)
+    env = environment(tmp_path, cent)
+    repo = scratch(tmp_path, env, None, {"README.md": "x\n"}, CHANGE, where="wf/work")
+    made = pre_pr(repo, env)
+    (repo / ".dx-central").symlink_to(cent)
+    runner = {k: v for k, v in env.items() if not k.startswith(("GITHUB_", "RUNNER_"))}
+    checked = run_step(step("security-gate.yml", "gate"), tmp_path / "wf", env=runner, central=False)
+    for name, code, out in (("make pre-pr", made.returncode, made.stdout + made.stderr),
+                            ("the check", checked.code, checked.stdout + checked.stderr)):
+        if mode == "off":
+            assert code == 0 and "Security gate: off" in out, (name, out)
+            assert "- [" not in out
+        elif mode == "report":
+            assert code == 0, (name, out)
+            assert "[critical] config.py:1 gitleaks.aws-access-token (gitleaks, new)" in out, (name, out)
+        else:
+            assert code != 0, (name, out)
+            assert "(it fails the gate)" in out and "[high] app.py:6" in out, (name, out)
+    if mode == "off":
+        assert calls(tmp_path) == [], "under off no tool is called"
+    else:
+        assert {c[0] for c in calls(tmp_path)} == {"gitleaks", "semgrep", "osv-scanner", "zizmor"}
+        # The check's report reaches the job summary too.
+        assert "Security gate (" + mode + ")" in (tmp_path / "wf" / "summary").read_text()
