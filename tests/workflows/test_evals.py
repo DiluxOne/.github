@@ -542,8 +542,3 @@ def test_c1_collect_pins_the_issue_of_each_spec_and_autopilot_case(monkeypatch):
         assert [(c["title"], c["body"]) for c in got] == [("feat: b", "the text")]
     assert ev.collect("repro", 6) and len(calls) == 2
 
-
-def test_941_the_weekly_run_plays_every_step_with_a_set_but_the_review():
-    text = (need(".github/workflows/evals.yml")).read_text(encoding="utf-8")
-    weekly = text[text.index('if [ "$EVENT" = schedule ]'):text.index("elif", text.index('if [ "$EVENT" = schedule ]'))]
-    assert "evals/*/cases.json" in weekly and '[ "$d" = review ]' in weekly

@@ -280,7 +280,7 @@ def test_c2_the_rounds_stop_at_the_replays_limit(monkeypatch, tmp_path):
     mod, asked, reviews, graded, head, got, tree = loop(monkeypatch, tmp_path, 99)
     has(mod, "max_rounds")
     assert mod.max_rounds() == rounds
-    assert mod.eval_rounds() == 1
+    assert has(mod, "eval_rounds")() == 1
     assert len(asked) == 2 and "round 1 of 1" in asked[-1][0]
     assert graded == [head]
 
@@ -486,5 +486,6 @@ def test_c1_evals_yml_collects_a_new_set_by_hand_and_pushes_nothing():
 
 def test_941_an_autopilot_job_has_one_round_and_one_review_of_slack():
     mod = evals()
+    has(mod, "eval_rounds")
     a, r = mod.STEPS["autopilot"]["minutes"], mod.STEPS["review"]["minutes"]
     assert mod.job_minutes("autopilot") == min(mod.MAX_JOB_MINUTES, a * 2 + r * 2 + mod.JOB_MINUTES)
