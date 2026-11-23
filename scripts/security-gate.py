@@ -106,10 +106,39 @@ def platform_key(system=None, machine=None):
     return f"{system}-{arch}"
 
 
+def requirements_path(tool):
+    """The tool's pinned dependencies (`requirements`, a file beside the
+    policy), or None when it has none."""
+    name = tool.get("requirements")
+    return os.path.join(os.path.dirname(POLICY), str(name)) if name else None
+
+
+def requirements_text(tool):
+    path = requirements_path(tool)
+    if not path:
+        return ""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+    except OSError:
+        raise SystemExit(f"security-gate: {path} is missing: the pinned dependencies of the policy's `requirements`")
+
+
 def digest(data):
-    """The cache's name for a policy: what it downloads, hashed. Pure."""
-    what = {"tools": data.get("tools"), "rules": data.get("rules")}
+    """The cache's name for a policy: what it downloads, hashed, with the
+    dependencies each tool pins. Pure but for reading those."""
+    what = {"tools": data.get("tools"), "rules": data.get("rules"),
+            "requirements": {n: requirements_text(t) for n, t in sorted((data.get("tools") or {}).items())
+                             if isinstance(t, dict) and t.get("requirements")}}
     return hashlib.sha256(json.dumps(what, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def pip_argv(python, lib, reqs):
+    """The one pip call of a `pip: true` wheel: every requirement in REQS
+    (the pinned dependencies and the wheel, each with its hash), wheels
+    only, none resolved beyond them. Pure."""
+    return [python, "-m", "pip", "install", "--quiet", "--disable-pip-version-check", "--no-input", "--ignore-installed",
+            "--require-hashes", "--only-binary", ":all:", "--no-deps", "--target", lib, "-r", reqs]
 
 
 def cache_dir(data, env=os.environ):
@@ -166,9 +195,14 @@ def install_tool(name, tool, where, key, python=sys.executable):
         with open(wheel, "wb") as fh:
             fh.write(body)
         lib = os.path.join(where, name)
-        subprocess.run([python, "-m", "pip", "install", "--quiet", "--disable-pip-version-check", "--no-input", "--ignore-installed",
-                        "--target", lib, wheel], check=True)
+        if not tool.get("requirements"):
+            raise SystemExit(f"security-gate: {name} is installed with pip but pins no `requirements` (policy/security-gate.yml)")
+        reqs = os.path.join(where, name + "-requirements.txt")
+        with open(reqs, "w", encoding="utf-8") as fh:
+            fh.write(requirements_text(tool).rstrip("\n") + f"\n{wheel} --hash=sha256:{build['sha256']}\n")
+        subprocess.run(pip_argv(python, lib, reqs), check=True)
         os.remove(wheel)
+        os.remove(reqs)
         with open(target, "w") as fh:
             fh.write("#!/bin/sh\n# The pinned " + name + " (scripts/security-gate.py install).\n"
                      f'PATH="{lib}/bin:$PATH" PYTHONPATH="{lib}" exec "{python}" -c '
@@ -240,13 +274,37 @@ def default_base(repo, env=os.environ):
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
 
+ESCAPES = {"a": 7, "b": 8, "f": 12, "n": 10, "r": 13, "t": 9, "v": 11, "\\": 92, '"': 34}
+
+
+def diff_name(name):
+    """A path as a diff header names it: git appends a tab to a name with a
+    space, and quotes, C-style with octal bytes, one with a non-ASCII or
+    special character ("b/\\303\\251.py" is b/é.py). Pure."""
+    name = name[:-1] if name.endswith("\t") else name
+    if len(name) < 2 or not (name[0] == name[-1] == '"'):
+        return name
+    body, out, i = name[1:-1], bytearray(), 0
+    while i < len(body):
+        if body[i] == "\\" and re.match(r"[0-7]{3}", body[i + 1:i + 4]):
+            out.append(int(body[i + 1:i + 4], 8))
+            i += 4
+        elif body[i] == "\\" and body[i + 1:i + 2] in ESCAPES:
+            out.append(ESCAPES[body[i + 1]])
+            i += 2
+        else:
+            out += body[i].encode("utf-8")
+            i += 1
+    return out.decode("utf-8", "surrogateescape")
+
+
 def added_lines(diff):
     """{path: set(line)} of the lines a `git diff -U0` adds or modifies, by
     their number at the head; a deleted file is left out. Pure."""
     out, path = {}, None
     for line in diff.splitlines():
         if line.startswith("+++ "):
-            name = line[4:]
+            name = diff_name(line[4:])
             path = None if name == "/dev/null" else (name[2:] if name.startswith("b/") else name)
             if path is not None:
                 out.setdefault(path, set())
@@ -463,12 +521,17 @@ def repo_path(path, root):
     return path[2:] if path.startswith("./") else path
 
 
-def stage(repo, rev, paths, into):
-    """Write each PATH as it is at REV under INTO; the paths written."""
+def stage(repo, rev, paths, into, missing=None):
+    """Write each PATH as it is at REV under INTO; the paths written. A path
+    that is not a file at REV is added to MISSING, but for a submodule's
+    (nothing of it to scan)."""
     out = []
     for path in paths:
         got = subprocess.run(["git", "-C", repo, "show", f"{rev}:{path}"], capture_output=True)
         if got.returncode != 0:
+            tree = git(repo, "ls-tree", rev, "--", path, check=False)
+            if missing is not None and not tree.startswith("160000 "):
+                missing.append(path)
             continue
         dest = os.path.join(into, path)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
@@ -476,6 +539,41 @@ def stage(repo, rev, paths, into):
             fh.write(got.stdout)
         out.append(path)
     return out
+
+
+# What each tool would read from the tree it scans and obey: a change could
+# silence the gate with them, so none is read from the change. gitleaks
+# gets its default rules (--config), no .gitleaksignore (-i) and no
+# gitleaks:allow; Semgrep no `nosem`, and the staged .semgrepignore files
+# are held aside while it runs (no flag turns them off); zizmor no config
+# and no ignore comments; osv-scanner an empty config. A finding is only
+# silenced by an entry, with its reason, in .github/review-suppressions.yml.
+GITLEAKS_CONFIG = 'title = "dx security gate: gitleaks\' own rules"\n\n[extend]\nuseDefault = true\n'
+HELD = (".semgrepignore",)
+
+
+def isolate(conf_dir):
+    """The gate's own config for each tool, in CONF_DIR: {tool: path}."""
+    paths = {"gitleaks": os.path.join(conf_dir, "gitleaks.toml"), "osv-scanner": os.path.join(conf_dir, "osv-scanner.toml"),
+             "ignores": os.path.join(conf_dir, "ignores")}
+    with open(paths["gitleaks"], "w", encoding="utf-8") as fh:
+        fh.write(GITLEAKS_CONFIG)
+    with open(paths["osv-scanner"], "w", encoding="utf-8") as fh:
+        fh.write("# The security gate's: nothing ignored.\n")
+    os.makedirs(paths["ignores"], exist_ok=True)
+    return paths
+
+
+def hold(head_dir, staged, conf_dir):
+    """Move the staged files Semgrep would obey (HELD) out of HEAD_DIR; the
+    (from, to) pairs to put back."""
+    moved = []
+    for i, path in enumerate(p for p in staged if os.path.basename(p) in HELD):
+        dest = os.path.join(conf_dir, "held", str(i))
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.move(os.path.join(head_dir, path), dest)
+        moved.append((os.path.join(head_dir, path), dest))
+    return moved
 
 
 def scan(repo, base, data, env=os.environ):
@@ -490,28 +588,40 @@ def scan(repo, base, data, env=os.environ):
     timeout = int(data.get("timeout") or 600)
     findings, errors = [], []
     with tempfile.TemporaryDirectory() as tmp:
-        head_dir, base_dir, out_dir = (os.path.join(tmp, d) for d in ("head", "base", "out"))
-        for d in (head_dir, base_dir, out_dir):
+        head_dir, base_dir, out_dir, conf_dir = (os.path.join(tmp, d) for d in ("head", "base", "out", "conf"))
+        for d in (head_dir, base_dir, out_dir, conf_dir):
             os.makedirs(d)
-        staged = stage(repo, "HEAD", files, head_dir)
+        missing = []
+        staged = stage(repo, "HEAD", files, head_dir, missing)
+        if missing:
+            errors.append(f"{len(missing)} changed file(s) could not be read at HEAD, so nothing scanned them: "
+                          + ", ".join(clean(p, 120) for p in missing[:5]))
+        conf = isolate(conf_dir)
         if staged:
             report = os.path.join(out_dir, "gitleaks.json")
             ran = call([tool_path("gitleaks", data, env), "dir", "--no-banner", "--redact", "--exit-code", "0",
-                        "--report-format", "json", "--report-path", report, head_dir], timeout, env)
+                        "--config", conf["gitleaks"], "--gitleaks-ignore-path", conf["ignores"], "--ignore-gitleaks-allow",
+                        "--report-format", "json", "--report-path", report, head_dir], timeout, env, cwd=conf["ignores"])
             got = output("gitleaks", ran.returncode, open(report).read() if os.path.isfile(report) else "", ran.stderr, errors)
             found = from_gitleaks(got if isinstance(got, list) else [], sev.get("gitleaks"))
             configs = [os.path.join(cache_dir(data, env), "rules")] + [os.path.join(repo, str(r)) for r in sec.get("rules") or []]
             argv = [tool_path("semgrep", data, env), "scan", "--json", "--metrics", "off", "--disable-version-check",
-                    "--quiet", "--no-git-ignore", "--timeout", "30"]
+                    "--quiet", "--no-git-ignore", "--disable-nosem", "--timeout", "30"]
             for c in configs:
                 argv += ["--config", c]
             # Run from the staged tree, so its paths are the repository's.
-            ran = call(argv + ["."], timeout, dict(env, SEMGREP_SEND_METRICS="off"), cwd=head_dir)
+            held = hold(head_dir, staged, conf_dir)
+            try:
+                ran = call(argv + ["."], timeout, dict(env, SEMGREP_SEND_METRICS="off"), cwd=head_dir)
+            finally:
+                for back, away in held:
+                    shutil.move(away, back)
             got = output("semgrep", ran.returncode, ran.stdout, ran.stderr, errors)
             found += from_semgrep(got if isinstance(got, dict) else {}, sev.get("semgrep"), configs)
             flows = [p for p in staged if WORKFLOW_RE.match(p)]
             if flows:
-                ran = call([tool_path("zizmor", data, env), "--format", "json", "--offline", "--no-progress", *flows],
+                ran = call([tool_path("zizmor", data, env), "--format", "json", "--offline", "--no-progress", "--no-config",
+                            "--no-ignores", *flows],
                            timeout, env, cwd=head_dir)
                 got = output("zizmor", ran.returncode, ran.stdout, ran.stderr, errors)
                 found += from_zizmor(got if isinstance(got, list) else [], sev.get("zizmor"))
@@ -523,12 +633,12 @@ def scan(repo, base, data, env=os.environ):
                 had = stage(repo, merge_base, locks, base_dir)
                 before = set()
                 if had:
-                    ran = call([tool_path("osv-scanner", data, env), "scan", "source", "--format", "json"]
+                    ran = call([tool_path("osv-scanner", data, env), "scan", "source", "--format", "json", "--config", conf["osv-scanner"]]
                                + [a for p in had for a in ("-L", os.path.join(base_dir, p))], timeout, env)
                     got = output("osv-scanner", ran.returncode, ran.stdout, ran.stderr, errors)
                     for f in from_osv(got if isinstance(got, dict) else {}, sev.get("osv-scanner")):
                         before.add((repo_path(f["file"], base_dir), f["package"], f["rule"]))
-                ran = call([tool_path("osv-scanner", data, env), "scan", "source", "--format", "json"]
+                ran = call([tool_path("osv-scanner", data, env), "scan", "source", "--format", "json", "--config", conf["osv-scanner"]]
                            + [a for p in locks for a in ("-L", os.path.join(head_dir, p))], timeout, env)
 
                 def lines_of(path):
@@ -749,6 +859,13 @@ def self_test():
             "diff --git a/gone b/gone\n--- a/gone\n+++ /dev/null\n@@ -1 +0,0 @@\n-q\n"
             "diff --git a/new.txt b/new.txt\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+n\n")
     check("the added and modified lines, by their number at the head", added_lines(diff), {"a.py": {3, 4, 11}, "new.txt": {1}})
+    quoted = "--- /dev/null\n+++ b/a b.py\t\n@@ -0,0 +1 @@\n+x\n--- /dev/null\n+++ \"b/\\303\\251 \\\"q\\\".py\"\n@@ -0,0 +1 @@\n+y\n"
+    check("a name with a space (git appends a tab) or quoted with octal bytes is the file's own",
+          added_lines(quoted), {"a b.py": {1}, 'é "q".py': {1}})
+    check("each tool is told to ignore the tree's config and inline ignores",
+          ("useDefault = true" in GITLEAKS_CONFIG, HELD), (True, (".semgrepignore",)))
+    check("Semgrep's dependencies: one pip call, hashes required, wheels only, nothing resolved",
+          {"--require-hashes", "--no-deps", "--only-binary", ":all:"} <= set(pip_argv("py", "lib", "r.txt")), True)
     check("a Semgrep rule's id loses the path of its configuration",
           (rule_id("tmp.c.rules.python.lang.security.audit.eval-detected", ["/tmp/c/rules"]), rule_id("x.y", ["/a"])),
           ("python.lang.security.audit.eval-detected", "x.y"))

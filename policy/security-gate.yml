@@ -14,8 +14,12 @@
 #   tarball  a .tar.gz holding the binary `binary`
 #   binary   the binary itself
 #   wheel    a Python wheel: `binary` is extracted from its scripts when
-#            `pip` is false, else pip installs it, with its dependencies,
-#            into the tool's own directory (Semgrep's command line is Python)
+#            `pip` is false, else pip installs it into the tool's own
+#            directory (Semgrep's command line is Python) with the
+#            dependencies of `requirements`, a file beside this one that pins
+#            each to a version and the SHA-256 of its wheels: one
+#            `pip install --require-hashes --only-binary :all: --no-deps`,
+#            so nothing unpinned is fetched and no sdist is built
 # Changing a version or a hash changes the cache's directory, so the next
 # run installs the new one.
 #
@@ -47,6 +51,7 @@ tools:
     version: 1.186.0
     kind: wheel
     pip: true
+    requirements: security-gate-semgrep.txt
     binary: semgrep
     url: https://files.pythonhosted.org/packages/cp310.cp311.cp312.cp313.cp314.py310.py311.py312.py313.py314/s/semgrep/semgrep-{version}-cp310.cp311.cp312.cp313.cp314.py310.py311.py312.py313.py314-none-{asset}.whl
     builds:

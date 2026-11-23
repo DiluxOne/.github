@@ -35,7 +35,14 @@ CHANGE = {"app.py": APP, "config.py": CONFIG, ".github/workflows/ci.yml": WORKFL
           "package-lock.json": (FIXTURES / "package-lock.json").read_text() if (FIXTURES / "package-lock.json").exists() else ""}
 
 # Each stub logs its argv to $DX_GATE_CALLS, then prints what its tool
-# recorded for the files it was given (none for a file it was not).
+# recorded for the files it was given (none for a file it was not). Like
+# the real tool, each obeys the config and the ignores the scanned tree
+# holds unless it is told not to: gitleaks a .gitleaks.toml (no --config),
+# a .gitleaksignore (in -i, else the working directory) and gitleaks:allow
+# (no --ignore-gitleaks-allow); Semgrep a .semgrepignore and `nosem` (no
+# --disable-nosem); zizmor .github/zizmor.yml (no --no-config) and
+# `zizmor: ignore` (no --no-ignores); osv-scanner an osv-scanner.toml
+# beside the lockfile (no --config).
 STUB = """#!/usr/bin/env python3
 import json, os, sys
 args = sys.argv[1:]
@@ -44,23 +51,42 @@ with open(os.environ["DX_GATE_CALLS"], "a") as fh:
 fixtures = {fixtures!r}
 def load(name):
     return json.load(open(os.path.join(fixtures, name)))
+def line(path, n):
+    try:
+        return open(path).read().splitlines()[n - 1]
+    except (OSError, IndexError):
+        return ""
 name = {name!r}
 if name == "gitleaks":
     root = args[-1]
     out = [dict(f, File=os.path.join(root, f["File"])) for f in load("gitleaks.json") if os.path.isfile(os.path.join(root, f["File"]))]
+    ignores = args[args.index("--gitleaks-ignore-path") + 1] if "--gitleaks-ignore-path" in args else "."
+    if "--config" not in args and os.path.isfile(os.path.join(root, ".gitleaks.toml")):
+        out = []
+    if os.path.isfile(os.path.join(ignores, ".gitleaksignore")):
+        out = []
+    if "--ignore-gitleaks-allow" not in args:
+        out = [f for f in out if "gitleaks:allow" not in line(f["File"], f["StartLine"])]
     json.dump(out, open(args[args.index("--report-path") + 1], "w"))
 elif name == "semgrep":
     data = load("semgrep.json")
-    data["results"] = [r for r in data["results"] if os.path.isfile(r["path"])]
+    data["results"] = [r for r in data["results"] if os.path.isfile(r["path"]) and not os.path.isfile(".semgrepignore")
+                       and ("--disable-nosem" in args or "nosem" not in line(r["path"], r["start"]["line"]))]
     print(json.dumps(data))
 elif name == "zizmor":
     files = set(a for a in args if not a.startswith("-") and a != "json")
     out = [f for f in load("zizmor.json") if any(l["symbolic"]["key"]["Local"]["verbatim_path"] in files for l in f["locations"])]
+    if "--no-config" not in args and os.path.isfile(os.path.join(".github", "zizmor.yml")):
+        out = []
+    if "--no-ignores" not in args:
+        out = [f for f in out if not any("zizmor: ignore" in open(p).read() for p in files)]
     print(json.dumps(out))
     sys.exit(14 if out else 0)
 elif name == "osv-scanner":
     results = []
     for i, a in enumerate(args):
+        if "--config" not in args and a == "-L" and os.path.isfile(os.path.join(os.path.dirname(args[i + 1]), "osv-scanner.toml")):
+            continue
         if a == "-L" and "1.2.5" in open(args[i + 1]).read():
             for r in load("osv-scanner.json")["results"]:
                 results.append(dict(r, source=dict(r["source"], path=args[i + 1])))
@@ -286,3 +312,130 @@ def test_c5_more_than_30_findings_give_the_30_most_severe_and_the_count_of_the_r
     big = subprocess.run([sys.executable, str(GATE), "report", str(path)], capture_output=True, text=True, check=True).stdout
     kept = sum(1 for line in big.splitlines() if line.startswith("- ["))
     assert len(big.encode("utf-8")) <= 8192 and f"{45 - kept} more not shown" in big
+
+
+def gate_module():
+    spec = __import__("importlib.util").util.spec_from_file_location("security_gate_t", GATE)
+    mod = __import__("importlib.util").util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# What a change could add to silence each tool, if the tool read it from
+# the tree it scans: its config, its ignore file and its inline ignore.
+SILENCERS = {
+    ".gitleaks.toml": "[allowlist]\npaths = ['.*']\n",
+    ".gitleaksignore": "config.py:gitleaks.aws-access-token:1\n",
+    ".semgrepignore": "*\n",
+    ".github/zizmor.yml": "rules:\n  template-injection:\n    disable: true\n",
+    "osv-scanner.toml": "[[IgnoredVulns]]\nid = 'GHSA-xvch-5gv4-984h'\nreason = 'not here'\n",
+}
+
+
+def inline_ignored(change):
+    """CHANGE with each tool's inline ignore on the line of its finding."""
+    out = dict(change)
+    out["app.py"] = APP.replace("shell=True)\n", "shell=True)  # nosem\n")
+    out["config.py"] = CONFIG.replace("\n", "  # gitleaks:allow\n", 1)
+    out[".github/workflows/ci.yml"] = WORKFLOW.rstrip("\n") + "  # zizmor: ignore[template-injection]\n"
+    return out
+
+
+def test_a_change_cannot_silence_the_gate_with_its_own_config_or_inline_ignores(tmp_path):
+    cent = central(tmp_path, "block")
+    env = environment(tmp_path, cent)
+    repo = scratch(tmp_path, env, None, {"README.md": "x\n"}, dict(inline_ignored(CHANGE), **SILENCERS))
+    ran = pre_pr(repo, env)
+    out = ran.stdout + ran.stderr
+    assert "config.py:1 gitleaks.aws-access-token (gitleaks, new)" in out, out
+    assert "[high] app.py:6 python.lang.security.audit.subprocess-shell-true (semgrep, new)" in out, out
+    assert ".github/workflows/ci.yml:7 zizmor.template-injection (zizmor, new)" in out, out
+    assert "GHSA-xvch-5gv4-984h (osv-scanner, new)" in out, out
+    assert ran.returncode != 0, out
+    seen = {c[0]: c for c in calls(tmp_path)}
+    assert {"--config", "--gitleaks-ignore-path", "--ignore-gitleaks-allow"} <= set(seen["gitleaks"])
+    assert "--disable-nosem" in seen["semgrep"]
+    assert {"--no-config", "--no-ignores"} <= set(seen["zizmor"])
+    assert "--config" in seen["osv-scanner"]
+    # The gitleaks config the gate passes is its own, with gitleaks' rules.
+    conf = seen["gitleaks"][seen["gitleaks"].index("--config") + 1]
+    assert not conf.startswith(str(repo))
+
+
+def test_the_repositorys_own_gitleaksignore_is_not_read_either(tmp_path):
+    cent = central(tmp_path, "report")
+    env = environment(tmp_path, cent)
+    repo = scratch(tmp_path, env, None, {".gitleaksignore": SILENCERS[".gitleaksignore"]}, {"config.py": CONFIG})
+    ran = pre_pr(repo, env)
+    assert "config.py:1 gitleaks.aws-access-token (gitleaks, new)" in ran.stdout + ran.stderr
+
+
+def test_added_files_with_a_space_or_a_non_ascii_name_are_scanned(tmp_path):
+    mod = gate_module()
+    env = dict(os.environ, GIT_CONFIG_GLOBAL="/dev/null", GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t",
+               GIT_COMMITTER_EMAIL="t@t")
+    repo = tmp_path / "r"
+    repo.mkdir()
+    git(repo, env, "init", "-q", "-b", "main")
+    git(repo, env, "commit", "-q", "--allow-empty", "-m", "base")
+    names = ["a b.py", "é.py", 'q"uote.py', "dir with space/x.py"]
+    for name in names:
+        (repo / name).parent.mkdir(parents=True, exist_ok=True)
+        (repo / name).write_text("one\ntwo\n", encoding="utf-8")
+    git(repo, env, "add", "-A")
+    git(repo, env, "commit", "-qm", "add")
+    diff = git(repo, env, "diff", "-U0", "--no-color", "--no-ext-diff", "HEAD~1", "HEAD")
+    adds = mod.added_lines(diff)
+    assert adds == {n: {1, 2} for n in names}, adds
+    missing = []
+    staged = mod.stage(str(repo), "HEAD", sorted(adds) + ["not-there.py"], str(tmp_path / "head"), missing)
+    assert sorted(staged) == sorted(names) and missing == ["not-there.py"]
+    for name in names:
+        assert (tmp_path / "head" / name).read_text() == "one\ntwo\n"
+
+
+def test_a_changed_file_that_cannot_be_read_fails_the_gate_loudly(tmp_path, monkeypatch):
+    cent = central(tmp_path, "block")
+    env = environment(tmp_path, cent)
+    repo = scratch(tmp_path, env, None, {"README.md": "x\n"}, {"app.py": "x = 1\n"})
+    mod = gate_module()
+    real = mod.added_lines
+    monkeypatch.setattr(mod, "added_lines", lambda diff: dict(real(diff), **{"ghost.py": {1}}))
+    monkeypatch.setattr(mod, "kind_of", lambda r: None)
+    findings, _, errors = mod.scan(str(repo), "main", mod.load_policy(), env)
+    assert any("could not be read at HEAD" in e and "ghost.py" in e for e in errors), errors
+
+
+def test_semgreps_dependencies_are_pinned_with_hashes_and_installed_wheels_only(tmp_path, monkeypatch):
+    mod = gate_module()
+    data = mod.load_policy()
+    tool = data["tools"]["semgrep"]
+    reqs = Path(mod.requirements_path(tool))
+    assert reqs.is_file(), "the pinned dependencies beside the policy"
+    text = reqs.read_text()
+    entries = re.findall(r"^([A-Za-z0-9_.-]+)==(\S+)((?:[^\n]*\\\n)*[^\n]*)", text, re.M)
+    assert len(entries) > 20, "Semgrep's dependencies, every one listed"
+    for name, version, rest in entries:
+        assert "--hash=sha256:" in rest, f"{name} has no hash"
+    assert not re.search(r"^semgrep==", text, re.M), "the Semgrep wheel is the policy's, checked by its own hash"
+    names = {n.lower().replace("_", "-") for n, _, _ in entries}
+    assert {"click", "requests", "rich", "ruamel-yaml", "jsonschema"} <= names
+    # The install: one pip call, every requirement hashed, wheels only, nothing
+    # resolved beyond the file, the Semgrep wheel with its policy's hash.
+    log = tmp_path / "pip.log"
+    fake = tmp_path / "python"
+    fake.write_text("#!/bin/sh\necho \"$@\" > " + str(log) + "\nwhile [ $# -gt 1 ]; do [ \"$1\" = -r ] && cp \"$2\" "
+                    + str(tmp_path / "reqs.txt") + "; shift; done\n")
+    fake.chmod(0o755)
+    key = "linux-x64"
+    monkeypatch.setattr(mod, "fetch", lambda url, sha: b"wheel")
+    mod.install_tool("semgrep", tool, str(tmp_path / "where"), key, python=str(fake))
+    argv = log.read_text().split()
+    assert {"--require-hashes", "--no-deps", "--only-binary", ":all:"} <= set(argv), argv
+    used = (tmp_path / "reqs.txt").read_text()
+    assert used.startswith(text.rstrip("\n"))
+    assert re.search(r"semgrep-[^ ]+\.whl --hash=sha256:" + tool["builds"][key]["sha256"] + r"\n$", used), used[-300:]
+    # Changing a pinned dependency changes the cache, so it is installed again.
+    before = mod.digest(data)
+    monkeypatch.setattr(mod, "requirements_text", lambda t: "other")
+    assert mod.digest(data) != before
