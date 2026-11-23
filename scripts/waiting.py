@@ -54,6 +54,12 @@ comment only (#802): among the first and last 20 of each item's, else
 from all of the bot's comments on it; an item not migrated yet
 is read from its old labels (`autopilot:waiting`, `autopilot:round-N`).
 
+The search reads 20 items per page (#966: 50 took more than GitHub's 10 s
+and answered HTTP 504). A page GitHub answers 502, 503 or 504 is asked
+again from the same cursor with a smaller page, 10 then 5, and later pages
+keep the smaller size; after the third try it fails, naming the status and
+the tries. Any other failure fails at once.
+
 The issue is public: a private repository's items are counted under what
 blocks them, never named.
 
@@ -107,8 +113,8 @@ FIELDS = """__typename
         closingIssuesReferences(first: 10) { nodes { number repository { nameWithOwner } labels(first: 30) { nodes { name } }
           comments(first: 20) { totalCount nodes { author { login } body } } lastComments: comments(last: 20) { nodes { author { login } body } } } }
       }"""
-QUERY = """query($q: String!, $after: String) {
-  search(query: $q, type: ISSUE, first: 50, after: $after) {
+QUERY = """query($q: String!, $first: Int!, $after: String) {
+  search(query: $q, type: ISSUE, first: $first, after: $after) {
     pageInfo { hasNextPage endCursor }
     nodes { %s }
   }
@@ -437,12 +443,70 @@ def gh(*args):
     return res.stdout
 
 
-def fetch(owner):
-    """The organisation's open issues and pull requests."""
-    q, after, out = f"org:{owner} is:open", None, []
+# #966: the search's page sizes. 50 per page took more than GitHub's 10 s
+# and answered 504; 25 answered in 4.9 s. A page that fails with a 502,
+# 503 or 504 is asked again from the same cursor with the next, smaller
+# size, and later pages keep it.
+PAGE_SIZES = (20, 10, 5)
+RETRY_STATUS = {502, 503, 504}
+
+
+class HTTPError(RuntimeError):
+    def __init__(self, status, message):
+        super().__init__(message)
+        self.status = status
+
+
+def split_include(text):
+    """(status, body) of gh's `--include` output: the status of its last
+    status line (a redirect or a 100 Continue comes first) and the body
+    after its headers; (None, text) without one. Pure."""
+    status, rest = None, text or ""
     while True:
-        args = ["api", "graphql", "-f", f"query={QUERY}", "-f", f"q={q}"] + (["-f", f"after={after}"] if after else [])
-        page = json.loads(gh(*args))["data"]["search"]
+        m = re.match(r"HTTP/[\d.]+ (\d{3})\b", rest)
+        if not m:
+            return status, rest
+        status = int(m.group(1))
+        end = re.search(r"\r?\n\r?\n", rest)
+        rest = rest[end.end():] if end else ""
+
+
+def gh_graphql(*args):
+    """gh api graphql --include: the body; an HTTPError with the status
+    when gh fails (its stdout keeps the status line even when its stderr
+    says only `unexpected end of JSON input`, run 45086743475)."""
+    res = subprocess.run(["gh", "api", "graphql", "--include"] + list(args), capture_output=True, text=True)
+    status, body = split_include(res.stdout)
+    if res.returncode != 0:
+        err = res.stderr.strip()[:300]
+        if status is None or status < 400:
+            m = re.search(r"HTTP (50[234])\b", err)
+            status = int(m.group(1)) if m else status
+        raise HTTPError(status, err or f"HTTP {status}")
+    return body
+
+
+def fetch(owner):
+    """The organisation's open issues and pull requests, in pages of
+    PAGE_SIZES[0]; a page GitHub answers 502, 503 or 504 is asked again
+    smaller (#966)."""
+    q, after, out, size = f"org:{owner} is:open", None, [], 0
+    while True:
+        tried = []
+        while True:
+            args = ["-f", f"query={QUERY}", "-f", f"q={q}", "-F", f"first={PAGE_SIZES[size]}"] + (["-f", f"after={after}"] if after else [])
+            tried.append(PAGE_SIZES[size])
+            try:
+                text = gh_graphql(*args)
+                break
+            except HTTPError as err:
+                if err.status not in RETRY_STATUS:
+                    raise
+                if size + 1 >= len(PAGE_SIZES):
+                    raise RuntimeError(f"GitHub answered HTTP {err.status} to the search {len(tried)} times "
+                                       f"({', '.join(map(str, tried))} per page): {err}") from None
+                size += 1
+        page = json.loads(text)["data"]["search"]
         out += [n for n in page["nodes"] if n]
         if not page["pageInfo"]["hasNextPage"]:
             return out
@@ -710,8 +774,39 @@ def self_test():
     check("C3 (#802) a question's step is when it was asked, on the board",
           step_of({"comments": {"nodes": [{"author": {"login": org.APP}, "body": f"{rc.BOARD}\n" + rc.state_block({"asked": "2026-11-01T00:00:00Z"})}]}}, "its question"),
           "its question@2026-11-01T00:00:00Z")
+    # #966: a page GitHub answers 504 is asked again smaller.
+    check("C1 (#966) gh's --include output: the last status, the body after the headers",
+          (split_include("HTTP/2.0 504 Gateway Timeout\r\nA: b\r\n\r\n"), split_include("HTTP/1.1 100 Continue\n\nHTTP/2.0 200 OK\nA: b\n\n{}"), split_include("{}")),
+          ((504, ""), (200, "{}"), (None, "{}")))
+    asked = []
+    got, err = _fake_fetch(lambda size: size > PAGE_SIZES[0] - 1, 25, asked)
+    check("C1 (#966) a 504 on the first size: asked again smaller, every item back, once",
+          (err, [i["number"] for i in got or []], asked[:2]), (None, list(range(1, 26)), [PAGE_SIZES[0], PAGE_SIZES[1]]))
+    check("C1 (#966) later pages keep the smaller size", set(asked[1:]), {PAGE_SIZES[1]})
     print("all tests passed" if not fails else f"{len(fails)} failed")
     return 1 if fails else 0
+
+
+def _fake_fetch(refuse, total, asked, stderr="unexpected end of JSON input"):
+    """fetch against a fake gh (#966): `refuse(size)` answers a page 504;
+    else the next of `total` items. Returns (items, the error's text)."""
+    def run(cmd, **_):
+        args = dict(a.split("=", 1) for a in cmd if "=" in a and a.split("=", 1)[0] in ("first", "after"))
+        size = int(args["first"])
+        asked.append(size)
+        if refuse(size):
+            return subprocess.CompletedProcess(cmd, 1, "HTTP/2.0 504 Gateway Timeout\r\nContent-Type: text/html\r\n\r\n", stderr)
+        start = int(args.get("after", 0))
+        end = min(start + size, total)
+        page = {"pageInfo": {"hasNextPage": end < total, "endCursor": str(end)}, "nodes": [{"number": n} for n in range(start + 1, end + 1)]}
+        return subprocess.CompletedProcess(cmd, 0, "HTTP/2.0 200 OK\r\n\r\n" + json.dumps({"data": {"search": page}}), "")
+    real, subprocess.run = subprocess.run, run
+    try:
+        return fetch("o"), None
+    except RuntimeError as err:
+        return None, str(err)
+    finally:
+        subprocess.run = real
 
 
 def _module(name, file):
