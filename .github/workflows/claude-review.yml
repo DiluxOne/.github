@@ -932,7 +932,7 @@ jobs:
           if ! printf '%s' "$OUT" | jq -e . >/dev/null 2>&1; then
             echo "::error::The reviewer returned no structured verdict."
             { echo "risk=high"; echo "complexity=high"; echo "blocking=true"; } >> "$GITHUB_OUTPUT"
-            labels high high
+            labels high high || echo "::warning::The risk:high and complexity:high labels could not be set."
             keep=$(jq -c '{count: (.count // 0), findings: (.findings // [])}' "$previous")
             post "$(printf '<!-- dx-review -->\n### Claude review · did not finish\n\nThe reviewer stopped without a verdict at %s (budget, turn limit or API error), so this pull request is treated as high risk and blocked. Re-run the job; the log is in [the run](%s).\n<!-- dx-review-record %s -->' "${SHA:0:7}" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$keep")"
             exit 1
@@ -949,7 +949,7 @@ jobs:
               n=$(grep -c . <<<"$left" || true)
               echo "::error::The reviewer did not examine $n of the changed files: the review did not finish."
               { echo "risk=high"; echo "complexity=high"; echo "blocking=true"; } >> "$GITHUB_OUTPUT"
-              labels high high
+              labels high high || echo "::warning::The risk:high and complexity:high labels could not be set."
               keep=$(jq -c '{count: (.count // 0), findings: (.findings // [])}' "$previous")
               # shellcheck disable=SC2016 # sed's end of line, not a shell expression.
               names=$(head -20 <<<"$left" | sed 's/^/- `/; s/$/`/')
