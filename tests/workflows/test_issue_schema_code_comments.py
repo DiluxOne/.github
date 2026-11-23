@@ -74,3 +74,12 @@ def test_c2_a_real_comment_outside_code_fails_with_todays_message():
     assert schema.g1(prd)["errors"] == [MESSAGE.format("Problem")]
     assert not schema.shape_check("", prd)["ok"]
 
+
+# C3: a lone closer in plain text still fails as before.
+
+def test_c3_a_lone_closer_outside_code_fails_as_today():
+    body = spec_body(FENCED).replace("- Fix it.", "- Fix it, then A " + CLOSER + " B.")
+    assert comment_errors(schema.check(body, stage="spec")) == [MESSAGE.format("Scope")]
+    prd = PRD.replace("The diagram breaks.", "The diagram breaks: " + EDGE + ".").replace("- Fix it.", "- Fix it.\n\n" + INLINE)
+    assert schema.g1(prd)["errors"] == [MESSAGE.format("Problem")]
+    assert not schema.shape_check("", prd)["ok"]
