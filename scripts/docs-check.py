@@ -260,10 +260,10 @@ def removed(repo, base, changes, conf, errors):
 def grep(repo, args, names, errors):
     """`git grep ARGS` at HEAD for any of NAMES (fixed strings): its output,
     "" for no match; a grep that failed is an error, never nothing found."""
-    argv = ["git", "-C", repo, "grep", "-I", "-F", "-z", *args]
-    for n in names:
-        argv += ["-e", n]
-    got = subprocess.run(argv + ["HEAD", "--"], capture_output=True, text=True)
+    patterns = [x for n in names for x in ("-e", n)]
+    # A literal list, no shell, every name after its own -e (#969).
+    got = subprocess.run(["git", "-C", repo, "grep", "-I", "-F", "-z", *args, *patterns, "HEAD", "--"],
+                         capture_output=True, text=True)
     if got.returncode > 1:
         errors.append(f"docs check: git grep failed ({clean(got.stderr, 200)})")
     return got.stdout if got.returncode == 0 else ""

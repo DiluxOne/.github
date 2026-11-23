@@ -813,7 +813,10 @@ def run(repo, base, data, mode_value, env=os.environ, body=None):
     findings, merge_base, errors = scan(repo, base, data, env)
     # #957: the documentation check, on the same change, as the gate's own;
     # BODY is the description, read only for its `Docs: none, <why>`.
-    docs = docs_check.check(repo, merge_base, data.get("docs"), body)
+    try:
+        docs = docs_check.check(repo, merge_base, data.get("docs"), body)
+    except Exception as exc:  # a failed docs check is an error of the gate, never a crash (#969)
+        docs = {"findings": [], "errors": [f"docs check: failed ({type(exc).__name__}: {str(exc)[:200]})"], "exempt": ""}
     for f in docs["findings"]:
         f["severity"] = f["severity"] if f.get("severity") in LEVELS else "high"
     findings += suppress(docs["findings"], suppressions(repo))

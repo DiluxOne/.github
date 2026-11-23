@@ -364,3 +364,32 @@ def test_a_changed_submodule_is_no_error_and_a_failed_grep_is_one(tmp_path):
     assert got["errors"] == [] and got["findings"] == [], got
     errors = []
     assert mod.grep(str(tmp_path / "not-a-repo"), ["-l"], ["--some-flag"], errors) == "" and errors, errors
+
+
+def test_every_subprocess_call_of_the_docs_check_is_a_literal_list():
+    # #969: semgrep's dangerous-subprocess-use-audit flagged an argv built
+    # in a variable; a literal list (names after their own -e) is what the
+    # gate's own rules accept, as git() and show() are written.
+    import ast
+    tree = ast.parse(CHECK.read_text())
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+             and n.func.attr == "run" and getattr(n.func.value, "id", "") == "subprocess"]
+    assert calls, "the docs check runs git"
+    assert all(c.args and isinstance(c.args[0], ast.List) for c in calls), [c.lineno for c in calls]
+
+
+def test_a_docs_check_that_raises_is_an_error_of_the_gate_never_a_crash(tmp_path, monkeypatch):
+    # #969: under report the gate still writes its result; the failure is in errors.
+    cent = gate.central(tmp_path, "report")
+    env = gate.environment(tmp_path, cent)
+    repo = gate.scratch(tmp_path, env, None, base_files(), renamed())
+    mod = gate.gate_module()
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("git went away")
+
+    monkeypatch.setattr(mod, "scan", lambda *_a, **_k: ([], "HEAD", []))
+    monkeypatch.setattr(mod.docs_check, "check", boom)
+    result = mod.run(str(repo), "HEAD", {}, "report", env=env)
+    assert result["findings"] == [] and result["docs"] == {"exempt": ""}, result
+    assert any("docs check: failed (RuntimeError: git went away)" in e for e in result["errors"]), result["errors"]
