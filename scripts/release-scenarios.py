@@ -1060,24 +1060,55 @@ def close_issue(repo, number, run=gh, close=None):
         pass
 
 
-def lane_leftovers(repo, mark, run=gh):
+# The branch of the autopilot's pull request for a lane issue: `fix/<lane
+# issue>-the-bug-reproduced-from-<report>` (#985).
+LANE_BRANCH = re.compile(r"^fix/(\d+)-the-bug-reproduced-from-(\d+)$")
+
+
+def lane_leftovers(repo, mark, run=gh, close=None):
     """Every open bugfix-reproduced lane issue in `repo` whose report
-    carries `mark` closed (#707: a confirmed bug's, which `clear`'s search
-    of the mark cannot find). A failure here never stops a scenario."""
+    carries `mark` closed and locked, after the pull requests that close it
+    went through `close` (#707: a confirmed bug's, which `clear`'s search
+    of the mark cannot find; #985). Then the orphans (#985): every open
+    pull request on a lane branch (`LANE_BRANCH`) whose report carries
+    `mark` goes through `close` too, which is how earlier runs left them
+    (the lane issue closed, its pull request not); a pull request on any
+    other branch is never touched. Each report is read once. `close` is
+    `closer`'s, by default a new one. A failure here never stops a
+    scenario."""
+    close = close or closer(repo, run)
+    reports, done = {}, set()
+
+    def carries(report):
+        if report not in reports:
+            try:
+                reports[report] = mark in str(json.loads(run("issue", "view", report, "--repo", repo, "--json", "body") or "{}").get("body") or "")
+            except (RuntimeError, ValueError, AttributeError):
+                reports[report] = False
+        return reports[report]
+
+    def shut(number):
+        if number not in done:
+            done.add(number)
+            close(number)
+
     try:
         found = json.loads(run("issue", "list", "--repo", repo, "--state", "open", "--label", "lane:bugfix-reproduced",
                                "--json", "number,title", "--limit", "50") or "[]")
     except (RuntimeError, ValueError):
+        found = []
+    for item in found if isinstance(found, list) else []:
+        m = LANE_ISSUE.match(str(item.get("title") or "")) if isinstance(item, dict) else None
+        if m and isinstance(item.get("number"), int) and carries(str(int(m.group(1)))):
+            close_issue(repo, item["number"], run, shut)
+    try:
+        pulls = json.loads(run("pr", "list", "--repo", repo, "--state", "open", "--json", "number,headRefName", "--limit", "100") or "[]")
+    except (RuntimeError, ValueError):
         return
-    for item in found:
-        m = LANE_ISSUE.match(str(item.get("title") or ""))
-        if not m:
-            continue
-        try:
-            if mark in str(json.loads(run("issue", "view", m.group(1), "--repo", repo, "--json", "body") or "{}").get("body") or ""):
-                run("issue", "close", str(item["number"]), "--repo", repo)
-        except (RuntimeError, ValueError):
-            pass
+    for pull in pulls if isinstance(pulls, list) else []:
+        m = LANE_BRANCH.match(str(pull.get("headRefName") or "")) if isinstance(pull, dict) else None
+        if m and isinstance(pull.get("number"), int) and carries(str(int(m.group(2)))):
+            shut(pull["number"])
 
 
 # #936: the test repository's merge queue merges up to 3 pull requests in
@@ -1144,7 +1175,9 @@ def clear(repo, sid, run=gh, branch=None, lands=(), sleep=time.sleep):
     issue and pull request whose body carries its mark closed. A failure
     here never stops a scenario: what it cannot clear, the next run
     clears. A confirmed bug's lane issue, whose report carries the mark, is
-    closed too (`lane_leftovers`, #707). A pull request in the merge queue
+    closed and locked too, with the pull requests that close it, and so is
+    every open pull request on a lane branch whose report carries it, which
+    earlier runs left (`lane_leftovers`, #707, #985). A pull request in the merge queue
     is closed once it leaves it (`closer`, #936)."""
     close = closer(repo, run, sleep)
     for name in dict.fromkeys([f"scenario/{sid}"] + ([branch] if branch else []) + [landing(sid, a) for a in (*LANDS, *lands)]):
@@ -1153,7 +1186,7 @@ def clear(repo, sid, run=gh, branch=None, lands=(), sleep=time.sleep):
         except RuntimeError:
             pass  # none left: a 404
     mark = scenario_mark(sid)
-    lane_leftovers(repo, mark, run)
+    lane_leftovers(repo, mark, run, close)
     for what in ("issue", "pr"):
         try:
             found = json.loads(run(what, "list", "--repo", repo, "--state", "open", "--search", f'"dx-scenario: {sid}" in:body',
@@ -3757,6 +3790,22 @@ def self_test():
           [c[2] for c in lcalls if c[:2] == ("issue", "close")], ["20"])
     check("#707: the lane issues are listed by their label, open, never searched",
           [c for c in lcalls if c[:2] == ("issue", "list")][0][3:9], ("o/t", "--state", "open", "--label", "lane:bugfix-reproduced", "--json"))
+    scalls = []
+
+    def sweepfake(*a, input=None):
+        scalls.append(a)
+        if a[:2] == ("pr", "list"):
+            return json.dumps([{"number": 40, "headRefName": "fix/30-the-bug-reproduced-from-4"}, {"number": 41, "headRefName": "fix/31-the-bug-reproduced-from-6"},
+                               {"number": 42, "headRefName": "dependabot/x"}, {"number": 43, "headRefName": "chore/sync-callers"}])
+        if a[:3] == ("issue", "view", "4"):
+            return json.dumps({"body": scenario_mark("bug-reproduced") + "\nthe report"})
+        if a[:3] == ("issue", "view", "6"):
+            return json.dumps({"body": scenario_mark("bug-reproduced-2") + "\nanother's"})
+        return "[]" if a[1:2] == ("list",) else ""
+    lane_leftovers("o/t", scenario_mark("bug-reproduced"), sweepfake)
+    check("#985: clear closes an earlier run's lane pull request whose report carries the mark, with its branch, and no other",
+          [c for c in scalls if c[:2] == ("pr", "close")], [("pr", "close", "40", "--repo", "o/t", "--delete-branch")])
+    check("#985: an open lane issue is locked too", [c[:3] for c in lcalls if c[:2] == ("issue", "lock")], [("issue", "lock", "20")])
 
     def pushed(merges=True, pull=True):
         """A test repository whose issue 9 is closed by the autopilot's pull

@@ -10,6 +10,7 @@ test repository. Nothing runs: `gh` and `sleep` are fakes.
 import importlib.util
 import inspect
 import json
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -55,7 +56,7 @@ class Fake:
         argv = [str(a) for a in argv]
         self.calls.append(argv)
         if argv[:2] == ["api", "graphql"]:
-            number = [a.split("=", 1)[1] for a in argv if a.startswith("number=")][0]
+            number = [m.group(1) for m in map(re.compile(r"^number=(\d+)$").match, argv) if m][0]
             state, queued = self.state(number, True)
             return json.dumps({"data": {"repository": {"pullRequest": {"state": state, "isInMergeQueue": queued}}}})
         if argv[:2] == ["pr", "close"]:
@@ -165,3 +166,61 @@ def test_cleanup_never_closes_a_merged_lane_pull_request():
     assert fake.pr_closes(21) == [], "cleanup closed #21, which had merged"
     assert fake.did("close", 20) and fake.did("lock", 20)
     assert any(c[:2] == ["api", "graphql"] and "number=21" in c for c in fake.calls), "the lane's pull request was never read"
+
+
+# C3
+
+SID = "bug-reproduced"
+
+
+def run_clear(mod, fake):
+    mod.clear(REPO, SID, fake, **napping(mod.clear, fake.sleep))
+
+
+def sweep_fake(mod):
+    """Lane issue #30 already closed (no open lane issue), its pull request
+    #40 still open; #41 another scenario's; Dependabot's and the callers'
+    sync, no scenario's."""
+    return Fake(pulls=[(40, "fix/30-the-bug-reproduced-from-4"), (41, "fix/31-the-bug-reproduced-from-6"),
+                       (42, "dependabot/x"), (43, "chore/sync-callers")],
+                bodies={"4": mod.marked("the report", SID), "6": mod.marked("another report", "another-scenario")})
+
+
+def test_clear_closes_an_earlier_runs_orphaned_lane_pull_request_with_its_branch():
+    mod = scenarios()
+    fake = sweep_fake(mod)
+    run_clear(mod, fake)
+    closed = [c for c in fake.calls if c[:2] == ["pr", "close"]]
+    assert closed == [["pr", "close", "40", "--repo", REPO, "--delete-branch"]], \
+        f"clear should close the orphaned lane pull request #40 alone, with its branch: {closed}"
+
+
+def test_clear_reads_each_report_once():
+    mod = scenarios()
+    fake = sweep_fake(mod)
+    fake.pulls.append((44, "fix/32-the-bug-reproduced-from-4"))
+    run_clear(mod, fake)
+    assert len(fake.did("view", 4)) == 1, "the report #4 was read more than once"
+    assert len(fake.pr_closes(44)) == 1 and fake.did("view", 6)
+
+
+def test_clear_closes_and_locks_an_open_lane_issue_and_closes_its_pull_request():
+    mod = scenarios()
+    fake = Fake(lanes=[(20, "The bug reproduced from #5")], closes={"20": [21]}, pulls=[(21, "fix/20-the-bug-reproduced-from-5")],
+                bodies={"5": mod.marked("the report", SID)})
+    run_clear(mod, fake)
+    assert fake.did("close", 20) and fake.did("lock", 20), "the lane issue #20 is not closed and locked"
+    assert len(fake.pr_closes(21)) == 1, "the lane issue's pull request #21 was not closed, or closed twice"
+
+
+def test_a_failed_pull_request_list_never_stops_clear():
+    mod = scenarios()
+
+    def broken(*argv, input=None, **kw):
+        broken.calls.append([str(a) for a in argv])
+        if argv[:2] == ("pr", "list") and "--search" not in argv:
+            raise RuntimeError("gh: HTTP 502")
+        return "[]" if argv[1:2] == ("list",) else ""
+    broken.calls = []
+    mod.clear(REPO, SID, broken, **napping(mod.clear, lambda _: None))
+    assert [c for c in broken.calls if c[:2] == ["pr", "close"]] == []
