@@ -55,6 +55,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -67,6 +68,7 @@ MAX_TESTS = 15  # the tests that name most of the files first
 TOTAL_CALLERS = 80
 NAMES = 40
 GREP_SECONDS = 20
+SEARCH_SECONDS = 60  # the whole search's budget: the names left are not searched
 # A path or an identifier, as the Spec or the diff may name one: nothing
 # else is kept, so nothing else reaches git.
 SAFE_PATH = re.compile(r"[A-Za-z0-9_@+.-]+(?:/[A-Za-z0-9_@+.-]+)*")
@@ -268,7 +270,7 @@ def build(root, spec="", base="", head="", kind="", repo=""):
             got = surface.read_blobs(rev, [p]) if os.path.abspath(root) == os.path.abspath(".") else _blob(root, rev, p)
             return got.get(p, "")
         try:
-            if os.path.getsize(os.path.join(root, p)) > surface.MAX_BYTES:
+            if os.path.getsize(os.path.join(root, p)) > surface.MAX_BYTES:  # a file too large to read touches nothing
                 return ""
             with open(os.path.join(root, p), encoding="utf-8", errors="replace") as fh:
                 return fh.read()
@@ -296,8 +298,9 @@ def build(root, spec="", base="", head="", kind="", repo=""):
             names.append((p, s, True))
     names += [(None, s, True) for s in symbols]
     seen_names = set()
+    deadline = time.monotonic() + SEARCH_SECONDS
     for owner, name, word in names[:NAMES]:
-        if name in seen_names:
+        if name in seen_names or time.monotonic() > deadline:
             continue
         seen_names.add(name)
         found = [f for f in grep(root, name, rev, word) if f != owner and not noise(f)]

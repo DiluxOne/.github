@@ -1323,7 +1323,8 @@ jobs:
           # touches an input, a permission, authentication, a secret or a
           # workflow (policy/threats.yml and the kind's, read from the
           # engine's checkout) needs its threats section.
-          kind=$(python3 .dx-central/scripts/impact.py kind)
+          # A kind that cannot be read is none: the organisation's entries still apply.
+          kind=$(python3 .dx-central/scripts/impact.py kind 2>/dev/null || true)
           if ! python3 .dx-central/scripts/issue-schema.py check --stage spec --type "$type" --kind "$kind" < "$RUNNER_TEMP/body.md" > "$RUNNER_TEMP/g3.json"; then
             echo "::warning::The Spec does not pass G3: $(jq -c .errors "$RUNNER_TEMP/g3.json")"
             echo "why=The Spec on the issue does not pass G3: $(jq -r '.errors | join("; ")' "$RUNNER_TEMP/g3.json" | head -c 300)" >> "$GITHUB_OUTPUT"; exit 0
