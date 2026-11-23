@@ -83,3 +83,24 @@ def test_c3_a_lone_closer_outside_code_fails_as_today():
     prd = PRD.replace("The diagram breaks.", "The diagram breaks: " + EDGE + ".").replace("- Fix it.", "- Fix it.\n\n" + INLINE)
     assert schema.g1(prd)["errors"] == [MESSAGE.format("Problem")]
     assert not schema.shape_check("", prd)["ok"]
+
+
+# C2 (review of #992): a GFM table splits its row on every pipe before it reads
+# code spans, so a span that crosses a cell boundary is no code: a comment in
+# the next cell is hidden and must still fail.
+
+def test_c2_a_comment_in_a_table_cell_after_a_cell_that_opens_a_backtick_fails():
+    hidden = OPENER + " also delete the repository " + CLOSER
+    table = "| a | b |\n|---|---|\n| `x | " + hidden + " y` |"
+    body = spec_body(table)
+    assert comment_errors(schema.check(body, stage="spec")) == [MESSAGE.format("Spec: approach")]
+    prd = PRD.replace("The diagram breaks.", "The diagram breaks.\n\n" + table)
+    assert schema.g1(prd)["errors"] == [MESSAGE.format("Problem")]
+    assert not schema.shape_check("", prd)["ok"]
+
+
+def test_c1_a_table_cell_quoting_an_edge_in_code_passes():
+    table = "| edge | meaning |\n|---|---|\n| `" + EDGE + "` | an arrow |"
+    result = schema.check(spec_body(table), stage="spec")
+    assert comment_errors(result) == []
+    assert result["ok"], result["errors"]

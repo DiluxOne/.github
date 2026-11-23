@@ -114,14 +114,13 @@ BACKTICKS = re.compile(r"`+")
 RAW_HTML = re.compile(r"<(?:[A-Za-z/?]|!(?!--))")
 
 
-def _spans_out(line):
-    """LINE with its inline code spans taken out, and whether the next line
-    may be read for spans too. A run of backticks opens a span with the next
-    run of the same length on the line; one escaped by a backslash, or with
-    no such run (a span that would cross lines), stops the reading here and
-    for the rest of the text. Linear: each run's next of its length is found
-    in one backward pass."""
-    runs = [(m.start(), m.end()) for m in BACKTICKS.finditer(line)]
+def _cell_spans_out(cell):
+    """CELL with its inline code spans taken out, and whether reading goes
+    on. A run of backticks opens a span with the next run of the same length
+    in the cell; one escaped by a backslash, or with no such run, stops the
+    reading here. Linear: each run's next of its length is found in one
+    backward pass."""
+    runs = [(m.start(), m.end()) for m in BACKTICKS.finditer(cell)]
     nxt, last = [None] * len(runs), {}
     for k in range(len(runs) - 1, -1, -1):
         size = runs[k][1] - runs[k][0]
@@ -129,11 +128,29 @@ def _spans_out(line):
     kept, pos, k = [], 0, 0
     while k < len(runs):
         start = runs[k][0]
-        if (start and line[start - 1] == "\\") or nxt[k] is None:
-            return "".join(kept) + line[pos:], False
-        kept.append(line[pos:start])
+        if (start and cell[start - 1] == "\\") or nxt[k] is None:
+            return "".join(kept) + cell[pos:], False
+        kept.append(cell[pos:start])
         pos, k = runs[nxt[k]][1], nxt[k] + 1
-    return "".join(kept) + line[pos:], True
+    return "".join(kept) + cell[pos:], True
+
+
+def _spans_out(line):
+    """LINE with its inline code spans taken out, and whether the next line
+    may be read for spans too. The line is read one table cell at a time,
+    split on every pipe, escaped or not: a GFM table splits its row there
+    before it reads code spans, so a span that crosses a pipe can be no code
+    and must not be taken out (the review of #992). Off a table this only
+    refuses more: a span that holds a pipe is left unmatched. A run with no
+    match in its cell (a span that would cross a pipe or a line), or escaped,
+    stops the reading here and for the rest of the text."""
+    cells, out = line.split("|"), []
+    for n, cell in enumerate(cells):
+        kept, more = _cell_spans_out(cell)
+        out.append(kept)
+        if not more:
+            return "|".join(out + cells[n + 1:]), False
+    return "|".join(out), True
 
 
 def code_free(text):
@@ -700,6 +717,9 @@ A class on <html> and a cookie.
                                         f"<pre>\n```\n{edge}\n```\n</pre>")], [True] * 6)
     check_("#991 a span stops at the first unmatched run, for the rest of the text",
            (hidden_comment(f"`a\n`b` {opn} h -" + "-> `c`"), hidden_comment(f"`a` `{edge}`")), (True, False))
+    check_("#991 a span never crosses a pipe (a table cell): a comment in the next cell is found, an edge within a cell is code",
+           [hidden_comment(t) for t in (f"| `a | {opn} h -" + "-> b` |", f"| `a \\| {opn} h -" + "-> b` |", f"| `{edge}` | x |", f"`a | {edge}`")],
+           [True, True, False, True])
     fenced = good.replace("- A toggle in the header.", f"- A toggle in the header.\n\n```\n{edge}\n```\n\nSee `{edge}`.")
     check_("#991 passes: an edge quoted in code in the PRD", (check(fenced)["ok"], g1(fenced)["ok"]), (True, True))
     smuggled = good.replace("- Per-page themes.", "- Per-page themes.\n\n```\n~~~").replace("- C1: Given", f"```\n{opn} h -" + "->\n```\n```\n\n- C1: Given")
