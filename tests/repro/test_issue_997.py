@@ -14,6 +14,7 @@ Nothing runs: `gh` and `sleep` are fakes.
 """
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -45,7 +46,7 @@ class Repo:
         argv = [str(a) for a in argv]
         self.calls.append(argv)
         if argv[:2] == ["api", "graphql"]:
-            number = int(next(a for a in argv if a.startswith("number=")).split("=", 1)[1])
+            number = next(int(m.group(1)) for a in argv for m in [re.fullmatch(r"number=(\d+)", a)] if m)
             self.polls[number] = self.polls.get(number, 0) + 1
             return json.dumps({"data": {"repository": {"pullRequest": {"state": "OPEN", "isInMergeQueue": True}}}})
         if argv[:2] == ["issue", "view"] and argv[2] == str(REPORT):
