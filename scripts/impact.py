@@ -49,7 +49,8 @@ that match a path or an identifier pattern are kept.
         Spec sections, as G3 reads them), the paths its `Spec: files` names
         and its text, line by line; on a change, the paths it changes and
         the lines its diff adds or removes in code, never in a docs path or
-        a declared test (but for an entry with `docs: true`)
+        a declared test (`test-first:` read at BASE; but for an entry with
+        `docs: true`); a malformed declaration is "cannot tell" (exit 2)
   impact.py kind       the kind the repository in the working directory
                        declares, or nothing
   impact.py --test     self-test, on scratch repositories
@@ -289,7 +290,10 @@ def build(root, spec="", base="", head="", kind="", repo=""):
         except ValueError:
             hits = []
     tf, decl = declaration(root, repo, head or "HEAD")
-    test_set = {p for p, _ in tf.tests_of(decl, every)} if decl else set()
+    try:
+        test_set = {p for p, _ in tf.tests_of(decl, every)} if decl else set()
+    except (KeyError, TypeError, AttributeError):  # a malformed declaration names no tests
+        test_set = set()
 
     tests, callers, total = {}, [], 0
     for p in files:
@@ -479,8 +483,8 @@ def is_prose(path, docs, tests):
 def on_change(root, base, head, kind="", entries=None, repo=""):
     """The trigger on a change: the paths it changes, and the lines its diff
     adds or removes in code. A line of a docs path (the organisation's and
-    the kind's `docs-paths`) or of a declared test (`test-first:`) is prose
-    about the code, not the code, and fires only an entry with `docs: true`
+    the kind's `docs-paths`) or of a declared test (`test-first:`, read at
+    BASE, never at the head the change can edit) is prose about the code, not the code, and fires only an entry with `docs: true`
     (a kind whose Markdown is what an agent runs): the review's trigger then
     fires on no more than what the code does, as G3 at the draft reads the
     Spec alone (#974)."""
@@ -488,8 +492,13 @@ def on_change(root, base, head, kind="", entries=None, repo=""):
     changed, patch, _ = changed_files(root, base, head)
     pairs = diff_file_lines(patch)
     docs = prose_globs(kind)
-    tf, decl = declaration(root, repo, head or "HEAD")
-    tests = {p for p, _ in tf.tests_of(decl, sorted({p for p, _ in pairs}))} if decl else set()
+    # The declaration at the base, never the head: a change that declared
+    # every path a test would silence the trigger it is judged by (#974).
+    tf, decl = declaration(root, repo, base)
+    try:
+        tests = {p for p, _ in tf.tests_of(decl, sorted({p for p, _ in pairs}))} if decl else set()
+    except (KeyError, TypeError, AttributeError) as e:
+        raise ValueError(f"the test-first declaration at {base} is malformed ({type(e).__name__}: {e})") from e
     every = [line for _, line in pairs]
     code = [line for p, line in pairs if not is_prose(p, docs, tests)]
     out = []
@@ -630,6 +639,26 @@ def self_test():
         sh("commit", "-qm", "code")
         ok("a change: the same word in code fires", any(h.startswith("secret:") for h in on_change(d, mid, "HEAD", "wordpress-plugin")))
         ok("the kind is the repository's", main_kind(d) == "wordpress-plugin")
+        mid = git(d, "rev-parse", "HEAD").stdout.strip()
+        write(".github/review-policy.yml", "kind: wordpress-plugin\ntest-first:\n  tests:\n    - paths: ['**']\n      way: unit\n")
+        write("app.php", "<?php\n$id = $_POST['id'];\n")
+        sh("add", "-A")
+        sh("commit", "-qm", "widen")
+        got = on_change(d, mid, "HEAD", "wordpress-plugin")
+        ok(f"a change that declares every path a test at its head still fires on its code (#974: {got})",
+           any(h.startswith("input:") or h.startswith("wp-input:") for h in got))
+        write(".github/review-policy.yml", "kind: wordpress-plugin\ntest-first:\n  tests:\n    - way: unit\n")
+        sh("add", "-A")
+        sh("commit", "-qm", "bad decl")
+        write("app.php", "<?php\n$id = $_GET['id'];\n")
+        sh("add", "-A")
+        sh("commit", "-qm", "after")
+        try:
+            on_change(d, git(d, "rev-parse", "HEAD~1").stdout.strip(), "HEAD", "wordpress-plugin")
+            raised = False
+        except ValueError:
+            raised = True
+        ok("a malformed test-first declaration (no paths): cannot tell, never a traceback", raised)
     ok("a diff's lines with their files, a deleted one by its old name",
        diff_file_lines("diff --git a/x b/x\n--- a/x\n+++ /dev/null\n@@ -1 +0,0 @@\n--- a/y\n"
                        "diff --git a/z b/z\n--- /dev/null\n+++ b/z\n@@ -0,0 +1 @@\n+new\n") == [("x", "-- a/y"), ("z", "new")])

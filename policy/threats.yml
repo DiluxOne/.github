@@ -12,7 +12,8 @@
 # (a Python regular expression over one line: a line of the Spec, or one the
 # diff adds or removes in code; it names things like `secrets.`, never reads a
 # value). A diff's lines in a docs path (`docs-paths`, the organisation's and
-# the kind's) or a declared test (`test-first:`) are prose about the code and
+# the kind's) or a declared test (`test-first:`, read at the base, never the
+# head) are prose about the code and
 # fire only an entry with `docs: true`, as a kind's whose Markdown an agent
 # runs. `fixtures`: `fail` and `pass`, each a line of text, or
 # `{path: ...}` for a path; `python3 scripts/impact.py --test` and
