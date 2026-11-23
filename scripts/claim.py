@@ -821,7 +821,7 @@ def read_pull(repo, number, run=None):
     if code != 0 or errors or not pr:
         said = [f"{e.get('message') or e.get('type') or 'refused'} (at {'.'.join(str(p) for p in e.get('path') or []) or '?'})" for e in errors]
         said = said or [err.strip() or "GitHub returned no pull request"]
-        raise Unreadable("; ".join(said)[:300])
+        raise Unreadable(" ".join("; ".join(said).split())[:300])
     return pr
 
 
@@ -837,6 +837,8 @@ def daily(repo, cfg, when):
             failed.append(n)
     data = gh_json("api", "graphql", "-f", f"query={PRS_QUERY}", "-F", f"q=repo:{repo} is:pr is:open")
     for found in ((data or {}).get("data") or {}).get("search", {}).get("nodes") or []:
+        if not (found or {}).get("number"):
+            continue
         pr = found
         try:
             try:
