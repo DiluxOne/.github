@@ -90,3 +90,14 @@ def test_c1_a_504_page_is_asked_again_smaller_and_every_item_comes_back(tmp_path
     assert len(numbers) == len(set(numbers)), "an item came back twice"
     asked = sizes(log)
     assert asked[0] == first and len(asked) > 1 and asked[1] < first, asked
+
+
+def test_c2_a_504_on_every_try_names_the_504_and_the_tries(tmp_path, monkeypatch):
+    log = fake_gh(tmp_path, monkeypatch, limit=0)
+    items, err = fetch()
+    assert items is None, "fetch returned items when every page was refused"
+    tries = len(sizes(log))
+    assert tries > 1, f"fetch tried {tries} time(s): nothing retried"
+    message = str(err)
+    assert "504" in message, f"the error does not name the 504: {message!r}"
+    assert f"{tries} times" in message, f"the error does not say it tried {tries} times: {message!r}"

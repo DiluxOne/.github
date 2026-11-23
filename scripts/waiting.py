@@ -783,19 +783,31 @@ def self_test():
     check("C1 (#966) a 504 on the first size: asked again smaller, every item back, once",
           (err, [i["number"] for i in got or []], asked[:2]), (None, list(range(1, 26)), [PAGE_SIZES[0], PAGE_SIZES[1]]))
     check("C1 (#966) later pages keep the smaller size", set(asked[1:]), {PAGE_SIZES[1]})
+    asked = []
+    got, err = _fake_fetch(lambda size: True, 25, asked)
+    check("C2 (#966) a 504 on every try: it fails, naming the 504 and the tries",
+          (got, asked, (err or "").split(":")[0]), (None, list(PAGE_SIZES), "GitHub answered HTTP 504 to the search 3 times (20, 10, 5 per page)"))
+    asked = []
+    got, err = _fake_fetch(lambda size: True, 25, asked, stderr="gh: Something went wrong (HTTP 504)", status=None)
+    check("C2 (#966) a stderr's HTTP 504 counts the same", len(asked), len(PAGE_SIZES))
+    asked = []
+    _fake_fetch(lambda size: True, 25, asked, stderr="gh: Bad Gateway (HTTP 502)", status="502 Bad Gateway")
+    check("C2 (#966) a 502 is retried too", len(asked), len(PAGE_SIZES))
+    got, err = _fake_fetch(lambda size: True, 25, [], stderr="gh: Bad credentials (HTTP 401)", status="401 Unauthorized")
+    check("C2 (#966) another failure is not retried", err, "gh: Bad credentials (HTTP 401)")
     print("all tests passed" if not fails else f"{len(fails)} failed")
     return 1 if fails else 0
 
 
-def _fake_fetch(refuse, total, asked, stderr="unexpected end of JSON input"):
-    """fetch against a fake gh (#966): `refuse(size)` answers a page 504;
+def _fake_fetch(refuse, total, asked, stderr="unexpected end of JSON input", status="504 Gateway Timeout"):
+    """fetch against a fake gh (#966): `refuse(size)` answers a page `status`;
     else the next of `total` items. Returns (items, the error's text)."""
     def run(cmd, **_):
         args = dict(a.split("=", 1) for a in cmd if "=" in a and a.split("=", 1)[0] in ("first", "after"))
         size = int(args["first"])
         asked.append(size)
         if refuse(size):
-            return subprocess.CompletedProcess(cmd, 1, "HTTP/2.0 504 Gateway Timeout\r\nContent-Type: text/html\r\n\r\n", stderr)
+            return subprocess.CompletedProcess(cmd, 1, f"HTTP/2.0 {status}\r\nContent-Type: text/html\r\n\r\n" if status else "", stderr)
         start = int(args.get("after", 0))
         end = min(start + size, total)
         page = {"pageInfo": {"hasNextPage": end < total, "endCursor": str(end)}, "nodes": [{"number": n} for n in range(start + 1, end + 1)]}
