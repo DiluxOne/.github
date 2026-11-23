@@ -263,6 +263,8 @@ fi
 # issue's Spec before the pull request), as the review's brief carries it.
 impact="$work/impact.md"
 python3 "$CENTRAL/scripts/impact.py" map --base "$BASE" --head "$HEAD" --kind "$kind" > "$impact" 2>/dev/null || : > "$impact"
+rc=0; python3 "$CENTRAL/scripts/impact.py" threats --brief --base "$BASE" --head "$HEAD" --kind "$kind" > "$work/threats.md" 2>/dev/null || rc=$?
+if [ "$rc" -eq 1 ] && [ -s "$impact" ]; then { echo; cat "$work/threats.md"; } >> "$impact"; fi
 # owner/name from the origin remote, or the directory's name without one.
 repo=$(git remote get-url origin 2>/dev/null | sed -E 's#(\.git)?$##; s#.*[:/]([^/]+/[^/]+)$#\1#' || true)
 REPO=${repo:-$(basename "$(git rev-parse --show-toplevel)")} \

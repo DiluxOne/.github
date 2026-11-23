@@ -2653,7 +2653,7 @@ def g6_verdict(path):
 
 def decide(policy, body, risk, complexity, blocking, description_ok, files, head_files, autopilot_var, author=BOT, lane_name=LANE, repro_sha="",
            surface=(), issue_type="", criteria_verdict=False, issue_labels=(), sensitive=(), repro_outcome=None, widening=("unknown",),
-           head_checks=None, required_checks=None, decl=None, pr_type="", head_sha="", fixed=""):
+           head_checks=None, required_checks=None, decl=None, pr_type="", head_sha="", fixed="", threats=()):
     """Gate G7. lane_name is the lane the issue is worked under (which_lane);
     for a reproduced bug, repro_sha is the SHA-256 of the reproduction test
     as it is at the head: it must be the one the PRD sealed. surface is what
@@ -2682,7 +2682,11 @@ def decide(policy, body, risk, complexity, blocking, description_ok, files, head
     a file of that pattern (#887), the review's description_ok is not
     asked: the fixed change matches its description by construction; nor
     is the review's criteria_verdict (#894): its criteria are met by
-    construction, one marker per criterion being what it writes."""
+    construction, one marker per criterion being what it writes.
+    threats (#958): why the change needs its Spec's threats section, the
+    trigger on the Spec and on the change (g3_threats): G3 is checked
+    again with it, so a Bug whose code turned out to touch a workflow is
+    refused without its threats."""
     if author != BOT:
         return False, f"the autopilot's pull requests are opened by {BOT}, not {author or 'unknown'}"
     if (autopilot_var or "").strip().lower() == "off":
@@ -2751,7 +2755,10 @@ def decide(policy, body, risk, complexity, blocking, description_ok, files, head
     if not within(complexity, caps.get("max-complexity", "none")):
         return False, f"complexity {complexity} is above the lane's {caps.get('max-complexity', 'none')}"
     # G3 again, by the issue's Type: a Feature's Spec has its phases (#193).
-    if not schema.check(body, "spec", issue_type=issue_type or None)["ok"]:
+    g3 = schema.check(body, "spec", issue_type=issue_type or None, threats=list(threats or []))
+    if not g3["ok"]:
+        if threats and any(e.startswith("### Spec: threats") for e in g3["errors"]):
+            return False, f"the Spec has no threats section, which the change needs: it touches {'; '.join(threats)[:200]} (G3)"
         return False, "the Spec is missing or incomplete (G3)"
     # G6 (#193): an agent that did not write the code, the review, said
     # each criterion is met, at this head.
@@ -2785,6 +2792,25 @@ def decide(policy, body, risk, complexity, blocking, description_ok, files, head
     if verdict_bypassed:
         passed += ", its criteria met by construction (the fixed change, written with no model)"
     return True, f"merges by policy: lane {lane_name}, risk {risk}, complexity {complexity}, every criterion with its test{passed}"
+
+
+def g3_threats(body, files, kind="", extra=()):
+    """Why the change needs its Spec's threats (#958), for G7's G3 recheck:
+    scripts/impact.py's trigger on the Spec in BODY, on the paths the change
+    touches (FILES), and EXTRA (the trigger on the diff's lines, when the
+    caller ran it). A trigger that cannot be read counts as fired: the
+    decision fails closed, to a person."""
+    try:
+        impact = _load("impact", "impact.py")
+        entries = impact.threat_entries(kind)
+        hits = impact.on_text(spec_of(body), entries=entries) + impact.threat_hits(entries, list(files), [])
+    except Exception as e:  # noqa: BLE001  not knowing counts as touching
+        return [f"unknown: the threat trigger could not be read ({str(e)[:120]})"]
+    out = []
+    for h in list(hits) + [str(x).strip() for x in extra if str(x).strip()]:
+        if h not in out:
+            out.append(h)
+    return out
 
 
 def read_json_lines(path):
@@ -2917,13 +2943,21 @@ def spec_answer(answer):
             f"<answer>\n{answer.replace('</answer>', '</ answer>')}\n</answer>")
 
 
-def prompt_spec(repo, number, prd_text, ev=None, issue_type="", mode="full", answered="", answer=""):
+THREATS_PHASE = "\n   ### Spec: threats  (a short STRIDE over its data, permissions and inputs: each threat and what stops it)"
+
+
+def prompt_spec(repo, number, prd_text, ev=None, issue_type="", mode="full", answered="", answer="", threats=()):
     # A feature's phases (#193), before any code: what it touches and can
     # break, its threats, where it goes. G3 refuses a Feature's Spec without them.
     phases = ("\n   ### Spec: impact  (what it touches, sibling code that does the same, what it can break)"
-              "\n   ### Spec: threats  (a short STRIDE over its data, permissions and inputs: each threat and what stops it)"
+              + THREATS_PHASE +
               "\n   ### Spec: architecture  (where the code goes, which pattern of the repository it follows, what it must not break)"
               ) if issue_type == "Feature" else ""
+    # #958: whatever the Type, a PRD that already fires the threat trigger
+    # (scripts/impact.py) gets its threats asked now, before G3 asks.
+    if threats and issue_type != "Feature":
+        phases = (THREATS_PHASE[:-1] + "; required here whatever the issue's Type, because it touches "
+                  + "; ".join(threats)[:300] + ")")
     who = f"which the `{REPRO}` lane of the autonomy policy accepted" if ev else "which a maintainer accepted"
     # #734: the "Test first" check runs each test at the base, from the
     # paths the repository declares (`test-first:`, scripts/test-first.py).
@@ -2950,6 +2984,15 @@ Do not create a branch, commit or open a pull request: the workflow opens the dr
 {NO_KEY}
 
 {FOREGROUND}"""
+
+
+def prd_threats(prd_text, kind):
+    """The threat trigger on the PRD's text (#958), for the Spec's prompt;
+    [] when it cannot be read (G3 still checks the Spec)."""
+    try:
+        return _load("impact", "impact.py").on_text(prd_text, kind)
+    except Exception:  # noqa: BLE001  the prompt goes on; G3 decides
+        return []
 
 
 def read_file_env(key):
@@ -7367,8 +7410,9 @@ def main(argv):
         print(why)
         return 0 if ok else 2 if no_way and why == no_way else 1
     if argv[:2] == ["prompt", "spec"]:
-        print(prompt_spec(repo, number, schema.part_text(body, "prd"), ev, os.environ.get("ISSUE_TYPE", ""), mode_of(pol), read_file_env("SETTLED"),
-                          read_file_env("ANSWERS")))
+        prd = schema.part_text(body, "prd")
+        print(prompt_spec(repo, number, prd, ev, os.environ.get("ISSUE_TYPE", ""), mode_of(pol), read_file_env("SETTLED"),
+                          read_file_env("ANSWERS"), prd_threats(prd, kind_notes()[0])))
         return 0
     if argv[:2] == ["prompt", "work"]:
         info = pr_json(repo, pr, "body")
@@ -7396,7 +7440,8 @@ def main(argv):
                          lane_name, os.environ.get("REPRO_SHA256", ""), read_lines("SURFACE"), os.environ.get("ISSUE_TYPE", ""),
                          g6_verdict(os.environ.get("CRITERIA_VERDICT", "")), read_lines("ISSUE_LABELS"), read_lines("SENSITIVE"),
                          os.environ.get("REPRO_OUTCOME", ""), read_lines("WIDENING") if os.environ.get("WIDENING") else ["unknown"],
-                         **check_evidence(os.environ, repo))
+                         **check_evidence(os.environ, repo),
+                         threats=g3_threats(body, read_lines("FILES"), os.environ.get("KIND", ""), read_lines("THREATS")))
         print(why)
         return 0 if ok else 1
     print(__doc__, file=sys.stderr)

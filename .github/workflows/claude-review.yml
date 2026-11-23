@@ -542,6 +542,10 @@ jobs:
           # that cannot be built leaves the brief without it.
           IMPACT="$RUNNER_TEMP/impact.md"
           python3 .dx-central/scripts/impact.py map --spec "$RUNNER_TEMP/issue-body.md" --base "$BASE" --head "$HEAD" --kind "${KIND:-}" > "$IMPACT" 2>/dev/null || : > "$IMPACT"
+          # The threat trigger on the Spec and the change: when it fires, why,
+          # and the Spec's threats section, for the review to check it.
+          rc=0; python3 .dx-central/scripts/impact.py threats --brief --spec "$RUNNER_TEMP/issue-body.md" --base "$BASE" --head "$HEAD" --kind "${KIND:-}" > "$RUNNER_TEMP/threats.md" 2>/dev/null || rc=$?
+          if [ "$rc" -eq 1 ] && [ -s "$IMPACT" ]; then { echo; cat "$RUNNER_TEMP/threats.md"; } >> "$IMPACT"; fi
           export IMPACT
           # Each file's diff as a file (#287): the reviewers have no shell.
           # #956: the security gate's result, when its artifact came.

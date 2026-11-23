@@ -82,6 +82,10 @@ spec:
   # A feature's phases (#193): what it touches and can break, its threats,
   # and where it goes, written at G3 before any code. Required only for an
   # issue whose Type is in `types`; a minor change or a fix carries none.
+  # Its threats are required too, whatever the Type, when the threat
+  # trigger fires on the Spec or the change (#958: policy/threats.yml and
+  # the kind's, scripts/impact.py threats, passed to G3 by the draft and
+  # the auto-merge decision).
   - id: impact
     heading: "Spec: impact"
     description: What the change touches, sibling code that does the same, and what it can break.

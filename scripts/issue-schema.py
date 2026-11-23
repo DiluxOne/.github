@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """The issue schema (policy/issue-schema.yml): check an issue's PRD and Spec.
 
-  issue-schema.py check [--stage prd|spec] [--type TYPE]   check the issue body on stdin;
+  issue-schema.py check [--stage prd|spec] [--type TYPE] [--kind KIND]   check the issue body on stdin;
         print what is missing or out of place as JSON; exit 0 when it passes.
         prd (G1, the default): the report sections, then every PRD section.
-        spec (G3): the same, and every Spec section after them.
+        spec (G3): the same, and every Spec section after them. With --kind
+        (#958), the threat trigger runs on the Spec (scripts/impact.py, the
+        organisation's entries and KIND's; "" for none): when it fires,
+        `Spec: threats` is required whatever the Type, and the error says why.
   issue-schema.py g1                         gate G1 on the body on stdin, as
         {ok, errors}: the one check issue-accepted.yml and the autopilot's
         start (autopilot.py may_start) both run (#699); exit 0 when it passes.
@@ -219,8 +222,13 @@ def repository_rules(text):
     return rules, errors
 
 
-def check(body, stage="prd", sch=None, issue_type=None):
+def check(body, stage="prd", sch=None, issue_type=None, threats=None):
+    """The body against the schema. threats (#958): why the change needs its
+    `Spec: threats` section (scripts/impact.py threats), one line per entry
+    that fired; when any, the section is required at the spec stage
+    whatever the Type. None or empty (the callers that pass none): as before."""
     sch = sch or schema()
+    threats = [t for t in (threats or []) if t]
     errors = []
     sections, stray = parse(body)
     if stray:
@@ -262,7 +270,10 @@ def check(body, stage="prd", sch=None, issue_type=None):
         if t is None or t.strip().lower() in EMPTY:
             # A section for some Types (a feature's phases) is required of
             # those only; with no Type given, of none.
-            if s.get("required") and (not s.get("types") or issue_type in s["types"]):
+            if s.get("id") == "threats" and threats:
+                errors.append(f"### {h} is missing or empty: the change touches {'; '.join(threats)[:300]}, "
+                              "so it needs its threats whatever the issue's Type")
+            elif s.get("required") and (not s.get("types") or issue_type in s["types"]):
                 errors.append(f"### {h} is missing or empty")
             continue
         fmt = s.get("format")
@@ -288,6 +299,16 @@ def check(body, stage="prd", sch=None, issue_type=None):
             if missing:
                 errors.append(f"### {h}: no test named for {', '.join(missing)}")
     return {"ok": not errors, "errors": errors, "criteria": ids}
+
+
+def spec_threats(body, kind=""):
+    """Why the Spec in BODY needs its threats (#958): scripts/impact.py's
+    trigger on its Spec sections (the whole body when it has none)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("impact", os.path.join(HERE, "impact.py"))
+    impact = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(impact)
+    return impact.on_text(part_text(body, "spec") or body, kind)
 
 
 def g1(body, sch=None):
@@ -781,7 +802,17 @@ def main(argv):
     if argv[:1] == ["check"]:
         stage = argv[argv.index("--stage") + 1] if "--stage" in argv[:-1] else "prd"
         issue_type = argv[argv.index("--type") + 1] if "--type" in argv[:-1] else None
-        result = check(sys.stdin.read(), stage, issue_type=issue_type)
+        body = sys.stdin.read()
+        threats = None
+        if "--kind" in argv[:-1]:
+            # #958: the threat trigger on the Spec in the body, with the
+            # organisation's entries and the kind's (scripts/impact.py).
+            try:
+                threats = spec_threats(body, argv[argv.index("--kind") + 1])
+            except (ValueError, OSError) as err:
+                print(json.dumps({"ok": False, "errors": [f"the threat trigger could not be read: {err}"], "criteria": []}, indent=2))
+                return 1
+        result = check(body, stage, issue_type=issue_type, threats=threats)
         print(json.dumps(result, indent=2))
         return 0 if result["ok"] else 1
     if argv == ["g1"]:

@@ -35,6 +35,19 @@ that match a path or an identifier pattern are kept.
         is the repository's (`kind:` in its .github/review-policy.yml) when
         --kind is not given; NAME (default GITHUB_REPOSITORY) finds its
         `test-first:` in repos.yml too
+  impact.py threats [--brief] [--spec FILE] [--base BASE --head HEAD] [--kind KIND]
+        the deterministic trigger for threats: print why the change needs
+        its `Spec: threats` section, one line per entry that fires (exit 1),
+        or nothing (exit 0); 2 when it cannot tell. --brief prints, when it
+        fires, the review brief's lines instead: "Threats required: <why>"
+        and the Spec's threats section as it stands (or that it has none). The entries are the
+        organisation's (policy/threats.yml) and the kind's (`threats:` in
+        kinds/<kind>/surface.yml, add-only), read from this checkout of the
+        engine, never from the change's head: on a Spec, the paths its
+        `Spec: files` names and its text, line by line; on a change, the
+        paths it changes and the lines its diff adds or removes
+  impact.py kind       the kind the repository in the working directory
+                       declares, or nothing
   impact.py --test     self-test, on scratch repositories
 """
 import importlib.util
@@ -103,7 +116,7 @@ def path_tokens(text):
     bare words with a slash or an extension. Only SAFE_PATH ones. Pure."""
     found = []
     for raw in re.findall(r"`([^`\n]+)`", text or "") + re.findall(r"[^\s`(),;:'\"<>]+", re.sub(r"`[^`\n]*`", " ", text or "")):
-        tok = raw.strip().strip(".,;:").removeprefix("./")
+        tok = raw.strip().lstrip(",;:").rstrip(".,;:").removeprefix("./")
         if ("/" in tok or re.search(r"\.[A-Za-z0-9]{1,8}$", tok)) and SAFE_PATH.fullmatch(tok) and tok not in found \
                 and not tok.startswith(("http", "-")) and ".." not in tok.split("/"):
             found.append(tok)
@@ -358,6 +371,106 @@ def impact_map(root=".", spec="", base="", head="", kind=None, repo=""):
         return f"(The impact map could not be built: {str(e)[:200]}.)"
 
 
+# --- the threat trigger --------------------------------------------------------
+
+THREATS_FILE = os.path.join(CENTRAL, "policy", "threats.yml")
+
+
+def threat_entries(kind=""):
+    """The organisation's entries and the kind's, each compiled once:
+    [(entry, [path regexes], pattern or None)]. A kind with no pack is an
+    error (ValueError), as the surface check's."""
+    org = (load_yaml(THREATS_FILE) or {}).get("threats") or []
+    pack = surface.load_pack(kind) if kind else {}
+    out = []
+    for entry in list(org) + list(pack.get("threats") or []):
+        if not isinstance(entry, dict) or not entry.get("id") or not entry.get("what"):
+            raise ValueError(f"a threats entry with no id or what: {entry!r:.80}")
+        try:
+            rx = re.compile(entry["pattern"]) if entry.get("pattern") else None
+        except re.error as e:
+            raise ValueError(f"threats entry {entry['id']}: its pattern does not compile ({e})")
+        globs = [glob_to_regex(g) for g in entry.get("paths") or []]
+        if not rx and not globs:
+            raise ValueError(f"threats entry {entry['id']}: neither paths nor a pattern")
+        out.append((entry, globs, rx))
+    return out
+
+
+def shown(text):
+    return re.sub(r"[`\s]+", " ", text).strip()[:60]
+
+
+def threat_hits(entries, paths, lines):
+    """Why the change needs its threats, one line per entry that fires: a
+    path its globs match, or a line its pattern matches. Pure."""
+    out = []
+    for entry, globs, rx in entries:
+        where = next((p for p in paths if any(g.match(p) for g in globs)), None)
+        if where is None and rx is not None:
+            m = next((m for line in lines for m in [rx.search(line)] if m), None)
+            where = f"\"{shown(m.group(0))}\"" if m else None
+        if where is not None:
+            out.append(f"{entry['id']}: {entry['what']}, {where}")
+    return out
+
+
+def on_text(text, kind="", entries=None):
+    """The trigger on a Spec (or a PRD): the paths it names (`Spec: files`,
+    or the whole text when it has none) and its lines."""
+    entries = threat_entries(kind) if entries is None else entries
+    return threat_hits(entries, spec_files(text), (text or "").splitlines())
+
+
+def diff_lines(patch):
+    """The lines a unified diff adds or removes, never its file headers. Pure."""
+    out, in_hunk = [], False
+    for line in (patch or "").splitlines():
+        if line.startswith("diff --git "):
+            in_hunk = False
+        elif line.startswith("@@"):
+            in_hunk = True
+        elif in_hunk and line[:1] in ("+", "-"):
+            out.append(line[1:])
+    return out
+
+
+def on_change(root, base, head, kind="", entries=None):
+    """The trigger on a change: the paths it changes, and the lines its diff
+    adds or removes."""
+    entries = threat_entries(kind) if entries is None else entries
+    changed, patch, _ = changed_files(root, base, head)
+    return threat_hits(entries, changed, diff_lines(patch))
+
+
+def brief_lines(spec, hits):
+    """The impact map's threats part in the review's brief, when the
+    trigger fired: why, and the Spec's threats section as data. Pure."""
+    if not hits:
+        return ""
+    section = spec_section(spec, "threats").strip()
+    said = (f"The Spec's threats section, as it stands:\n\n{section}" if section
+            else "The Spec has no threats section." if SPEC_HEAD.search(spec or "") else "There is no Spec to read it from (a change before its issue's Spec).")
+    return f"Threats required: {'; '.join(hits)}\n\n{said}"
+
+
+def fixture_problems(entries, label):
+    """[(name, ok)] for each entry: its keys, and its fixtures (`fail` ones
+    fire, `pass` ones do not), for impact.py's and surface.py's --test."""
+    out = []
+    for entry, globs, rx in entries:
+        eid = f"{label}/threats/{entry['id']}"
+        fx = entry.get("fixtures") or {}
+        out.append((f"{eid}: has what, paths or a pattern, and fail and pass fixtures", bool(fx.get("fail")) and bool(fx.get("pass"))))
+        one = [(entry, globs, rx)]
+        for kind_, want in (("fail", True), ("pass", False)):
+            for i, f in enumerate(fx.get(kind_) or []):
+                paths, lines = ([f["path"]], []) if isinstance(f, dict) and f.get("path") else ([], [f if isinstance(f, str) else str((f or {}).get("text", ""))])
+                got = bool(threat_hits(one, paths, lines))
+                out.append((f"{eid}: {kind_} fixture {i + 1} " + ("fires" if want else "does not"), got == want))
+    return out
+
+
 # --- self-test -----------------------------------------------------------------
 
 def self_test():
@@ -382,6 +495,15 @@ def self_test():
                   "callers": [(f"`n{i}`", [f"c{i}_{j}.py" for j in range(10)]) for i in range(60)], "kind": "k", "declared": True})
     ok("callers are cut first, the files, surface and tests kept",
        "`a.py`" in pri and "`s`: w" in pri and "t/test_a.py" in pri and "left out" in pri and len(pri.encode()) <= LIMIT)
+
+    for name, good in fixture_problems(threat_entries(""), "policy/threats.yml"):
+        ok(name, good)
+    org = threat_entries("")
+    ok("a Spec that names a workflow fires",
+       any(h.startswith("workflow:") and ".github/workflows/x.yml" in h for h in on_text("### Spec: files\n\n- `.github/workflows/x.yml`\n", entries=org)))
+    ok("a Spec that touches none does not", on_text("### Spec: approach\n\nSay hello.\n\n### Spec: files\n\n- `src/a.py`\n", entries=org) == [])
+    ok("a diff's lines, never its file headers", diff_lines("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n") == ["old", "new"])
+    ok("a kind adds its own", len(threat_entries("wordpress-plugin")) > len(org))
 
     with tempfile.TemporaryDirectory() as d:
         env = dict(os.environ, GIT_CONFIG_GLOBAL="/dev/null", GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
@@ -417,22 +539,46 @@ def self_test():
         sh("commit", "-qm", "change")
         got = impact_map(d, "", base, "HEAD")
         ok("a change: the files its diff changes", "`includes/rest.php`" in got and "`app.php`" in got)
-        ok(f"a change: who calls the function its hunk names ({got})", "- `dx_rest_boot` (a name): `lib/boot.php`" in got)
+        ok("a change: who calls the function its hunk names", "- `dx_rest_boot` (a name): `lib/boot.php`" in got)
         ok("no kind: no surface section", "Public surface" not in impact_map(d, spec, kind=""))
         ok("git that fails: one line, never an error", impact_map(d, spec, "nope", "HEAD").startswith("(The impact map could not be built"))
+        ok("a change that touches none fires nothing", on_change(d, base, "HEAD", entries=org) == [])
+        mid = git(d, "rev-parse", "HEAD").stdout.strip()
+        write(".github/workflows/ci.yml", "on: push\n")
+        write("app.php", "<?php\n$id = $_GET['id'];\n")
+        sh("add", "-A")
+        sh("commit", "-qm", "threat")
+        got = on_change(d, mid, "HEAD", "wordpress-plugin")
+        ok(f"a change: a workflow it adds, an input a line reads ({got})",
+           any(h.startswith("workflow:") for h in got) and any(h.startswith("input:") for h in got) and any(h.startswith("wp-input:") for h in got))
+        ok("the kind is the repository's", main_kind(d) == "wordpress-plugin")
+    ok("the brief's lines: why, and the Spec's threats as they stand",
+       brief_lines("### Spec: files\n\n- x\n\n### Spec: threats\n\n- Tampering: none.\n", ["workflow: w, x"])
+       == "Threats required: workflow: w, x\n\nThe Spec's threats section, as it stands:\n\n- Tampering: none.")
+    ok("the brief's lines: a Spec with none says so", "has no threats section" in brief_lines("### Spec: files\n\n- x\n", ["w"]))
+    ok("the brief's lines: nothing when it does not fire", brief_lines("x", []) == "")
     if not fail:
         print("all tests passed")
     return fail
 
 
+def main_kind(root="."):
+    return repo_kind(root)
+
+
 def main(argv):
     if argv[:1] == ["--test"]:
         return self_test()
-    if argv[:1] != ["map"]:
+    if argv == ["kind"]:
+        print(main_kind("."))
+        return 0
+    if argv[:1] not in (["map"], ["threats"]):
         print(__doc__, file=sys.stderr)
         return 64
     opts = {}
     rest = argv[1:]
+    brief = "--brief" in rest
+    rest = [a for a in rest if a != "--brief"]
     while rest:
         if rest[0] in ("--spec", "--base", "--head", "--kind", "--repo") and len(rest) > 1:
             opts[rest[0][2:]] = rest[1]
@@ -450,6 +596,19 @@ def main(argv):
     if bool(opts.get("base")) != bool(opts.get("head")):
         print("impact.py: --base and --head go together", file=sys.stderr)
         return 64
+    if argv[0] == "threats":
+        try:
+            kind = opts.get("kind") if opts.get("kind") is not None else repo_kind(".")
+            entries = threat_entries(kind)
+            hits = on_text(spec, entries=entries) if spec else []
+            if opts.get("base"):
+                hits += [h for h in on_change(".", opts["base"], opts["head"], entries=entries) if h not in hits]
+        except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as e:
+            print(f"impact.py: {e}", file=sys.stderr)
+            return 2
+        if hits:
+            print(brief_lines(spec, hits) if brief else "\n".join(hits))
+        return 1 if hits else 0
     repo = (opts.get("repo") or os.environ.get("GITHUB_REPOSITORY") or "").split("/")[-1]
     print(impact_map(".", spec, opts.get("base", ""), opts.get("head", ""), opts.get("kind"), repo))
     return 0
