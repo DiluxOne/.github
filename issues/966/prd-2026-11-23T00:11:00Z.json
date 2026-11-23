@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 966,
+  "prd_sha256": "994ea6b8aad3bce7914f2497a8a03bc58b3a0e5efc9c80692e0af67b5878eb82",
+  "prd": "### Problem\n\nThe \"What waits\" view fails on almost every event since 2026-11-22: 16 of the 30 failed jobs in this repository since 12:00 UTC that day are `waiting / The \"What waits\" view`, each one a failure e-mail to the maintainer. `scripts/waiting.py fetch` asks GitHub's GraphQL search for 50 issues and pull requests per page with all their fields, and the organisation has grown enough that the first page takes more than GitHub's 10-second limit: GitHub answers HTTP 504, and gh prints `unexpected end of JSON input` (run 45086743475). Measured from a laptop on 2026-11-23: 50 per page fails with a 504 after 11.5 s every time (3 of 3), 25 per page answers in 4.9 s, 10 per page in 1.9 s. Nothing retries, so one slow page fails the job.\n\n### Scope\n\n- `scripts/waiting.py` asks for pages small enough to answer well inside the limit, and retries a page that fails with a 502, 503 or 504 a few times, with a smaller page each time.\n- Its `--test` covers both: a fake gh that fails the 50-item page with a 504 and answers a smaller one.\n\n### Out of scope\n\n- What the view shows or how it is laid out.\n- Other scripts' GraphQL queries.\n\n### Acceptance criteria\n\n- C1: Given gh answers HTTP 504 to a search page of the size the script first asks for, when `waiting.py` fetches, then it asks again with a smaller page and returns every item.\n- C2: Given gh answers 504 to every retry, when `waiting.py` fetches, then it fails with a message that names the 504 and how many times it tried.\n- C3: Given the organisation's open issues and pull requests today, when the \"What waits\" job runs, then it passes.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-23T00:11:00Z",
+  "policy": "DiluxOne/.github@8884710895015c7d41f471c50d1bf57c791d7119",
+  "how": "own-bug"
+}
