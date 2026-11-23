@@ -252,6 +252,7 @@ def test_c3_the_summary_says_how_many_continuations_and_the_total_cost(tmp_path)
 
 def test_c3_the_runs_cost_counts_each_continuation():
     s = step(WORKFLOW, "The run's cost")
+    env = s.get("env") or {}
     for i in (1, 2, 3):
-        assert s["env"][f"MORE{i}_EXECUTION_FILE"] == f"${{{{ steps.more{i}.outputs.execution_file }}}}"
+        assert env.get(f"MORE{i}_EXECUTION_FILE") == f"${{{{ steps.more{i}.outputs.execution_file }}}}", env
     assert 'Review, continued' in s["run"]
