@@ -32,9 +32,15 @@ name: Claude review
 #      and returns a structured verdict; it posts nothing. It goes over every
 #      changed file of the diff hunk by hunk, asking what each change can
 #      break, and its verdict says for each changed file the brief showed
-#      what it checked (`examined`, #953): an answer that leaves one out is
-#      a review that did not finish (scripts/review-examined.py), blocked as
-#      one, never a clean review. A second agent, in
+#      what it checked (`examined`, #953). An answer that leaves one out,
+#      with turns and budget left, continues in the same session (#986,
+#      `--resume`) with only the files it left out, at most three times,
+#      all the rounds within the 60 turns and the policy's budget; the
+#      answers are merged into one verdict (scripts/review-examined.py
+#      `next` and `merge`), and the summary says how many continuations it
+#      took, its cost theirs too. One that still leaves a file out is a
+#      review that did not finish, blocked as one, never a clean review.
+#      A second agent, in
 #      a fresh context, checks each new blocker and major against the code
 #      (#234, scripts/review-verify.py): one it rejects stays in the summary
 #      as a minor marked not confirmed, and in the record; the workflow posts
@@ -707,6 +713,228 @@ jobs:
             --permission-mode dontAsk
             --json-schema '{"type":"object","additionalProperties":false,"required":["risk","complexity","blocking","type","description_matches","summary","findings","lessons","resolved_threads","examined"],"properties":{"risk":{"type":"string","enum":["low","medium","high"]},"type":{"type":"string","enum":["breaking","feat","fix","perf","refactor","style","docs","test","ci","build","chore","revert"]},"description_matches":{"type":"boolean"},"complexity":{"type":"string","enum":["low","medium","high"]},"blocking":{"type":"boolean"},"summary":{"type":"string","maxLength":1500},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["severity","file","title"],"properties":{"severity":{"type":"string","enum":["blocker","major","minor"]},"file":{"type":"string"},"line":{"type":"integer"},"title":{"type":"string","maxLength":200},"pre_existing":{"type":"boolean"},"earlier":{"type":"boolean"},"detail":{"type":"string","maxLength":1500}}}},"lessons":{"type":"array","items":{"type":"string","maxLength":300}},"resolved_threads":{"type":"array","items":{"type":"string"}},"examined":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["file","checked"],"properties":{"file":{"type":"string"},"checked":{"type":"string","maxLength":300}}}},"criteria":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","met","evidence"],"properties":{"id":{"type":"string","pattern":"^C[0-9]+$"},"met":{"type":"boolean"},"evidence":{"type":"string","maxLength":300}}}}}}'
 
+      # #986: a review that answers before it examined every changed file
+      # continues in the same session (`--resume`) with only the files it
+      # left out, while turns and budget are left: all the rounds together
+      # never pass 60 turns and the policy's budget. At most three
+      # continuations (a job cannot loop a `uses:` step); one that still
+      # misses files after them is a review that did not finish, as before.
+      # Each task step (scripts/review-examined.py next) says whether its
+      # round runs, with what is left and the prompt; the session id it
+      # passes is a UUID read from the first round's log, or no round runs.
+      - name: The review's continuation 1, its task (#986)
+        id: more1-task
+        if: steps.claude.outputs.structured_output != ''
+        continue-on-error: true # no task, no continuation: the verdict reads what came
+        env:
+          ROUND: "1"
+          BUDGET: ${{ steps.policy.outputs.budget || '3' }}
+          TIMEOUT: "${{ github.event.action == 'edited' && 60 || 30 }}"
+          # Skipped on a reuse; its answer named for model-cache.py's check.
+          A0: ${{ steps.claude.outputs.structured_output || steps.reuse.outputs.answer }}
+          L0: ${{ steps.claude.outputs.execution_file }}
+        run: |
+          set -euo pipefail
+          if ! grep -q '^def next_round' .dx-central/scripts/review-examined.py 2>/dev/null || [ ! -f "$RUNNER_TEMP/shown-files.txt" ]; then
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Ten minutes for the round and two for the verdict, within the
+          # job's timeout, or the job would end before its comment.
+          if [ -n "${DX_STARTED:-}" ] && [ $(( TIMEOUT * 60 - ($(date +%s) - DX_STARTED) )) -lt 720 ]; then
+            echo "Too little of the job's time is left for a continuation."
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          args=()
+          for ((i = 0; i < ROUND; i++)); do
+            a="A$i" l="L$i"
+            printf '%s' "${!a:-}" > "$RUNNER_TEMP/review-answer-$i.json"
+            # A round with no log passes an empty one: what it spent is
+            # unknown, and nothing more is spent.
+            args+=(--answer "$RUNNER_TEMP/review-answer-$i.json" --log "${!l:-}")
+          done
+          python3 .dx-central/scripts/review-examined.py next --shown "$RUNNER_TEMP/shown-files.txt" --budget "$BUDGET" --turns 60 "${args[@]}" > "$RUNNER_TEMP/review-next.txt"
+          grep -E '^(go|turns|budget|missing)=' "$RUNNER_TEMP/review-next.txt"
+          cat "$RUNNER_TEMP/review-next.txt" >> "$GITHUB_OUTPUT"
+
+      - name: Review, continued 1
+        id: more1
+        if: steps.more1-task.outputs.go == 'true'
+        continue-on-error: true
+        timeout-minutes: 10
+        uses: anthropics/claude-code-action@cc98b3ae241b0fcfb6a42a2690751afffecb4452 # v1.0.278
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
+          github_token: ${{ steps.bot.outputs.token }}
+          allowed_bots: dependabot[bot],${{ steps.bot.outputs.app-slug }}
+          prompt: ${{ steps.more1-task.outputs.prompt }}
+          claude_args: |
+            --resume ${{ steps.more1-task.outputs.session }}
+            --model ${{ steps.scope.outputs.model }}
+            --effort ${{ steps.scope.outputs.effort }}
+            --max-turns ${{ steps.more1-task.outputs.turns }}
+            --max-budget-usd ${{ steps.more1-task.outputs.budget }}
+            --allowedTools "Read,Glob,Grep"
+            --permission-mode dontAsk
+            --json-schema '{"type":"object","additionalProperties":false,"required":["risk","complexity","blocking","type","description_matches","summary","findings","lessons","resolved_threads","examined"],"properties":{"risk":{"type":"string","enum":["low","medium","high"]},"type":{"type":"string","enum":["breaking","feat","fix","perf","refactor","style","docs","test","ci","build","chore","revert"]},"description_matches":{"type":"boolean"},"complexity":{"type":"string","enum":["low","medium","high"]},"blocking":{"type":"boolean"},"summary":{"type":"string","maxLength":1500},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["severity","file","title"],"properties":{"severity":{"type":"string","enum":["blocker","major","minor"]},"file":{"type":"string"},"line":{"type":"integer"},"title":{"type":"string","maxLength":200},"pre_existing":{"type":"boolean"},"earlier":{"type":"boolean"},"detail":{"type":"string","maxLength":1500}}}},"lessons":{"type":"array","items":{"type":"string","maxLength":300}},"resolved_threads":{"type":"array","items":{"type":"string"}},"examined":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["file","checked"],"properties":{"file":{"type":"string"},"checked":{"type":"string","maxLength":300}}}},"criteria":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","met","evidence"],"properties":{"id":{"type":"string","pattern":"^C[0-9]+$"},"met":{"type":"boolean"},"evidence":{"type":"string","maxLength":300}}}}}}'
+
+      - name: The review's continuation 2, its task (#986)
+        id: more2-task
+        if: steps.more1-task.outputs.go == 'true'
+        continue-on-error: true # no task, no continuation: the verdict reads what came
+        env:
+          ROUND: "2"
+          BUDGET: ${{ steps.policy.outputs.budget || '3' }}
+          TIMEOUT: "${{ github.event.action == 'edited' && 60 || 30 }}"
+          # Skipped on a reuse; its answer named for model-cache.py's check.
+          A0: ${{ steps.claude.outputs.structured_output || steps.reuse.outputs.answer }}
+          L0: ${{ steps.claude.outputs.execution_file }}
+          A1: ${{ steps.more1.outputs.structured_output }}
+          L1: ${{ steps.more1.outputs.execution_file }}
+        run: |
+          set -euo pipefail
+          if ! grep -q '^def next_round' .dx-central/scripts/review-examined.py 2>/dev/null || [ ! -f "$RUNNER_TEMP/shown-files.txt" ]; then
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Ten minutes for the round and two for the verdict, within the
+          # job's timeout, or the job would end before its comment.
+          if [ -n "${DX_STARTED:-}" ] && [ $(( TIMEOUT * 60 - ($(date +%s) - DX_STARTED) )) -lt 720 ]; then
+            echo "Too little of the job's time is left for a continuation."
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          args=()
+          for ((i = 0; i < ROUND; i++)); do
+            a="A$i" l="L$i"
+            printf '%s' "${!a:-}" > "$RUNNER_TEMP/review-answer-$i.json"
+            # A round with no log passes an empty one: what it spent is
+            # unknown, and nothing more is spent.
+            args+=(--answer "$RUNNER_TEMP/review-answer-$i.json" --log "${!l:-}")
+          done
+          python3 .dx-central/scripts/review-examined.py next --shown "$RUNNER_TEMP/shown-files.txt" --budget "$BUDGET" --turns 60 "${args[@]}" > "$RUNNER_TEMP/review-next.txt"
+          grep -E '^(go|turns|budget|missing)=' "$RUNNER_TEMP/review-next.txt"
+          cat "$RUNNER_TEMP/review-next.txt" >> "$GITHUB_OUTPUT"
+
+      - name: Review, continued 2
+        id: more2
+        if: steps.more2-task.outputs.go == 'true'
+        continue-on-error: true
+        timeout-minutes: 10
+        uses: anthropics/claude-code-action@cc98b3ae241b0fcfb6a42a2690751afffecb4452 # v1.0.278
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
+          github_token: ${{ steps.bot.outputs.token }}
+          allowed_bots: dependabot[bot],${{ steps.bot.outputs.app-slug }}
+          prompt: ${{ steps.more2-task.outputs.prompt }}
+          claude_args: |
+            --resume ${{ steps.more2-task.outputs.session }}
+            --model ${{ steps.scope.outputs.model }}
+            --effort ${{ steps.scope.outputs.effort }}
+            --max-turns ${{ steps.more2-task.outputs.turns }}
+            --max-budget-usd ${{ steps.more2-task.outputs.budget }}
+            --allowedTools "Read,Glob,Grep"
+            --permission-mode dontAsk
+            --json-schema '{"type":"object","additionalProperties":false,"required":["risk","complexity","blocking","type","description_matches","summary","findings","lessons","resolved_threads","examined"],"properties":{"risk":{"type":"string","enum":["low","medium","high"]},"type":{"type":"string","enum":["breaking","feat","fix","perf","refactor","style","docs","test","ci","build","chore","revert"]},"description_matches":{"type":"boolean"},"complexity":{"type":"string","enum":["low","medium","high"]},"blocking":{"type":"boolean"},"summary":{"type":"string","maxLength":1500},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["severity","file","title"],"properties":{"severity":{"type":"string","enum":["blocker","major","minor"]},"file":{"type":"string"},"line":{"type":"integer"},"title":{"type":"string","maxLength":200},"pre_existing":{"type":"boolean"},"earlier":{"type":"boolean"},"detail":{"type":"string","maxLength":1500}}}},"lessons":{"type":"array","items":{"type":"string","maxLength":300}},"resolved_threads":{"type":"array","items":{"type":"string"}},"examined":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["file","checked"],"properties":{"file":{"type":"string"},"checked":{"type":"string","maxLength":300}}}},"criteria":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","met","evidence"],"properties":{"id":{"type":"string","pattern":"^C[0-9]+$"},"met":{"type":"boolean"},"evidence":{"type":"string","maxLength":300}}}}}}'
+
+      - name: The review's continuation 3, its task (#986)
+        id: more3-task
+        if: steps.more2-task.outputs.go == 'true'
+        continue-on-error: true # no task, no continuation: the verdict reads what came
+        env:
+          ROUND: "3"
+          BUDGET: ${{ steps.policy.outputs.budget || '3' }}
+          TIMEOUT: "${{ github.event.action == 'edited' && 60 || 30 }}"
+          # Skipped on a reuse; its answer named for model-cache.py's check.
+          A0: ${{ steps.claude.outputs.structured_output || steps.reuse.outputs.answer }}
+          L0: ${{ steps.claude.outputs.execution_file }}
+          A1: ${{ steps.more1.outputs.structured_output }}
+          L1: ${{ steps.more1.outputs.execution_file }}
+          A2: ${{ steps.more2.outputs.structured_output }}
+          L2: ${{ steps.more2.outputs.execution_file }}
+        run: |
+          set -euo pipefail
+          if ! grep -q '^def next_round' .dx-central/scripts/review-examined.py 2>/dev/null || [ ! -f "$RUNNER_TEMP/shown-files.txt" ]; then
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Ten minutes for the round and two for the verdict, within the
+          # job's timeout, or the job would end before its comment.
+          if [ -n "${DX_STARTED:-}" ] && [ $(( TIMEOUT * 60 - ($(date +%s) - DX_STARTED) )) -lt 720 ]; then
+            echo "Too little of the job's time is left for a continuation."
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          args=()
+          for ((i = 0; i < ROUND; i++)); do
+            a="A$i" l="L$i"
+            printf '%s' "${!a:-}" > "$RUNNER_TEMP/review-answer-$i.json"
+            # A round with no log passes an empty one: what it spent is
+            # unknown, and nothing more is spent.
+            args+=(--answer "$RUNNER_TEMP/review-answer-$i.json" --log "${!l:-}")
+          done
+          python3 .dx-central/scripts/review-examined.py next --shown "$RUNNER_TEMP/shown-files.txt" --budget "$BUDGET" --turns 60 "${args[@]}" > "$RUNNER_TEMP/review-next.txt"
+          grep -E '^(go|turns|budget|missing)=' "$RUNNER_TEMP/review-next.txt"
+          cat "$RUNNER_TEMP/review-next.txt" >> "$GITHUB_OUTPUT"
+
+      - name: Review, continued 3
+        id: more3
+        if: steps.more3-task.outputs.go == 'true'
+        continue-on-error: true
+        timeout-minutes: 10
+        uses: anthropics/claude-code-action@cc98b3ae241b0fcfb6a42a2690751afffecb4452 # v1.0.278
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
+          github_token: ${{ steps.bot.outputs.token }}
+          allowed_bots: dependabot[bot],${{ steps.bot.outputs.app-slug }}
+          prompt: ${{ steps.more3-task.outputs.prompt }}
+          claude_args: |
+            --resume ${{ steps.more3-task.outputs.session }}
+            --model ${{ steps.scope.outputs.model }}
+            --effort ${{ steps.scope.outputs.effort }}
+            --max-turns ${{ steps.more3-task.outputs.turns }}
+            --max-budget-usd ${{ steps.more3-task.outputs.budget }}
+            --allowedTools "Read,Glob,Grep"
+            --permission-mode dontAsk
+            --json-schema '{"type":"object","additionalProperties":false,"required":["risk","complexity","blocking","type","description_matches","summary","findings","lessons","resolved_threads","examined"],"properties":{"risk":{"type":"string","enum":["low","medium","high"]},"type":{"type":"string","enum":["breaking","feat","fix","perf","refactor","style","docs","test","ci","build","chore","revert"]},"description_matches":{"type":"boolean"},"complexity":{"type":"string","enum":["low","medium","high"]},"blocking":{"type":"boolean"},"summary":{"type":"string","maxLength":1500},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["severity","file","title"],"properties":{"severity":{"type":"string","enum":["blocker","major","minor"]},"file":{"type":"string"},"line":{"type":"integer"},"title":{"type":"string","maxLength":200},"pre_existing":{"type":"boolean"},"earlier":{"type":"boolean"},"detail":{"type":"string","maxLength":1500}}}},"lessons":{"type":"array","items":{"type":"string","maxLength":300}},"resolved_threads":{"type":"array","items":{"type":"string"}},"examined":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["file","checked"],"properties":{"file":{"type":"string"},"checked":{"type":"string","maxLength":300}}}},"criteria":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","met","evidence"],"properties":{"id":{"type":"string","pattern":"^C[0-9]+$"},"met":{"type":"boolean"},"evidence":{"type":"string","maxLength":300}}}}}}'
+
+      # #986: the answers of the review and its continuations, folded into
+      # one verdict (scripts/review-examined.py merge), with the total of
+      # their cost and turns. The steps after it read this one first.
+      - name: The review's answer, whole
+        id: whole
+        if: steps.claude.outputs.structured_output != ''
+        continue-on-error: true # without it, they read the review's own answer
+        env:
+          # Skipped on a reuse; its answer named for model-cache.py's check.
+          A0: ${{ steps.claude.outputs.structured_output || steps.reuse.outputs.answer }}
+          A1: ${{ steps.more1.outputs.structured_output }}
+          A2: ${{ steps.more2.outputs.structured_output }}
+          A3: ${{ steps.more3.outputs.structured_output }}
+          L0: ${{ steps.claude.outputs.execution_file }}
+          L1: ${{ steps.more1.outputs.execution_file }}
+          L2: ${{ steps.more2.outputs.execution_file }}
+          L3: ${{ steps.more3.outputs.execution_file }}
+        run: |
+          set -euo pipefail
+          grep -q '^def merge' .dx-central/scripts/review-examined.py 2>/dev/null || { echo "No merge at this central-ref."; exit 0; }
+          answers=() logs=()
+          for i in 0 1 2 3; do
+            a="A$i" l="L$i"
+            if [ -n "${!a:-}" ]; then
+              printf '%s' "${!a}" > "$RUNNER_TEMP/review-round-$i.json"
+              answers+=("$RUNNER_TEMP/review-round-$i.json")
+            fi
+            if [ -n "${!l:-}" ] && [ -f "${!l}" ]; then logs+=("${!l}"); fi
+          done
+          python3 .dx-central/scripts/review-examined.py merge "${answers[@]}" > "$RUNNER_TEMP/review-whole.json"
+          k=$(jq -r '.continuations // 0' "$RUNNER_TEMP/review-whole.json")
+          { echo "answer=$(jq -c . "$RUNNER_TEMP/review-whole.json")"; echo "continuations=$k"; } >> "$GITHUB_OUTPUT"
+          if [ ${#logs[@]} -gt 0 ]; then
+            # shellcheck disable=SC2016 # jq, not shell.
+            jq -s -r '[.[] | [.[] | select(.type == "result")] | last | .total_cost_usd // 0] | add | "cost=\(. * 100 | round / 100)"' "${logs[@]}" >> "$GITHUB_OUTPUT" || true
+            jq -s -r '[.[] | [.[] | select(.type == "result")] | last | .num_turns // 0] | add | "turns=\(.)"' "${logs[@]}" >> "$GITHUB_OUTPUT" || true
+          fi
+          echo "The review took $k continuation(s)."
+
       # Verification (#234): a second agent, in a fresh context, checks each
       # new blocker and major against the code before anything is posted.
       # One it rejects stays in the summary as a minor marked not confirmed,
@@ -715,10 +943,10 @@ jobs:
       # Kept for an automatic re-run of this run (#694).
       - name: Keep the review's answer for an automatic re-run
         id: keep
-        if: steps.cached.outputs.key != '' && steps.claude.outputs.structured_output != ''
+        if: steps.cached.outputs.key != '' && (steps.whole.outputs.answer != '' || steps.claude.outputs.structured_output != '')
         continue-on-error: true
         env:
-          ANSWER: ${{ steps.claude.outputs.structured_output }}
+          ANSWER: ${{ steps.whole.outputs.answer || steps.claude.outputs.structured_output }}
         run: python3 .dx-central/scripts/model-cache.py save --dir "$RUNNER_TEMP/model-answer-review"
 
       - name: The review's answer, kept
@@ -732,10 +960,10 @@ jobs:
 
       - name: The verifier's task
         id: verify-task
-        if: (steps.claude.outcome == 'success' && steps.claude.outputs.structured_output != '') || steps.reuse.outputs.hit == 'true' || steps.fixedrev.outputs.hit == 'true'
+        if: steps.whole.outputs.answer != '' || (steps.claude.outcome == 'success' && steps.claude.outputs.structured_output != '') || steps.reuse.outputs.hit == 'true' || steps.fixedrev.outputs.hit == 'true'
         continue-on-error: true # the verdict runs whatever happens here
         env:
-          OUT: ${{ steps.claude.outputs.structured_output || steps.reuse.outputs.answer || steps.fixedrev.outputs.answer }}
+          OUT: ${{ steps.whole.outputs.answer || steps.claude.outputs.structured_output || steps.reuse.outputs.answer || steps.fixedrev.outputs.answer }}
         run: |
           set -euo pipefail
           printf '%s' "$OUT" > "$RUNNER_TEMP/review.json"
@@ -813,8 +1041,13 @@ jobs:
           BODY: ${{ github.event.pull_request.body }}
           BOT: ${{ steps.bot.outputs.app-slug }}[bot]
           PR: ${{ github.event.pull_request.number }}
-          OUT: ${{ steps.claude.outputs.structured_output || steps.reuse.outputs.answer || steps.fixedrev.outputs.answer }}
+          OUT: ${{ steps.whole.outputs.answer || steps.claude.outputs.structured_output || steps.reuse.outputs.answer || steps.fixedrev.outputs.answer }}
           EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+          # #986: the continuations' logs and how many there were.
+          MORE1_EXECUTION_FILE: ${{ steps.more1.outputs.execution_file }}
+          MORE2_EXECUTION_FILE: ${{ steps.more2.outputs.execution_file }}
+          MORE3_EXECUTION_FILE: ${{ steps.more3.outputs.execution_file }}
+          CONTINUATIONS: ${{ steps.whole.outputs.continuations }}
           VERIFY_EXECUTION_FILE: ${{ steps.verify.outputs.execution_file }}
           FLOOR: ${{ steps.policy.outputs.floor }}
           REASONS: ${{ steps.policy.outputs.reasons }}
@@ -942,6 +1175,11 @@ jobs:
           # a review that did not finish, never a clean one. A `central-ref`
           # older than the script, or a brief with no list, checks nothing.
           shown="$RUNNER_TEMP/shown-files.txt" examined=""
+          # #986: how many times the review continued (the whole step, or
+          # the answer an automatic re-run reused).
+          k=${CONTINUATIONS:-$(jq -r '.continuations // 0' <<<"$OUT" 2>/dev/null || echo 0)}
+          case "$k" in ''|*[!0-9]*) k=0;; esac
+          rounds=""; if [ "$k" -gt 0 ]; then rounds=" in 1 + $k continuation$([ "$k" = 1 ] || echo s)"; fi
           if [ -f .dx-central/scripts/review-examined.py ] && [ -f "$shown" ]; then
             printf '%s' "$OUT" > "$RUNNER_TEMP/review-examined.json"
             left=$(python3 .dx-central/scripts/review-examined.py missing "$RUNNER_TEMP/review-examined.json" "$shown") && got=0 || got=$?
@@ -954,7 +1192,7 @@ jobs:
               # shellcheck disable=SC2016 # sed's end of line, not a shell expression.
               names=$(head -20 <<<"$left" | sed 's/^/- `/; s/$/`/')
               if [ "$n" -gt 20 ]; then names=$(printf '%s\n- and %s more' "$names" "$((n - 20))"); fi
-              post "$(printf '<!-- dx-review -->\n### Claude review · did not finish\n\nThe reviewer answered at %s without examining every changed file, so this pull request is treated as high risk and blocked. Not examined:\n\n%s\n\nRe-run the job; the log is in [the run](%s).\n<!-- dx-review-record %s -->' "${SHA:0:7}" "$names" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$keep")"
+              post "$(printf '<!-- dx-review -->\n### Claude review · did not finish\n\nThe reviewer answered at %s without examining every changed file%s, so this pull request is treated as high risk and blocked. Not examined:\n\n%s\n\nRe-run the job; the log is in [the run](%s).\n<!-- dx-review-record %s -->' "${SHA:0:7}" "${rounds:+, after $k continuation$([ "$k" = 1 ] || echo s)}" "$names" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$keep")"
               exit 1
             elif [ "$got" -eq 0 ]; then
               examined=$(grep -c . "$shown" || true)
@@ -1010,16 +1248,25 @@ jobs:
           jq -r --slurpfile open "$RUNNER_TEMP/open-threads.json" '.resolved_threads[] | select(. as $id | $open[0] | map(.id) | index($id))' <<<"$OUT" > "$RUNNER_TEMP/resolve.txt"
           echo "$(wc -l < "$RUNNER_TEMP/resolve.txt") of the bot's earlier threads to resolve."
 
-          # What the run cost, from Claude Code's execution log.
+          # What the run cost, from Claude Code's execution logs: the review's,
+          # its continuations' (#986) and the verifier's (#234), summed.
           cost=""; turns=""
           if [ -n "$EXECUTION_FILE" ] && [ -f "$EXECUTION_FILE" ]; then
-            cost=$(jq -r '[.[] | select(.type == "result")] | last | .total_cost_usd // empty' "$EXECUTION_FILE" 2>/dev/null || true)
-            turns=$(jq -r '[.[] | select(.type == "result")] | last | .num_turns // empty' "$EXECUTION_FILE" 2>/dev/null || true)
-          fi
-          # The verifier's spend counts too (#234).
-          if [ -n "$cost" ] && [ -n "${VERIFY_EXECUTION_FILE:-}" ] && [ -f "$VERIFY_EXECUTION_FILE" ]; then
-            vcost=$(jq -r '[.[] | select(.type == "result")] | last | .total_cost_usd // 0' "$VERIFY_EXECUTION_FILE" 2>/dev/null || echo 0)
-            cost=$(python3 -c 'import sys; print(float(sys.argv[1]) + float(sys.argv[2] or 0))' "$cost" "${vcost:-0}" 2>/dev/null || echo "$cost")
+            logs=("$EXECUTION_FILE")
+            for f in "${MORE1_EXECUTION_FILE:-}" "${MORE2_EXECUTION_FILE:-}" "${MORE3_EXECUTION_FILE:-}"; do
+              if [ -n "$f" ] && [ -f "$f" ]; then logs+=("$f"); fi
+            done
+            last='[.[] | select(.type == "result")] | last'
+            cost=$(jq -r "$last | .total_cost_usd // empty" "$EXECUTION_FILE" 2>/dev/null || true)
+            turns=$(jq -s -r "[.[] | $last | .num_turns // 0] | add" "${logs[@]}" 2>/dev/null || true)
+            if [ -n "$cost" ]; then
+              more=$(jq -s -r "[.[] | $last | .total_cost_usd // 0] | add" "${logs[@]}" 2>/dev/null || echo "$cost")
+              vcost=0
+              if [ -n "${VERIFY_EXECUTION_FILE:-}" ] && [ -f "$VERIFY_EXECUTION_FILE" ]; then
+                vcost=$(jq -r "$last | .total_cost_usd // 0" "$VERIFY_EXECUTION_FILE" 2>/dev/null || echo 0)
+              fi
+              cost=$(python3 -c 'import sys; print(round(float(sys.argv[1]) + float(sys.argv[2] or 0), 6))' "$more" "${vcost:-0}" 2>/dev/null || echo "$cost")
+            fi
           fi
           spent=""; if [ -n "$cost" ]; then spent=$(printf ' · $%.2f, %s turns' "$cost" "${turns:-?}"); fi
           count=$((COUNT + 1))
@@ -1037,11 +1284,12 @@ jobs:
           # will come) from one still to run on a new commit.
           # #928 C4: the record's `blocking` is the one decided above, the
           # heading's and the step's, never the model's own boolean.
-          record=$(jq -c --arg risk "$risk" --arg floor "$FLOOR" --arg sha "$SHA" --arg model "$MODEL" --arg mode "$MODE" --argjson count "$count" --argjson max "${MAX_AUTO:-5}" --arg cost "${cost:-}" --argjson files "$files" --arg type "$type" --arg text "$text" --argjson blocking "$blocking" --argjson examined "${examined:-null}" \
-            '{risk:$risk, model_risk:.risk, floor:$floor, complexity, blocking:$blocking, type:$type, description_matches:.description_matches, text:$text, lessons, findings:[.findings[] | del(.detail)], verification:(.verification // null), criteria:(.criteria // []), sha:$sha, model:$model, mode:$mode, count:$count, max:$max, cost:$cost, files:$files} + (if $examined == null then {} else {examined:$examined} end)' <<<"$OUT")
+          record=$(jq -c --arg risk "$risk" --arg floor "$FLOOR" --arg sha "$SHA" --arg model "$MODEL" --arg mode "$MODE" --argjson count "$count" --argjson max "${MAX_AUTO:-5}" --arg cost "${cost:-}" --argjson files "$files" --arg type "$type" --arg text "$text" --argjson blocking "$blocking" --argjson examined "${examined:-null}" --argjson k "$k" \
+            '{risk:$risk, model_risk:.risk, floor:$floor, complexity, blocking:$blocking, type:$type, description_matches:.description_matches, text:$text, lessons, findings:[.findings[] | del(.detail)], verification:(.verification // null), criteria:(.criteria // []), sha:$sha, model:$model, mode:$mode, count:$count, max:$max, cost:$cost, files:$files} + (if $examined == null then {} else {examined:$examined} end) + (if $k > 0 then {continuations:$k} else {} end)' <<<"$OUT")
           # #953: how many of the changed files the review examined (all of
           # them, or it did not finish above); the list stays out.
-          seen=""; if [ -n "$examined" ]; then seen=$'\n\n'"<sub>Examined $examined of $examined changed files.</sub>"; fi
+          seen=""; if [ -n "$examined" ]; then seen=$'\n\n'"<sub>Examined $examined of $examined changed files$rounds.</sub>"
+          elif [ -n "$rounds" ]; then seen=$'\n\n'"<sub>Reviewed$rounds.</sub>"; fi
           body=$(cat <<EOF
           <!-- dx-review -->
           ### Claude review · risk **$risk** · complexity **$complexity** · type **$type**$blk
@@ -1178,12 +1426,19 @@ jobs:
         if: always()
         env:
           EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+          MORE1_EXECUTION_FILE: ${{ steps.more1.outputs.execution_file }}
+          MORE2_EXECUTION_FILE: ${{ steps.more2.outputs.execution_file }}
+          MORE3_EXECUTION_FILE: ${{ steps.more3.outputs.execution_file }}
           VERIFY_EXECUTION_FILE: ${{ steps.verify.outputs.execution_file }}
           REUSED: ${{ steps.reuse.outputs.hit }}
         run: |
           [ -f .dx-central/scripts/model-cache.py ] || exit 0
           args=()
           [ -z "$EXECUTION_FILE" ] || args+=(--log "Review=$EXECUTION_FILE")
+          # #986: each continuation of the review.
+          [ -z "$MORE1_EXECUTION_FILE" ] || args+=(--log "Review, continued 1=$MORE1_EXECUTION_FILE")
+          [ -z "$MORE2_EXECUTION_FILE" ] || args+=(--log "Review, continued 2=$MORE2_EXECUTION_FILE")
+          [ -z "$MORE3_EXECUTION_FILE" ] || args+=(--log "Review, continued 3=$MORE3_EXECUTION_FILE")
           [ -z "$VERIFY_EXECUTION_FILE" ] || args+=(--log "Verify=$VERIFY_EXECUTION_FILE")
           [ "$REUSED" != true ] || args+=(--reused)
           python3 .dx-central/scripts/model-cache.py summary --title "The review's cost" --started "${DX_STARTED:-}" "${args[@]}" >> "$GITHUB_STEP_SUMMARY" || true
