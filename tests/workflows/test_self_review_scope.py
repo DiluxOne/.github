@@ -41,7 +41,7 @@ def test_c4_the_self_review_asks_for_the_logic_and_the_criteria():
 def test_c4_it_points_to_the_gates_result_for_security_and_documentation():
     step = self_review(prompt())
     assert "make pre-pr" in step and "security" in step and "documentation" in step, step
-    assert f"{ap.HELPER} check" in step, "the gate's result, as the helper's check prints it"
+    assert "the next step's check" in step, "the gate's result, as the helper's check in the next step prints it"
 
 
 def test_c4_it_no_longer_names_the_whole_review_profile():
