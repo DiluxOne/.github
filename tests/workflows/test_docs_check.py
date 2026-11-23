@@ -8,6 +8,7 @@ The gate's tools are the stubs of test_security_gate.py: no network."""
 import json
 import re
 import subprocess
+import types
 import sys
 from pathlib import Path
 
@@ -74,12 +75,13 @@ def run_gate(repo, env, mode, *extra):
 
 
 def docs_findings(repo):
-    result = json.loads((repo / ".git" / "gate.json").read_text())
+    path = repo / ".git" / "gate.json"
+    assert path.is_file(), "the gate writes its result"
+    result = json.loads(path.read_text())
     return result, [f for f in result["findings"] if f.get("tool") == "docs"]
 
 
 def test_c1_a_renamed_input_flag_or_label_names_every_line_that_still_has_the_old_name(tmp_path):
-    assert CHECK.is_file(), "scripts/docs-check.py is the documentation check"
     cent = gate.central(tmp_path, "report")
     env = gate.environment(tmp_path, cent)
     repo = gate.scratch(tmp_path, env, None, base_files(), renamed())
@@ -110,7 +112,6 @@ def test_c1_a_renamed_input_flag_or_label_names_every_line_that_still_has_the_ol
 
 
 def test_c1_an_identifier_another_file_still_defines_is_not_removed(tmp_path):
-    assert CHECK.is_file(), "scripts/docs-check.py is the documentation check"
     cent = gate.central(tmp_path, "report")
     env = gate.environment(tmp_path, cent)
     files = base_files()
@@ -150,7 +151,6 @@ def map_findings(repo):
 
 
 def test_c2_a_kinds_map_names_the_docs_to_update_when_none_changed(tmp_path):
-    assert CHECK.is_file(), "scripts/docs-check.py is the documentation check"
     cent = central_with_kind(tmp_path, "report", "mapped", "name: mapped\n" + MAP)
     env = gate.environment(tmp_path, cent)
     repo = map_repo(tmp_path, env, "kind: mapped\n", {"src/a.py": "x = 2\n"})
@@ -172,7 +172,6 @@ def test_c2_a_kinds_map_names_the_docs_to_update_when_none_changed(tmp_path):
 
 
 def test_c2_a_repository_of_no_kind_uses_its_own_map_read_at_the_merge_base(tmp_path):
-    assert CHECK.is_file(), "scripts/docs-check.py is the documentation check"
     cent = gate.central(tmp_path, "report")
     env = gate.environment(tmp_path, cent)
     repo = map_repo(tmp_path, env, MAP, {"src/a.py": "x = 2\n"})
@@ -195,7 +194,6 @@ def body(what, after=""):
 
 
 def test_c3_docs_none_with_a_why_in_what_changes_passes_the_map_and_the_why_is_in_the_json(tmp_path):
-    assert CHECK.is_file(), "scripts/docs-check.py is the documentation check"
     cent = gate.central(tmp_path, "block")
     env = gate.environment(tmp_path, cent)
     repo = map_repo(tmp_path, env, MAP, {"src/a.py": "x = 2\n"})
@@ -224,7 +222,6 @@ def test_c3_docs_none_with_a_why_in_what_changes_passes_the_map_and_the_why_is_i
 
 
 def test_c3_docs_none_never_exempts_a_stale_name(tmp_path):
-    assert CHECK.is_file(), "scripts/docs-check.py is the documentation check"
     cent = gate.central(tmp_path, "report")
     env = gate.environment(tmp_path, cent)
     repo = gate.scratch(tmp_path, env, None, base_files(), renamed())
@@ -235,7 +232,6 @@ def test_c3_docs_none_never_exempts_a_stale_name(tmp_path):
 
 
 def test_c3_the_pull_requests_check_reads_the_description_through_env_and_a_file(tmp_path):
-    assert CHECK.is_file(), "scripts/docs-check.py is the documentation check"
     from steps import run as run_step, step
     cent = gate.central(tmp_path, "block")
     env = gate.environment(tmp_path, cent)
@@ -255,7 +251,6 @@ def test_c3_the_pull_requests_check_reads_the_description_through_env_and_a_file
 
 
 def test_c3_autopilot_check_gives_make_pre_pr_the_description_it_writes(tmp_path):
-    assert CHECK.is_file(), "scripts/docs-check.py is the documentation check"
     import test_security_gate_attempts as attempts
     cent = gate.central(tmp_path, "block")
     env = gate.environment(tmp_path, cent)
@@ -274,7 +269,6 @@ def test_c3_autopilot_check_gives_make_pre_pr_the_description_it_writes(tmp_path
 # --- C4: the gate's setting decides, as for a security finding ---------------
 
 def test_c4_report_block_and_off_treat_a_docs_finding_as_the_gate_treats_its_own(tmp_path):
-    assert CHECK.is_file(), "scripts/docs-check.py is the documentation check"
     cent = gate.central(tmp_path, "report")
     env = gate.environment(tmp_path, cent)
     repo = gate.scratch(tmp_path, env, None, base_files(), renamed())
@@ -310,7 +304,9 @@ def attempts_at_two(tmp_path, env, repo, rule, ap):
     """DX_IO with the marker's count at 2 for the first `new` finding of RULE."""
     run_gate(repo, env, "report")
     result = json.loads((repo / ".git" / "gate.json").read_text())
-    f = next(f for f in result["findings"] if f["rule"] == rule and f["status"] == "new")
+    new = [f for f in result["findings"] if f["rule"] == rule and f["status"] == "new"]
+    assert new, (rule, result["findings"])
+    f = new[0]
     io = tmp_path / ("io-" + rule.replace("/", "-"))
     io.mkdir()
     (io / ap.ATTEMPTS).write_text(json.dumps({"counts": {ap.finding_key(f): 2}}))
@@ -318,7 +314,6 @@ def attempts_at_two(tmp_path, env, repo, rule, ap):
 
 
 def test_c4_two_attempts_at_a_docs_finding_then_a_suppression_or_finish_stop_and_push_refuses(tmp_path):
-    assert CHECK.is_file(), "scripts/docs-check.py is the documentation check"
     import test_security_gate_attempts as attempts
     ap = attempts.autopilot()
     cent = gate.central(tmp_path, "report")
@@ -341,16 +336,10 @@ def test_c4_two_attempts_at_a_docs_finding_then_a_suppression_or_finish_stop_and
     assert attempts.helper(mapped, env, io2, "push").returncode != 0
 
 
-def check_module():
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("docs_check_t", CHECK)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 def test_a_changed_submodule_is_no_error_and_a_failed_grep_is_one(tmp_path):
-    mod = check_module()
+    # The documentation check the gate runs (scripts/docs-check.py).
+    mod = getattr(gate.gate_module(), "docs_check", None)
+    assert mod is not None, "the gate runs the documentation check"
     env = dict(gate.os.environ, GIT_CONFIG_GLOBAL="/dev/null", GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
                GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
     repo = tmp_path / "r"
@@ -371,7 +360,7 @@ def test_every_subprocess_call_of_the_docs_check_is_a_literal_list():
     # in a variable; a literal list (names after their own -e) is what the
     # gate's own rules accept, as git() and show() are written.
     import ast
-    tree = ast.parse(CHECK.read_text())
+    tree = ast.parse(CHECK.read_text() if CHECK.exists() else "")
     calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
              and n.func.attr == "run" and getattr(n.func.value, "id", "") == "subprocess"]
     assert calls, "the docs check runs git"
@@ -389,7 +378,7 @@ def test_a_docs_check_that_raises_is_an_error_of_the_gate_never_a_crash(tmp_path
         raise RuntimeError("git went away")
 
     monkeypatch.setattr(mod, "scan", lambda *_a, **_k: ([], "HEAD", []))
-    monkeypatch.setattr(mod.docs_check, "check", boom)
+    monkeypatch.setattr(mod, "docs_check", types.SimpleNamespace(check=boom), raising=False)
     result = mod.run(str(repo), "HEAD", {}, "report", env=env)
-    assert result["findings"] == [] and result["docs"] == {"exempt": ""}, result
+    assert result["findings"] == [] and result.get("docs") == {"exempt": ""}, result
     assert any("docs check: failed (RuntimeError: git went away)" in e for e in result["errors"]), result["errors"]
