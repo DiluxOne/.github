@@ -189,6 +189,7 @@ jobs:
       - run: bash scripts/dx.sh --test
       - run: python3 scripts/pre-pr.py --test
       - run: python3 scripts/security-gate.py --test
+      - run: python3 scripts/docs-check.py --test
       - run: php scripts/review-rules.php --test
       - run: python3 scripts/agent-manifests.py --test
       - run: python3 scripts/test-targets.py --test

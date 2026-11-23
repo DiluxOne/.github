@@ -101,3 +101,25 @@ caps:
 
 # How long each tool may run, in seconds, before the gate gives up on it.
 timeout: 600
+
+# The documentation check (#957, scripts/docs-check.py), part of this gate:
+# no tool and no model, only git between the merge base and HEAD. It finds
+#   docs/stale-name  a line of the docs (`docs`) or of a workflow's header
+#                    comment (`headers`, the leading `#` block) that still
+#                    names an identifier the change removed or renamed (a
+#                    workflow input, output, secret, job or step id, a
+#                    script's flag or command, an environment variable, a
+#                    label, a file path), as a whole token; an identifier
+#                    shorter than `min-length` is ignored
+#   docs/map         a changed path that an entry of the docs map ties to
+#                    docs, while none of those docs changed (the map is
+#                    `docs-map`, in the kind's pack and in the repository's
+#                    .github/review-policy.yml, read at the merge base)
+# Its findings have the level `severity`, so `block` fails on them as on a
+# new high finding of the tools, and a suppression with its reason in
+# .github/review-suppressions.yml is the way out of a false one.
+docs:
+  severity: high
+  min-length: 4
+  docs: ["README*", "docs/**", "CONTRIBUTING.md", "AGENTS.md", "kinds/**"]
+  headers: [".github/workflows/*.yml", ".github/workflows/*.yaml", "workflow-templates/*.yml"]

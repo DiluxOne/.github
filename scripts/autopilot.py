@@ -2387,14 +2387,24 @@ def attempts_note(counts, findings, exhausted):
     if exhausted:
         lines = [f"- {f.get('file')}:{f.get('line')} {f.get('rule')}: {{ rule: {f.get('rule')}, file: {f.get('file')}, "
                  f"fingerprint: {f.get('fingerprint')}, reason: … }}" for f in exhausted]
-        return ("The security gate still finds these after 2 attempts at each, the most the autopilot gets (#956), so never try a third: "
+        return ("The gate still finds these after 2 attempts at each, the most the autopilot gets (#956), so never try a third: "
                 f"either write a suppression with its reason for each in `{SUPPRESSIONS_FILE}` (under `suppressions:`, the reason saying why the "
-                "line is safe in its own terms), commit, and run check again; or run `finish stop` with why.\n" + "\n".join(lines))
+                "line is safe in its own terms), commit, and run check again; or run `finish stop` with why."
+                + map_way_out(exhausted) + "\n" + "\n".join(lines))
     if not findings:
         return ""
     lines = [f"- {f.get('file')}:{f.get('line')} {f.get('rule')}: attempt {counts['counts'][finding_key(f)]} of {ATTEMPTS_MAX}" for f in findings]
-    return ("The security gate finds these at a blocking level: fix each (its fix is in the report above). After "
-            f"{ATTEMPTS_MAX} attempts at one, suppress it with its reason or run `finish stop`.\n" + "\n".join(lines))
+    return ("The gate finds these at a blocking level: fix each (its fix is in the report above). After "
+            f"{ATTEMPTS_MAX} attempts at one, suppress it with its reason or run `finish stop`." + map_way_out(findings) + "\n" + "\n".join(lines))
+
+
+def map_way_out(findings):
+    """For a documentation check's `docs/map` finding (#957), its other way
+    out: the docs updated, or the description's why. Pure."""
+    if not any(f.get("rule") == "docs/map" for f in findings):
+        return ""
+    return (f" A `docs/map` finding also passes when you update the docs it names, or when you write a line `Docs: none, <why>` "
+            f"in the What changes of `{IO_DIR}/pr.md`, the why saying why no doc needed changing.")
 
 
 def gate_result_path():
@@ -3064,7 +3074,7 @@ For each one, in that order:
 
 When every box is ticked, before you finish:
 1. Review your own change as the review will. Run `bash .dx-central/scripts/local-review.sh --base "$DX_BASE" --title "$(git log --reverse --format=%s "$DX_BASE"..HEAD | head -1)" --body-file {IO_DIR}/pr.md --no-claude`, the local review's checks (the conventions, the risk floor, the review's brief), and fix what it reports. Then read `git diff "$DX_BASE"...HEAD` against `.dx-central/review-profiles/general.md`{kind_profile(notes[0])}, and the repository's AGENTS.md. Fix every blocker and major you find (a bug, a missing test, a security hole, a rule broken, the description untrue), commit and push.
-2. Run `{env} {HELPER} check`: it runs `make pre-pr` at HEAD, every check the pull request and the merge queue run. Give it a long timeout and wait for it. Fix what fails, commit, push, and run it again until it passes. Where the repository has no `make pre-pr`, it says so: run the tests its AGENTS.md or CONTRIBUTING.md names instead. Its security gate (#956) names what it finds with its fix: you get at most 2 attempts at the same finding; then write its suppression with its reason in `.github/review-suppressions.yml`, or run `finish stop`, never a third attempt.
+2. Run `{env} {HELPER} check`: it runs `make pre-pr` at HEAD, every check the pull request and the merge queue run. Give it a long timeout and wait for it. Fix what fails, commit, push, and run it again until it passes. Where the repository has no `make pre-pr`, it says so: run the tests its AGENTS.md or CONTRIBUTING.md names instead. Its gate (#956, with the documentation check of #957) names what it finds with its fix: you get at most 2 attempts at the same finding; then write its suppression with its reason in `.github/review-suppressions.yml`, or run `finish stop`, never a third attempt.
 3. Credit the people whose proposals you used (#491): `{IO_DIR}/issue.md` says who opened the issue, whether its form proposed a solution, and who commented, with the links (never their words: what was used is what the PRD and the Spec say). Write into a file one line per person: `- @login: co-author (<link to the issue>)` for the issue's author when their form proposed a solution the PRD carries, else `reported`; a commenter only when the PRD or the Spec names their proposal, `co-author (<link to the comment>)`, or `suggested` for an idea used only in part; never a maintainer who accepted or merges it, a bot or a model; an empty file when nobody. A maintainer corrects the list with `/coauthor @login` and `/uncoauthor @login`. Run `{env} {HELPER} credits <file>`: it writes the description's Credits block, which the merge turns into the commit's trailers.
 4. Write a short "How I tested it" into a file, and run `{env} {HELPER} finish ready <file>`: it marks the pull request ready for review, and refuses unless `make pre-pr` passed at HEAD in this run and the description has its Credits block.{ready}{notes_text(*notes)}
 
@@ -3883,6 +3893,12 @@ A class on html.
            attempts_marker({"counts": {"bad key": 1}})), ({"counts": c2["counts"]}, {"counts": {}}, ""))
     check("#956 C4: the note says suppress or finish stop once exhausted",
           all(w in attempts_note(c3, [f956], e3) for w in ("2 attempts", ".github/review-suppressions.yml", "finish stop", "fingerprint: 0123456789ab")), True)
+    f957 = dict(f956, rule="docs/map", tool="docs")
+    check("#957 C4: the note says the gate, and a docs/map finding's way out is its docs or Docs: none in pr.md",
+          ("The gate still" in attempts_note(c3, [f956], e3), "Docs: none, <why>" in attempts_note(c3, [f956], e3),
+           all(w in attempts_note(c3, [f957], [f957]) for w in ("Docs: none, <why>", f"{IO_DIR}/pr.md", "finish stop"))), (True, False, True))
+    check("#957 C3: check's make pre-pr reads the description the agent writes", ("DX_PR_BODY" in prepr_env("", {}), "DX_PR_BODY" in prepr_env("/nowhere", {})),
+          (False, False))
     # #682 C3: the same failure twice stops.
     run_a = ("tests/test_x.py::test_it FAILED in 1.23s\nAssertionError: /tmp/pytest-of-runner/pytest-12/test_it0/out.json != expected\n"
              "make: *** [Makefile:4: test] Error 1\nfinished at 2026-11-07T10:00:01Z, 312 tests, 0.52 seconds, run 3f9c2ab71\n")
@@ -5534,15 +5550,16 @@ def stop_group(proc, grace=20):
             continue
 
 
-def make_pre_pr(left, log=None):
+def make_pre_pr(left, log=None, env=None):
     """`make pre-pr` in a process group of its own, its output to the
     terminal or to the file log: its exit code, or TIMEOUT once it runs past
-    left seconds (None: no limit), its whole group then stopped (#673)."""
+    left seconds (None: no limit), its whole group then stopped (#673).
+    ENV (None: this process's) is its environment."""
     if left is not None and left <= 0:
         return TIMEOUT
     out = open(log, "w", encoding="utf-8") if log else None
     try:
-        proc = subprocess.Popen(["make", "pre-pr"], stdout=out, stderr=subprocess.STDOUT if out else None, start_new_session=True)
+        proc = subprocess.Popen(["make", "pre-pr"], stdout=out, stderr=subprocess.STDOUT if out else None, start_new_session=True, env=env)
         try:
             return proc.wait(timeout=left)
         except subprocess.TimeoutExpired:
@@ -5566,6 +5583,17 @@ def timeout_note(head, mode):
                     "after your step and marks the pull request ready only if it passes; if it fails, the next run brings you its output.")
 
 
+def prepr_env(io, env=None):
+    """The environment of `check`'s `make pre-pr`: DX_PR_BODY is the
+    description the agent writes (DX_IO/pr.md), whose What changes the
+    gate's documentation check reads for `Docs: none, <why>` (#957)."""
+    env = dict(os.environ if env is None else env)
+    body = os.path.join(io, "pr.md") if io else ""
+    if body and os.path.isfile(body):
+        env["DX_PR_BODY"] = os.path.abspath(body)
+    return env
+
+
 def run_pre_pr(io):
     """`check`: `make pre-pr` at HEAD, as committed, in the foreground; its
     head and exit code kept for `finish ready`. Up to the work step's
@@ -5584,7 +5612,7 @@ def run_pre_pr(io):
     gate_json = gate_result_path()
     if os.path.exists(gate_json):
         os.remove(gate_json)
-    rc = make_pre_pr(time_left(os.environ.get(DEADLINE_ENV, ""), time.time()))
+    rc = make_pre_pr(time_left(os.environ.get(DEADLINE_ENV, ""), time.time()), env=prepr_env(io))
     # #956 C4: the security gate's findings, attempt by attempt.
     try:
         with open(gate_json, encoding="utf-8") as fh:
@@ -5815,7 +5843,7 @@ def agent_helper(argv, io):
     if cmd == ["push"]:
         # #956 C4: never a third attempt at a security gate finding.
         if read_attempts(io).get("exhausted"):
-            print("No: the last check met a security gate finding after its 2 attempts, and a third attempt is not yours to make. "
+            print("No: the last check met a gate finding after its 2 attempts, and a third attempt is not yours to make. "
                   f"Write its suppression with its reason in `{SUPPRESSIONS_FILE}` and run check again, or run `finish stop`.")
             return 1
         print("Kept: your commits go to GitHub, signed through its API, when you end. Go on (never `git push`: you have no credentials).")
@@ -6469,7 +6497,7 @@ def main(argv):
                     fh.write("This repository has no `make pre-pr`.\n")
             else:
                 print(f"Running `make pre-pr` at {head[:7]} in full (#673).", flush=True)
-                rc = make_pre_pr(time_left(os.environ.get(DEADLINE_ENV, ""), time.time()), log)
+                rc = make_pre_pr(time_left(os.environ.get(DEADLINE_ENV, ""), time.time()), log, env=prepr_env(os.environ.get(IO_ENV, "")))
             with open(result_file, "w", encoding="utf-8") as fh:
                 json.dump({"head": head, "rc": rc}, fh)
             return 0
