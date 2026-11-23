@@ -145,3 +145,23 @@ def test_a_failed_lane_list_never_keeps_the_report_open():
     broken.calls = []
     mod.cleanup(REPO, [("issue", "5")], broken, **napping(mod.cleanup, lambda _: None))
     assert ["issue", "close", "5", "--repo", REPO] in broken.calls
+
+
+# C2
+
+def test_cleanup_waits_for_the_lane_pull_request_to_leave_the_queue_then_closes_it():
+    mod = scenarios()
+    fake = lane_fake(states={"21": [("OPEN", True), ("OPEN", True), ("OPEN", False)]})
+    run_cleanup(mod, fake)
+    assert fake.closed_while_queued == [], "cleanup closed #21 while the read said it was in the merge queue"
+    assert len(fake.pr_closes(21)) == 1, "cleanup did not close #21 once it left the queue unmerged"
+    assert fake.slept > 0
+
+
+def test_cleanup_never_closes_a_merged_lane_pull_request():
+    mod = scenarios()
+    fake = lane_fake(states={"21": [("OPEN", True), ("MERGED", False)]})
+    run_cleanup(mod, fake)
+    assert fake.pr_closes(21) == [], "cleanup closed #21, which had merged"
+    assert fake.did("close", 20) and fake.did("lock", 20)
+    assert any(c[:2] == ["api", "graphql"] and "number=21" in c for c in fake.calls), "the lane's pull request was never read"
