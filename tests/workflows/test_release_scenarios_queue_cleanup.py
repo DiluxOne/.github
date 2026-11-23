@@ -5,7 +5,9 @@ scenario `review-replied` ran `cleanup` on its own pull request while it was
 queued, GitHub removed the other scenarios' pull requests of the same group
 from the queue unmerged, and `low-risk-merges` ran out its limit. `cleanup`
 and `clear` now wait for a queued pull request to leave the queue (at most
-QUEUE_LEAVE seconds) before they close it, and close nothing once it merged.
+QUEUE_LEAVE seconds) before they close it, and close nothing once it merged
+or is still queued when the wait runs out (#997: closing it then knocks its
+group out all the same; the merge or the next run's `clear` settles it).
 Nothing runs: `gh` and `sleep` are fakes.
 """
 import importlib.util
@@ -94,13 +96,13 @@ def test_cleanup_closes_nothing_once_the_queued_pull_request_merged():
     assert fake.closes(7) == [], "cleanup closed #7, which had merged"
 
 
-def test_cleanup_closes_a_pull_request_that_never_leaves_the_queue_after_queue_leave():
+def test_cleanup_leaves_a_pull_request_that_never_leaves_the_queue_open_after_queue_leave():
     mod = scenarios()
     fake = Queue([("OPEN", True)])
     run_cleanup(mod, fake)
-    assert len(fake.closes(7)) == 1, "a pull request that never leaves the queue is never closed: cleanup hangs or leaks it"
+    assert fake.closes(7) == [], "cleanup closed #7 while it was still in the merge queue (#997)"
     leave, poll = getattr(mod, "QUEUE_LEAVE", 120), getattr(mod, "QUEUE_POLL", 15)
-    assert leave - poll < fake.slept <= leave, f"cleanup closed #7 in the queue after {fake.slept}s, not after QUEUE_LEAVE"
+    assert leave - poll < fake.slept <= leave, f"cleanup gave up on #7 after {fake.slept}s, not after QUEUE_LEAVE"
 
 
 def test_cleanup_closes_a_pull_request_not_queued_at_once():
@@ -125,13 +127,13 @@ def test_clear_closes_nothing_once_the_marked_pull_request_merged():
     assert fake.closes(8) == []
 
 
-def test_clear_closes_a_marked_pull_request_that_never_leaves_the_queue_after_queue_leave():
+def test_clear_leaves_a_marked_pull_request_that_never_leaves_the_queue_open_after_queue_leave():
     mod = scenarios()
     fake = Queue([("OPEN", True)], marked_pr="8")
     run_clear(mod, fake)
-    assert len(fake.closes(8)) == 1
+    assert fake.closes(8) == [], "clear closed #8 while it was still in the merge queue (#997)"
     leave, poll = getattr(mod, "QUEUE_LEAVE", 120), getattr(mod, "QUEUE_POLL", 15)
-    assert leave - poll < fake.slept <= leave, f"clear closed #8 in the queue after {fake.slept}s, not after QUEUE_LEAVE"
+    assert leave - poll < fake.slept <= leave, f"clear gave up on #8 after {fake.slept}s, not after QUEUE_LEAVE"
 
 
 def test_a_read_that_fails_closes_it_as_before():
