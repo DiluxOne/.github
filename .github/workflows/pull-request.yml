@@ -19,12 +19,12 @@ name: Pull request
 # An autopilot pull request of this repository's own branch that changes
 # the browser layer gets its before and after screenshots when it is
 # marked ready (screenshots, pr-screenshots.yml, #564).
-# The two required checks (#842): "Scripts (self-tests)" and "test-first /
-# Test first" run on every pull request, with no paths filter and no job
-# condition but the event, and the ruleset "own checks" (repos.yml
-# `required-checks`, written by `sync-repos.py own-checks`) requires both:
-# a pull request whose tests are red cannot merge, and one with nothing for
-# them to check sees both report success.
+# The three required checks (#842, #956): "Scripts (self-tests)", "test-first /
+# Test first" and "security-gate / Security gate" run on every pull request,
+# with no paths filter and no job condition but the event, and the ruleset
+# "own checks" (repos.yml `required-checks`, written by `sync-repos.py
+# own-checks`) requires them: a pull request whose tests are red cannot
+# merge, and one with nothing for them to check sees them report success.
 
 on:
   # An edit of the title or description is handled by pull-request-edited.yml.
@@ -56,6 +56,15 @@ jobs:
     uses: ./.github/workflows/test-first.yml
     with:
       declaration-at-base: true
+
+  # The "Security gate" check (#956, security-gate.yml), as
+  # org-pull-request.yml runs it everywhere else: no secret, a read-only
+  # token; the review reads its result in its brief.
+  security-gate:
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/security-gate.yml
 
   actionlint:
     name: actionlint
@@ -179,6 +188,7 @@ jobs:
       - run: python3 scripts/sync-repos.py --test
       - run: bash scripts/dx.sh --test
       - run: python3 scripts/pre-pr.py --test
+      - run: python3 scripts/security-gate.py --test
       - run: php scripts/review-rules.php --test
       - run: python3 scripts/agent-manifests.py --test
       - run: python3 scripts/test-targets.py --test
@@ -280,8 +290,9 @@ jobs:
 
   review:
     # order: the conventions, actionlint and scripts gates pass first, so no
-    # review is paid for a pull request they refuse.
-    needs: [conventions, actionlint, scripts]
+    # review is paid for a pull request they refuse; and the security gate
+    # (#956), whose result the review reads in its brief.
+    needs: [conventions, actionlint, scripts, security-gate]
     # #820: not when an autopilot pull request is marked ready: the push
     # that follows, with the ready commit, starts the one review.
     if: ${{ !(github.event.action == 'ready_for_review' && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN) }}
@@ -335,13 +346,13 @@ jobs:
     # jobs' log, rather than leave the pull request to stall; so does a
     # review that ended without a verdict, whether its verdict step said so
     # (blocking, "did not finish") or the job died before it (no outputs).
-    needs: [conventions, actionlint, scripts, review]
+    needs: [conventions, actionlint, scripts, security-gate, review]
     # Only dilux-bot's own pull requests, only once ready (a draft's own run
     # checks its work), and only for a new commit (an edit of the
     # description keeps the review's verdict and must not spend a round).
     # #888: nor on a run whose commit is no longer the head: the head's run
     # starts the round.
-    if: always() && github.event_name == 'pull_request' && github.repository == 'DiluxOne/.github' && (needs.review.outputs.blocking == 'true' || needs.review.result == 'failure' || needs.conventions.result == 'failure' || needs.actionlint.result == 'failure' || needs.scripts.result == 'failure' || needs.review.outputs.description-mismatch == 'true') && needs.review.outputs.current != 'false' && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN && github.event.action != 'edited'
+    if: always() && github.event_name == 'pull_request' && github.repository == 'DiluxOne/.github' && (needs.review.outputs.blocking == 'true' || needs.review.result == 'failure' || needs.conventions.result == 'failure' || needs.actionlint.result == 'failure' || needs.scripts.result == 'failure' || needs.security-gate.result == 'failure' || needs.review.outputs.description-mismatch == 'true') && needs.review.outputs.current != 'false' && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN && github.event.action != 'edited'
     # The agent's jobs read the repository with the job's own token (#287).
     permissions:
       contents: read

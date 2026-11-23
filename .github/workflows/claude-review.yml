@@ -492,6 +492,18 @@ jobs:
           fi
           echo "Bot threads: $(jq length "$RUNNER_TEMP/open-threads.json") open, $(jq length "$RUNNER_TEMP/settled-threads.json") settled."
 
+      # #956: the security gate's result, which the caller's
+      # `security-gate` job (security-gate.yml, before this one) uploaded:
+      # a JSON file, read as data by review-brief.sh, never run. None (a
+      # caller with no gate, or `off`): the brief has no gate section.
+      - name: The security gate's result
+        if: steps.scope.outputs.mode == 'full' || steps.scope.outputs.mode == 'incremental'
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: security-gate
+          path: ${{ runner.temp }}/security-gate
+
       - name: Brief (one file with everything the reviewer needs)
         if: steps.scope.outputs.mode == 'full' || steps.scope.outputs.mode == 'incremental'
         env:
@@ -523,6 +535,10 @@ jobs:
           fi
           export CRITERIA="$RUNNER_TEMP/criteria.md"
           # Each file's diff as a file (#287): the reviewers have no shell.
+          # #956: the security gate's result, when its artifact came.
+          SECURITY="$RUNNER_TEMP/security-gate/security-gate.json"
+          [ -f "$SECURITY" ] || SECURITY=""
+          export SECURITY
           REPO="$GITHUB_REPOSITORY" CENTRAL=.dx-central WORK="$RUNNER_TEMP" OUT=.dx-central/brief.md DIFF_DIR=.dx-central/diff \
             PREVIOUS_JSON="$RUNNER_TEMP/previous.json" OPEN_THREADS="$RUNNER_TEMP/open-threads.json" SETTLED_THREADS="$RUNNER_TEMP/settled-threads.json" \
             bash .dx-central/scripts/review-brief.sh

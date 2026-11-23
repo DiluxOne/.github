@@ -25,6 +25,10 @@
 #   OPEN_THREADS, SETTLED_THREADS   JSON files of the review threads; none before a pull request
 #   CRITERIA                 a file holding the acceptance criteria of the issue the
 #                            pull request closes (G6, #193); empty or unset: none
+#   SECURITY                 optional: the security gate's result (security-gate.json,
+#                            #956): its section names the classes it already checked
+#                            and carries its capped findings; unset, missing or
+#                            unreadable: none
 #   DIFF_DIR                 optional: a directory, relative to the repository, where
 #                            each changed file's diff is written as <path>.diff, for a
 #                            reviewer that has no shell to run git (#287); unset, the
@@ -76,6 +80,12 @@ if [ "${1:-}" = "--test" ]; then
   build "$base" "$head" high env PR=7 CRITERIA="$dir/criteria.md"
   check "G6: the issue's criteria, to check one by one" "## Acceptance criteria of the issue it closes"
   check "G6: as written"                           "- C1: Given a, when b, then c."
+  printf '{"mode":"report","findings":[{"tool":"semgrep","rule":"r.x","file":"small.txt","line":2,"severity":"high","status":"new","fingerprint":"0123456789ab","message":"m","fix":"f"}],"blocking":[]}' > "$dir/gate.json"
+  build "$base" "$head" high env SECURITY="$dir/gate.json"
+  check "#956: the security gate's section"          "## Security gate (deterministic)"
+  check "#956: its findings"                         "[high] small.txt:2 r.x (semgrep, new)"
+  build "$base" "$head" high
+  lacks "#956: no result, no section"                "## Security gate"
   ( cd "$dir/repo" && head -c 300000 /dev/zero | tr '\0' 'a' | fold -w 100 > big.txt && git add -A && git commit -q -m "fix(a): big" )
   build "$base" "$(git -C "$dir/repo" rev-parse HEAD)" high
   check "a diff over the limit is not inlined"    "larger than 250000 bytes"
@@ -225,6 +235,11 @@ limit=250000
     cat "$CRITERIA"; echo
     echo "For each criterion, put in \`criteria\` its id, whether the whole pull request as it stands meets it (\`met\`), and the evidence: the test that proves it, or what is missing. A criterion with no test that proves it is not met."
     echo
+  fi
+  # #956: the deterministic security gate's result, from its JSON (the
+  # check's artifact, or the local `make pre-pr`'s), as data.
+  if [ -n "${SECURITY:-}" ] && [ -s "$SECURITY" ]; then
+    python3 "$CENTRAL/scripts/security-gate.py" brief "$SECURITY" && echo
   fi
   if [ "$MODE" = incremental ]; then
     echo "## Scope: incremental"; echo

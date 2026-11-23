@@ -1,0 +1,103 @@
+# The security gate (#956, scripts/security-gate.py): what it runs, as data.
+#
+# One gate for every repository, whatever its kind: leaked secrets
+# (gitleaks), insecure code with the OWASP Top 10 and language rules
+# (Semgrep, the rules of semgrep-rules), dependencies with known
+# vulnerabilities (osv-scanner) and GitHub workflows (zizmor). It runs the
+# same way in `make pre-pr` (dx.mk), in the pull request's check
+# (.github/workflows/security-gate.yml) and for the review's brief.
+#
+# Each tool is pinned to a version and to the SHA-256 of what is downloaded
+# for each platform (`linux-x64`, `linux-arm64`, `darwin-x64`,
+# `darwin-arm64`): a download whose hash differs fails `install`, and a
+# platform with no entry is said so. `kind` says what the download is:
+#   tarball  a .tar.gz holding the binary `binary`
+#   binary   the binary itself
+#   wheel    a Python wheel: `binary` is extracted from its scripts when
+#            `pip` is false, else pip installs it into the tool's own
+#            directory (Semgrep's command line is Python) with the
+#            dependencies of `requirements`, a file beside this one that pins
+#            each to a version and the SHA-256 of its wheels: one
+#            `pip install --require-hashes --only-binary :all: --no-deps`,
+#            so nothing unpinned is fetched and no sdist is built
+# Changing a version or a hash changes the cache's directory, so the next
+# run installs the new one.
+#
+# The setting that decides what a finding does is org.yml `security-gate`
+# (off | report | block). A kind adds rules or excludes paths in its
+# pack's `security:` key (kinds/README.md); no kind is named here.
+tools:
+  gitleaks:
+    version: 8.30.1
+    kind: tarball
+    binary: gitleaks
+    url: https://github.com/gitleaks/gitleaks/releases/download/v{version}/gitleaks_{version}_{asset}.tar.gz
+    builds:
+      linux-x64: {asset: linux_x64, sha256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb}
+      linux-arm64: {asset: linux_arm64, sha256: e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080}
+      darwin-x64: {asset: darwin_x64, sha256: dfe101a4db2255fc85120ac7f3d25e4342c3c20cf749f2c20a18081af1952709}
+      darwin-arm64: {asset: darwin_arm64, sha256: b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5}
+  osv-scanner:
+    version: 2.7.1
+    kind: binary
+    binary: osv-scanner
+    url: https://github.com/google/osv-scanner/releases/download/v{version}/osv-scanner_{asset}
+    builds:
+      linux-x64: {asset: linux_amd64, sha256: fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8}
+      linux-arm64: {asset: linux_arm64, sha256: 983d22fbad9724514e3fcc6acc83b5fa64c5ffa6b0d9f510028f22c1b223ff81}
+      darwin-x64: {asset: darwin_amd64, sha256: b8420d5485ba792626315f1bf9a5a2046e971d38eea75bf9090c38852dbc3b1b}
+      darwin-arm64: {asset: darwin_arm64, sha256: b22c02877a811c8f78956e8643efa554932b7378f590d13f8e97d4e9448a29f3}
+  semgrep:
+    version: 1.186.0
+    kind: wheel
+    pip: true
+    requirements: security-gate-semgrep.txt
+    binary: semgrep
+    url: https://files.pythonhosted.org/packages/cp310.cp311.cp312.cp313.cp314.py310.py311.py312.py313.py314/s/semgrep/semgrep-{version}-cp310.cp311.cp312.cp313.cp314.py310.py311.py312.py313.py314-none-{asset}.whl
+    builds:
+      linux-x64: {asset: manylinux_2_34_x86_64, sha256: 54ebaf79adf4e5855c54d5e4457d8d03f27cc6bf73d79642281790b833d92e4f}
+      linux-arm64: {asset: manylinux_2_34_aarch64, sha256: bde206edcfa9ac2f5ed5e3fc58d1c675b4e9979a716ecb46b4e60e6bb6a035a4}
+      darwin-arm64: {asset: macosx_11_0_arm64, sha256: 94b473227b1abe89d104bf87a50e257b3c47f0e09483e4290babc99c01e3aea8}
+  zizmor:
+    version: 1.33.0
+    kind: wheel
+    pip: false
+    binary: zizmor
+    url: https://files.pythonhosted.org/packages/py3/z/zizmor/zizmor-{version}-py3-none-{asset}.whl
+    builds:
+      linux-x64: {asset: manylinux_2_28_x86_64, sha256: fc766cf422e4de8b6d35a9f81725b84a400408494cce38767582cd06e7b71844}
+      linux-arm64: {asset: manylinux_2_24_aarch64, sha256: fe3afd8103fedddafd47c7b5c759ea505ed98c9af1dcdb68951dd88bdfac0fde}
+      darwin-x64: {asset: macosx_10_12_x86_64, sha256: 02da95a56fc1ff919d62bcc358a2cf015a6d7729b7b838f3945a8a8d3fad82b6}
+      darwin-arm64: {asset: macosx_11_0_arm64, sha256: 3d8720fd7685ef922ab7f4a21b878c3c840916bc8fe8d41cb4a938655d7151dd}
+
+# Semgrep's rules: semgrep-rules at one commit, never the live registry.
+# `install` keeps the rule files under a `security` directory of each
+# language listed (the OWASP Top 10 and the language's own security rules),
+# leaving out `exclude` (secrets are gitleaks') and the rules' test files.
+rules:
+  commit: a5ad1714f00c9f7fde980cab0ea1d6dc6d414fd2
+  url: https://github.com/semgrep/semgrep-rules/archive/{commit}.tar.gz
+  sha256: e5a7ec33035fc7707b87385cb99e1228c76b1604efe5439e92891f3005714cc3
+  languages: [bash, c, csharp, dockerfile, go, html, java, javascript, json, kotlin, php, python, ruby, rust, scala, swift, typescript, yaml]
+  exclude: [generic/secrets]
+
+# How each tool's severities map to the gate's four levels. gitleaks has
+# none: a leaked secret is `critical`. osv-scanner's is the advisory's
+# (GHSA's CRITICAL, HIGH, MODERATE, LOW), else its CVSS score.
+severities:
+  gitleaks: {default: critical}
+  semgrep: {CRITICAL: critical, ERROR: high, HIGH: high, WARNING: medium, MEDIUM: medium, INFO: low, LOW: low, default: medium}
+  osv-scanner: {CRITICAL: critical, HIGH: high, MODERATE: medium, MEDIUM: medium, LOW: low, default: high}
+  zizmor: {High: high, Medium: medium, Low: low, Informational: low, Unknown: low, default: medium}
+
+# The levels a new finding fails the gate on under `block`.
+block: [critical, high]
+
+# What the agent and the review read: the most severe first, cut at
+# `findings` or at `bytes`, whichever comes first, and how many more.
+caps:
+  findings: 30
+  bytes: 8192
+
+# How long each tool may run, in seconds, before the gate gives up on it.
+timeout: 600

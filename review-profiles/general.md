@@ -12,6 +12,10 @@ In this order:
    escaping, missing authorisation checks, secrets in code or logs,
    injection (SQL, shell, HTML, prompt), unsafe file writes, unpinned or
    over-permissioned CI.
+   Leaked secrets, the OWASP Top 10 patterns of its Semgrep rules,
+   dependencies with known vulnerabilities and unsafe GitHub workflows are
+   the deterministic security gate's (#956): when the brief carries its
+   section, take its findings as found and spend your attention on the logic.
 2. **Correctness.** The change does what its title says; edge cases
    (empty, huge, concurrent, failing network, partial failure); a result
    that is ignored when it can fail; state that can be left half-written.

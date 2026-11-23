@@ -108,7 +108,7 @@ def caller_if(name, job, current, **more):
            "github.event.pull_request.labels.*.name": ["autopilot"], "github.event.pull_request.user.login": "dilux-bot[bot]",
            "vars.DX_BOT_LOGIN": "dilux-bot[bot]", "needs.review.result": "success", "needs.review.outputs.blocking": "true",
            "needs.review.outputs.current": current, "needs.review.outputs.fresh": "", "needs.review.outputs.description-ok": "true", "needs.review.outputs.description-mismatch": "false"}
-    for need in ("conventions", "actionlint", "scripts", "test-first"):
+    for need in ("conventions", "actionlint", "scripts", "test-first", "security-gate"):
         ctx[f"needs.{need}.result"] = "success"
     ctx.update(more)
     return evaluate(" ".join(str(wf["jobs"][job]["if"]).split()), ctx)

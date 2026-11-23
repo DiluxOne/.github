@@ -16,7 +16,9 @@ to an entry, with its reason, in the plugin's
 | any check, by a bare `phpcs:ignore` | never: name the check |
 
 The file's format, the fingerprint and how a stale entry fails are in
-[`../README.md`](../README.md#the-suppressions-file). Generate what is
+[`../README.md`](../README.md#the-suppressions-file). The security gate's
+entries (#956) live in the same file, with `rule:` in place of `sniff:`;
+these rules leave them to the gate. Generate what is
 missing with `--suggest-suppressions` and write each reason yourself.
 
 ## A reason the reviewer accepts

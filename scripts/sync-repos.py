@@ -3796,11 +3796,11 @@ def callers_test(check, conf):
           and "    needs: [review, test-first]\n" in fixed["[review, test-first, conventions]"]
           and "    needs: [review, test-first, mine]\n" in fixed["[review, test-first, conventions, mine]"]
           and all(callers_drift({**c2, ".github/workflows/test-pull-request.yml": f}, conf, kind="engine-test") == [] for f in fixed.values()), fixed)
-    fix_own = tpr.replace("    needs: [conventions, review]\n    # Only", "    needs: [conventions, review, mine]\n    # Only").replace("      mode: fix\n      pr: ${{ format('{0}', github.event.pull_request.number) }}\n      # #924 C3", "      mode: other\n      pr: ${{ format('{0}', github.event.pull_request.number) }}\n      # #924 C3") + mine_job
+    fix_own = tpr.replace("    needs: [conventions, security-gate, review]\n    # Only", "    needs: [conventions, security-gate, review, mine]\n    # Only").replace("      mode: fix\n      pr: ${{ format('{0}', github.event.pull_request.number) }}\n      # #924 C3", "      mode: other\n      pr: ${{ format('{0}', github.event.pull_request.number) }}\n      # #924 C3") + mine_job
     fixed, _ = rewrite_caller(fix_own, tpr, set(owned.get("test-pull-request.yml") or []))
     check("#757 C1: the rewrite keeps the template's comments under its `needs` when it adds the repository's own",
           "mode: other" in fix_own and fixed is not None and "mode: other" not in fixed
-          and "    needs: [conventions, review, mine]\n    # Only dilux-bot's own pull requests" in fixed
+          and "    needs: [conventions, security-gate, review, mine]\n    # Only dilux-bot's own pull requests" in fixed
           and callers_drift({**c2, ".github/workflows/test-pull-request.yml": fixed}, conf, kind="engine-test") == [], fixed)
     # #757 C3: diluxone-test's caller as it is today, the template with the
     # `pipeline` job still waiting on every other job, as before #755.
@@ -4369,7 +4369,8 @@ def dependabot_test(check, conf, labels, block):
         check("#479 C1: one with a Makefile keeps its own rules, the include last (its default goal kept)",
               wrote["own"].get("Makefile") == "check:\n\tphpunit\n\ninclude dx.mk\n", wrote["own"].get("Makefile"))
         check("#479 C1: one whose own pre-pr has a recipe gets dx.mk, its Makefile left as it is", sorted(wrote["recipe"]) == ["dx.mk"], wrote["recipe"])
-        check("#479 C1: a repository of no kind gets nothing", wrote["no kind"] == {}, wrote["no kind"])
+        check("#956: a repository of no kind gets dx.mk, the security gate's, and the include",
+              (wrote["no kind"].get("dx.mk") == pre_pr_mod.render_kind(None), wrote["no kind"].get("Makefile")) == (True, "include dx.mk\n"), wrote["no kind"])
     finally:
         globals()["gh"], ORG, globals()["listed"] = saved_gh, saved_org, saved_listed
     check("C3 (#178): a missing one is", any(f"`{DEPENDABOT}` is missing" in l for l in missing), missing)
@@ -5629,7 +5630,8 @@ def self_test():
     check("pipeline: the organisation's required jobs", {"conventions", "review"} <= pipeline_jobs(), pipeline_jobs())
     # #842: repos.yml `required-checks`, written exactly as "own checks".
     two = ["Scripts (self-tests)", "test-first / Test first"]
-    check("#842 DiluxOne/.github requires its self-tests and its Test first", required_checks_of(".github") == two, required_checks_of(".github"))
+    check("#842 DiluxOne/.github requires its self-tests and its Test first, and the security gate (#956)",
+          required_checks_of(".github") == two + ["security-gate / Security gate"], required_checks_of(".github"))
     body = own_checks_body(two)
     check("#842 the new \"own checks\": exactly those checks, not strict, on the default branch",
           (body["name"], body["conditions"], body["rules"][0]["parameters"]["strict_required_status_checks_policy"],

@@ -2317,6 +2317,101 @@ def missing_command(text):
     return (m.group(1) or m.group(2)) if m else ""
 
 
+# #956 C4: the autopilot's attempts at a security gate finding. Each
+# `check` that meets a new finding of a blocking level (the gate's JSON,
+# after `make pre-pr`) counts one attempt at it, by its key (its rule, file
+# and code fingerprint); at ATTEMPTS_MAX the next `check` tells the agent to
+# write a suppression with its reason or run `finish stop`, and `push`
+# refuses: never a third attempt. The counts are in DX_IO/ATTEMPTS during a
+# run, and across runs in a hidden marker of the autopilot's own `make
+# pre-pr` comment, read back the way the #682 signature is.
+ATTEMPTS = "security-attempts.json"
+ATTEMPTS_MAX = 2
+ATTEMPTS_MARK = "dx-security-attempts:"
+ATTEMPTS_RE = re.compile(r"<!-- dx-security-attempts: (\{[^<>]*\}) -->")
+SUPPRESSIONS_FILE = ".github/review-suppressions.yml"
+
+
+def finding_key(f):
+    """A gate finding's key: its rule, file and code fingerprint. Pure."""
+    return hashlib.sha1(f"{f.get('rule')}\n{f.get('file')}\n{f.get('fingerprint')}".encode("utf-8")).hexdigest()[:12]
+
+
+def attempts_marker(attempts):
+    """The hidden marker of the attempts' counts, "" when none. Pure."""
+    counts = {str(k): int(v) for k, v in ((attempts or {}).get("counts") or {}).items()
+              if re.fullmatch(r"[0-9a-f]{12}", str(k)) and str(v).isdigit()}
+    return f"\n<!-- {ATTEMPTS_MARK} {json.dumps({'counts': counts}, sort_keys=True)} -->" if counts else ""
+
+
+def attempts_of(comments):
+    """The counts in the last of dilux-bot's comments that carries the
+    marker, {"counts": {}} when none; anyone else's marker is never read.
+    Pure."""
+    own = [c for c in comments or [] if (c.get("author") or {}).get("login") in BOT_LOGINS and ATTEMPTS_RE.search(str(c.get("body", "")))]
+    last = max(own, key=lambda c: c.get("createdAt", ""), default=None)
+    try:
+        data = json.loads(ATTEMPTS_RE.search(last["body"]).group(1)) if last else {}
+    except ValueError:
+        data = {}
+    counts = (data or {}).get("counts") if isinstance(data, dict) else None
+    return {"counts": {str(k): int(v) for k, v in (counts or {}).items() if re.fullmatch(r"[0-9a-f]{12}", str(k)) and isinstance(v, int)}}
+
+
+def gate_blocking(result):
+    """The new findings of a blocking level in the gate's result. Pure."""
+    marks = set((result or {}).get("blocking") or [])
+    return [f for f in (result or {}).get("findings") or [] if f.get("status") == "new" and f.get("fingerprint") in marks]
+
+
+def count_attempts(previous, findings):
+    """(counts, exhausted): one more attempt at each finding met, but one
+    already at ATTEMPTS_MAX, which is exhausted and counts no more; a
+    finding no longer met is dropped. Pure."""
+    before = dict((previous or {}).get("counts") or {})
+    counts, exhausted = {}, []
+    for f in findings:
+        k = finding_key(f)
+        if k in counts:
+            continue
+        if before.get(k, 0) >= ATTEMPTS_MAX:
+            counts[k] = before[k]
+            exhausted.append(f)
+        else:
+            counts[k] = before.get(k, 0) + 1
+    return {"counts": counts, "exhausted": [finding_key(f) for f in exhausted]}, exhausted
+
+
+def attempts_note(counts, findings, exhausted):
+    """What `check` tells the agent of the gate's findings it met. Pure."""
+    if exhausted:
+        lines = [f"- {f.get('file')}:{f.get('line')} {f.get('rule')}: {{ rule: {f.get('rule')}, file: {f.get('file')}, "
+                 f"fingerprint: {f.get('fingerprint')}, reason: … }}" for f in exhausted]
+        return ("The security gate still finds these after 2 attempts at each, the most the autopilot gets (#956), so never try a third: "
+                f"either write a suppression with its reason for each in `{SUPPRESSIONS_FILE}` (under `suppressions:`, the reason saying why the "
+                "line is safe in its own terms), commit, and run check again; or run `finish stop` with why.\n" + "\n".join(lines))
+    if not findings:
+        return ""
+    lines = [f"- {f.get('file')}:{f.get('line')} {f.get('rule')}: attempt {counts['counts'][finding_key(f)]} of {ATTEMPTS_MAX}" for f in findings]
+    return ("The security gate finds these at a blocking level: fix each (its fix is in the report above). After "
+            f"{ATTEMPTS_MAX} attempts at one, suppress it with its reason or run `finish stop`.\n" + "\n".join(lines))
+
+
+def gate_result_path():
+    """Where `make pre-pr`'s security gate writes its JSON (pre-pr.py GATE)."""
+    got = subprocess.run(["git", "rev-parse", "--git-dir"], capture_output=True, text=True)
+    return os.path.join(got.stdout.strip() or ".git", "dx-review", "security-gate.json")
+
+
+def read_attempts(io):
+    try:
+        with open(os.path.join(io, ATTEMPTS), encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {"counts": {}}
+    except (OSError, ValueError):
+        return {"counts": {}}
+
+
 # The autopilot's own comments that end a run: the last of them says what
 # the next run reads.
 RUN_ENDS = (PREPR_MARK, STOP, ASK, SILENT, UNFINISHED)
@@ -2333,7 +2428,7 @@ def shown_tail(tail):
     return scrub(tail or "").strip("\n")[-VERIFY_CHARS:] or "(no output was kept: the run's log says why)"
 
 
-def prepr_comment(verdict, tail, run_url, continues, repeated=False):
+def prepr_comment(verdict, tail, run_url, continues, repeated=False, attempts=None):
     """The comment of a `make pre-pr` that did not pass after the agent's
     step (#673): what happened, what comes next, and the output's excerpt
     (what failed, then its tail, #679) in a fence nothing in it can close,
@@ -2357,6 +2452,7 @@ def prepr_comment(verdict, tail, run_url, continues, repeated=False):
         nxt = ("This fix round failed with the same failure as the round before, so the autopilot stops rather than start another. "
                "A person takes it from here (`needs-human`): a maintainer's answer here, a hint in words, brings it back, or they take it over.")
     mark = f"{STOP}\n{PREPR_MARK}" if verdict == ENGINE or repeated else PREPR_MARK
+    mark += attempts_marker(attempts)
     return (f"{mark}\n<!-- {SIG_MARK} {failure_signature(tail)} -->\n**`make pre-pr` {how}**, run in full after the agent's step, so the pull request stays a draft. "
             f"{nxt} What it did is in [the run]({run_url}).\n\nWhat failed, and the last lines of its output:\n\n{fence}text\n{tail}\n{fence}\n\n{AI_LINE}")
 
@@ -2968,7 +3064,7 @@ For each one, in that order:
 
 When every box is ticked, before you finish:
 1. Review your own change as the review will. Run `bash .dx-central/scripts/local-review.sh --base "$DX_BASE" --title "$(git log --reverse --format=%s "$DX_BASE"..HEAD | head -1)" --body-file {IO_DIR}/pr.md --no-claude`, the local review's checks (the conventions, the risk floor, the review's brief), and fix what it reports. Then read `git diff "$DX_BASE"...HEAD` against `.dx-central/review-profiles/general.md`{kind_profile(notes[0])}, and the repository's AGENTS.md. Fix every blocker and major you find (a bug, a missing test, a security hole, a rule broken, the description untrue), commit and push.
-2. Run `{env} {HELPER} check`: it runs `make pre-pr` at HEAD, every check the pull request and the merge queue run. Give it a long timeout and wait for it. Fix what fails, commit, push, and run it again until it passes. Where the repository has no `make pre-pr`, it says so: run the tests its AGENTS.md or CONTRIBUTING.md names instead.
+2. Run `{env} {HELPER} check`: it runs `make pre-pr` at HEAD, every check the pull request and the merge queue run. Give it a long timeout and wait for it. Fix what fails, commit, push, and run it again until it passes. Where the repository has no `make pre-pr`, it says so: run the tests its AGENTS.md or CONTRIBUTING.md names instead. Its security gate (#956) names what it finds with its fix: you get at most 2 attempts at the same finding; then write its suppression with its reason in `.github/review-suppressions.yml`, or run `finish stop`, never a third attempt.
 3. Credit the people whose proposals you used (#491): `{IO_DIR}/issue.md` says who opened the issue, whether its form proposed a solution, and who commented, with the links (never their words: what was used is what the PRD and the Spec say). Write into a file one line per person: `- @login: co-author (<link to the issue>)` for the issue's author when their form proposed a solution the PRD carries, else `reported`; a commenter only when the PRD or the Spec names their proposal, `co-author (<link to the comment>)`, or `suggested` for an idea used only in part; never a maintainer who accepted or merges it, a bot or a model; an empty file when nobody. A maintainer corrects the list with `/coauthor @login` and `/uncoauthor @login`. Run `{env} {HELPER} credits <file>`: it writes the description's Credits block, which the merge turns into the commit's trailers.
 4. Write a short "How I tested it" into a file, and run `{env} {HELPER} finish ready <file>`: it marks the pull request ready for review, and refuses unless `make pre-pr` passed at HEAD in this run and the description has its Credits block.{ready}{notes_text(*notes)}
 
@@ -3035,7 +3131,7 @@ def queue_log_text(pr, logs):
 # the conventions, the review and, in this repository, actionlint and the
 # scripts. A repository's own workflow is not among them: nothing re-runs it.
 CHECKS_LOG = "checks.md"
-FIX_JOBS = ("conventions /", "review /", "actionlint", "Scripts (self-tests)")
+FIX_JOBS = ("conventions /", "review /", "security-gate /", "actionlint", "Scripts (self-tests)")
 REVIEW_JOB = "review /"
 REVIEW_RECORD = re.compile(r"<!-- dx-review-record (.*?) -->", re.S)
 
@@ -3773,6 +3869,20 @@ A class on html.
            "pre-pr-tools" in eng, "needs-human" in eng, "autopilot:continue" in eng, "msgcat: command not found" in eng,
            "free fix rounds are spent" in eng),
           (True, True, True, True, True, True, False, True, False))
+    # #956 C4: two attempts at a security gate finding, then a suppression or a stop.
+    f956 = {"rule": "gitleaks.x", "file": "a.py", "fingerprint": "0123456789ab", "line": 3, "status": "new"}
+    c1, e1 = count_attempts({"counts": {}}, [f956])
+    c2, e2 = count_attempts(c1, [f956])
+    c3, e3 = count_attempts(c2, [f956])
+    check("#956 C4: each check counts one attempt, the third meeting is exhausted and counts no more",
+          (list(c1["counts"].values()), e1, list(c2["counts"].values()), e2, list(c3["counts"].values()), [finding_key(f) for f in e3]),
+          ([1], [], [2], [], [2], [finding_key(f956)]))
+    check("#956 C4: a finding no longer met is dropped", count_attempts(c2, [])[0], {"counts": {}, "exhausted": []})
+    check("#956 C4: the marker round-trips through dilux-bot's comment, never anyone else's",
+          (attempts_of([bot_c(prepr_comment("fail", "x", "u", True, attempts=c2), "1")]), attempts_of([{"author": {"login": "x"}, "body": attempts_marker(c2)}]),
+           attempts_marker({"counts": {"bad key": 1}})), ({"counts": c2["counts"]}, {"counts": {}}, ""))
+    check("#956 C4: the note says suppress or finish stop once exhausted",
+          all(w in attempts_note(c3, [f956], e3) for w in ("2 attempts", ".github/review-suppressions.yml", "finish stop", "fingerprint: 0123456789ab")), True)
     # #682 C3: the same failure twice stops.
     run_a = ("tests/test_x.py::test_it FAILED in 1.23s\nAssertionError: /tmp/pytest-of-runner/pytest-12/test_it0/out.json != expected\n"
              "make: *** [Makefile:4: test] Error 1\nfinished at 2026-11-07T10:00:01Z, 312 tests, 0.52 seconds, run 3f9c2ab71\n")
@@ -4716,7 +4826,7 @@ Clamp the value in Sum::add.
               (here_fix.get("needs"), "needs.scripts.result == 'failure'" in here_trigger, [f"needs.{g}.result == 'failure'" in here_trigger for g in ("conventions", "actionlint")],
                "needs.review.outputs.blocking == 'true'" in here_trigger, trigger(here_fix).startswith("("), "!github.event.pull_request.draft" in guards(here_fix),
                sorted(here_fix.get("needs")) == sorted(yaml.safe_load(open(os.path.join(HERE, "..", ".github", "workflows", "pull-request.yml"), encoding="utf-8"))["jobs"]["review"]["needs"] + ["review"])),
-              (["conventions", "actionlint", "scripts", "review"], True, [True, True], True, True, True, True))
+              (["conventions", "actionlint", "scripts", "security-gate", "review"], True, [True, True], True, True, True, True))
         # #928 C5: the edited workflow's round, with this repository's
         # guards but the edit's own (it runs only on `edited`), on a review
         # that run made (`fresh`), after the jobs that workflow has.
@@ -4806,9 +4916,10 @@ Clamp the value in Sum::add.
               (True, False, True, True, {"mode": "fix", "pr": "${{ format('{0}', github.event.pull_request.number) }}",
                                          "description-ok": "${{ needs.review.outputs.description-mismatch == 'true' && 'false' || 'true' }}"}, {"contents": "read"}, "inherit", True, True))
         org_jobs = yaml.safe_load(open(os.path.join(HERE, "..", ".github", "workflows", "org-pull-request.yml"), encoding="utf-8"))["jobs"]
-        check("#741 C5: every other repository's round waits for the conventions and the review, and starts on either failing or a blocking review, on a ready pull request",
+        check("#741 C5: every other repository's round waits for the conventions, the security gate (#956) and the review, and starts on any failing or a blocking review, on a ready pull request",
               (org_fix.get("needs"), org_trigger, sorted(org_fix.get("needs")) == sorted(org_jobs["review"]["needs"] + ["review"]), "!github.event.pull_request.draft" in guards(org_fix)),
-              (["conventions", "review"], ["needs.review.outputs.blocking == 'true'", "needs.review.result == 'failure'", gate_clause("conventions"), DESCRIPTION_FIX], True, True))
+              (["conventions", "security-gate", "review"], ["needs.review.outputs.blocking == 'true'", "needs.review.result == 'failure'", gate_clause("conventions"),
+                                                             gate_clause("security-gate"), DESCRIPTION_FIX], True, True))
         check("#741 C5: the two triggers are the same apart from the gate list, which is each pipeline's own",
               ([c for c in here_trigger if c not in [gate_clause(g) for g in here_fix.get("needs") if g != "review"]],
                [c for c in org_trigger if c not in [gate_clause(g) for g in org_fix.get("needs") if g != "review"]],
@@ -5470,14 +5581,32 @@ def run_pre_pr(io):
         return 1
     head = git_out("rev-parse", "HEAD")
     print(f"Running `make pre-pr` at {head[:7]}: every check the pull request and the merge queue run. It can take long; wait for it.", flush=True)
+    gate_json = gate_result_path()
+    if os.path.exists(gate_json):
+        os.remove(gate_json)
     rc = make_pre_pr(time_left(os.environ.get(DEADLINE_ENV, ""), time.time()))
+    # #956 C4: the security gate's findings, attempt by attempt.
+    try:
+        with open(gate_json, encoding="utf-8") as fh:
+            result = json.load(fh)
+    except (OSError, ValueError):
+        result = None
+    exhausted = []
+    if result is not None:
+        met = gate_blocking(result)
+        counts, exhausted = count_attempts(read_attempts(io), met)
+        with open(os.path.join(io, ATTEMPTS), "w", encoding="utf-8") as fh:
+            json.dump(counts, fh)
+        note = attempts_note(counts, met, exhausted)
+        if note:
+            print(note, flush=True)
     with open(os.path.join(io, PRE_PR_MARK), "w", encoding="utf-8") as fh:
-        json.dump({"head": head, "rc": rc}, fh)
+        json.dump({"head": head, "rc": rc if rc == TIMEOUT or not exhausted or rc else 1}, fh)
     if rc == TIMEOUT:
         print(timeout_note(head, os.environ.get("MODE", "")))
         return 0
     print(f"`make pre-pr` passed at {head[:7]}." if rc == 0 else f"`make pre-pr` failed at {head[:7]} (exit {rc}): fix what it found, commit, and run check again.")
-    return rc
+    return rc or (1 if exhausted else 0)
 
 
 def read_mark(io):
@@ -5684,6 +5813,11 @@ def agent_helper(argv, io):
     pr_body = open(pr_file, encoding="utf-8").read() if os.path.exists(pr_file) else ""
     cmd = argv[:1]
     if cmd == ["push"]:
+        # #956 C4: never a third attempt at a security gate finding.
+        if read_attempts(io).get("exhausted"):
+            print("No: the last check met a security gate finding after its 2 attempts, and a third attempt is not yours to make. "
+                  f"Write its suppression with its reason in `{SUPPRESSIONS_FILE}` and run check again, or run `finish stop`.")
+            return 1
         print("Kept: your commits go to GitHub, signed through its API, when you end. Go on (never `git push`: you have no credentials).")
         return 0
     if cmd == ["check"]:
@@ -6775,7 +6909,13 @@ def main(argv):
         # #673, with the key, in prep: the output of the last run's failed
         # `make pre-pr`, from dilux-bot's own comment, in DX_IO/pre-pr.md
         # for the agent; no file when there is none.
-        note = prepr_note(pr_json(repo, pr, "comments")["comments"]) if pr else ""
+        comments = pr_json(repo, pr, "comments")["comments"] if pr else []
+        note = prepr_note(comments)
+        # #956 C4: the attempts at the security gate's findings so far.
+        held = attempts_of(comments)
+        if held["counts"]:
+            with open(os.path.join(os.environ[IO_ENV], ATTEMPTS), "w", encoding="utf-8") as fh:
+                json.dump(held, fh)
         path = os.path.join(os.environ[IO_ENV], PREPR_NOTE)
         if note:
             with open(path, "w", encoding="utf-8") as fh:
@@ -7012,7 +7152,8 @@ def main(argv):
             if repeated:
                 print("It failed with the same failure as the round before: the autopilot stops (#682).")
             # Before the continue: the next run's prep reads this comment.
-            gh("pr", "comment", str(pr), "--repo", repo, "--body", prepr_comment(prepr_verdict, tail, run_url, v == "continue", repeated))
+            gh("pr", "comment", str(pr), "--repo", repo, "--body", prepr_comment(prepr_verdict, tail, run_url, v == "continue", repeated,
+                                                                                  read_attempts(".dx-out")))
             if engine or repeated:
                 # #682: an engine failure, or the same failure twice, stops
                 # the run; a person has it.

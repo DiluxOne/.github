@@ -112,7 +112,8 @@ name: Autopilot
 # its free runs stay within the cap (scripts/autopilot.py end_verdict).
 # Before the agent, and before `verify`'s `make pre-pr`, both jobs install
 # the tools the kind's pre-pr needs that the runner lacks (#682, the pack's
-# `pre-pr-tools`, scripts/pre-pr.py tools). A failure whose output says a
+# `pre-pr-tools`, scripts/pre-pr.py tools), and the security gate's pinned
+# tools (#956, scripts/security-gate.py install). A failure whose output says a
 # command is not found is `verify`'s `engine` verdict: the run is free, the
 # comment says what the runner lacks, and it stops with no fix round. A
 # fix round that fails as the round before did (the comment's hidden
@@ -1508,6 +1509,12 @@ jobs:
           name: autopilot-in-work
           path: .dx-io
 
+      # #956: the security gate's pinned tools (policy/security-gate.yml,
+      # each download checked against its SHA-256), before the repository's
+      # code runs; `make pre-pr`'s own install then finds them in the cache.
+      - name: The security gate's tools
+        run: test ! -f .dx-central/scripts/security-gate.py || python3 .dx-central/scripts/security-gate.py install
+
       # #682: the tools the kind's `make pre-pr` needs that the runner
       # lacks (its pack's `pre-pr-tools`, scripts/pre-pr.py tools), so the
       # agent's own `check` runs on what `verify` runs on. From the
@@ -1641,6 +1648,9 @@ jobs:
         run: |
           mkdir -p .dx-out/transcript
           cp .dx-io/outbox.jsonl .dx-out/ 2>/dev/null || true
+          # #956 C4: the attempts at the security gate's findings, for the
+          # marker of the end's `make pre-pr` comment.
+          cp .dx-io/security-attempts.json .dx-out/ 2>/dev/null || true
           # #832 C3: what the agent changed and did not commit (its turn
           # limit came after a test passed and before its commit) is
           # committed here, ticking nothing, so it is on the branch for the
@@ -1783,6 +1793,12 @@ jobs:
             git checkout -q -B "$BRANCH" FETCH_HEAD
           fi
           [ "$(git rev-parse HEAD)" = "$WANT" ] || { echo "::error::The working tree is at $(git rev-parse HEAD), not at the agent's head $WANT."; exit 1; }
+
+      # #956: the security gate's pinned tools (policy/security-gate.yml,
+      # each download checked against its SHA-256), before the repository's
+      # code runs; `make pre-pr`'s own install then finds them in the cache.
+      - name: The security gate's tools
+        run: test ! -f .dx-central/scripts/security-gate.py || python3 .dx-central/scripts/security-gate.py install
 
       # #682: the tools the kind's `make pre-pr` needs that the runner
       # lacks (its pack's `pre-pr-tools`, scripts/pre-pr.py tools), before

@@ -85,7 +85,10 @@ GITHUB_ONLY = ("plugin-release-wp.yml", "plugin-publish-wp.yml", "svn-auth-check
                "issue-claim.yml",
                # It runs a pull request's tests (#734), a fork's included:
                # a fresh runner.
-               "test-first.yml")
+               "test-first.yml",
+               # It reads a fork's pull request with tools it downloads
+               # (#956): a fresh runner.
+               "security-gate.yml")
 
 # A job that holds a key beside an agent's work, in a workflow that is
 # otherwise shared (autopilot.yml's prep, draft and apply, #287): a fresh

@@ -119,6 +119,13 @@ files:
       read-by: [scripts/org.py]
       issue: "#491"
       says: What the conventions check does with a model named as a co-author.
+    - key: security-gate
+      org: any
+      repo: never
+      limit: "`off`, `report` or `block`; the tools, rules and levels are policy/security-gate.yml's"
+      read-by: [scripts/security-gate.py]
+      issue: "#956"
+      says: "What the security gate does with what it finds: `off` runs nothing, `report` shows it, `block` fails on a new critical or high finding."
     - key: test-repo
       identity: true
       default: "`<org lowercased>-test`"
@@ -535,6 +542,13 @@ files:
       read-by: [scripts/pre-pr.py]
       issue: "#682"
       says: The commands its `make pre-pr` runs that a bare runner may not have, which the autopilot installs.
+    - key: security
+      org: any
+      repo: never
+      limit: "`rules`, Semgrep rule paths of the repository's own, beside the organisation's; `exclude`, globs the gate never reads"
+      read-by: [scripts/security-gate.py]
+      issue: "#956"
+      says: What the kind adds to the security gate, and what it leaves out.
     - key: battery-needs
       org: any
       repo: never

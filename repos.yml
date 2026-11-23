@@ -63,7 +63,7 @@ repos:
     project: 9
     merge-queue: "off"
     # #842: its pull requests merge only with their tests green.
-    required-checks: ["Scripts (self-tests)", "test-first / Test first"]
+    required-checks: ["Scripts (self-tests)", "test-first / Test first", "security-gate / Security gate"]
     dependabot:
         docker:
           # The runner image's base (runner/Dockerfile), pinned by digest. Only
