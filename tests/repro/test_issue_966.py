@@ -101,3 +101,15 @@ def test_c2_a_504_on_every_try_names_the_504_and_the_tries(tmp_path, monkeypatch
     message = str(err)
     assert "504" in message, f"the error does not name the 504: {message!r}"
     assert f"{tries} times" in message, f"the error does not say it tried {tries} times: {message!r}"
+
+
+def test_c3_no_page_is_larger_than_github_answers_in_time(tmp_path, monkeypatch):
+    # 25 per page answered in 4.9 s, 50 failed after 11.5 s (#966, measured
+    # 2026-11-23): today's organisation answers inside GitHub's 10 s when no
+    # page is larger than 25.
+    log = fake_gh(tmp_path, monkeypatch, limit=25)
+    items, err = fetch()
+    asked = sizes(log)
+    assert asked and max(asked) <= 25, f"a page larger than 25 was asked for: {asked}"
+    assert err is None, err
+    assert sorted(i["number"] for i in items) == list(range(1, TOTAL + 1))

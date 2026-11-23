@@ -784,6 +784,10 @@ def self_test():
           (err, [i["number"] for i in got or []], asked[:2]), (None, list(range(1, 26)), [PAGE_SIZES[0], PAGE_SIZES[1]]))
     check("C1 (#966) later pages keep the smaller size", set(asked[1:]), {PAGE_SIZES[1]})
     asked = []
+    got, err = _fake_fetch(lambda size: size > 25, 60, asked)
+    check("C3 (#966) no page is larger than 25, which answered in 4.9 s; the size is the query's variable",
+          (err, len(got or []), max(asked) <= 25, "first: $first" in QUERY, "first: 50" in QUERY), (None, 60, True, True, False))
+    asked = []
     got, err = _fake_fetch(lambda size: True, 25, asked)
     check("C2 (#966) a 504 on every try: it fails, naming the 504 and the tries",
           (got, asked, (err or "").split(":")[0]), (None, list(PAGE_SIZES), "GitHub answered HTTP 504 to the search 3 times (20, 10, 5 per page)"))
