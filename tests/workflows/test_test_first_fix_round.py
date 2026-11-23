@@ -70,3 +70,27 @@ def test_autopilot_fix_starts_on_a_failed_test_first():
         assert "test-first" in job["needs"], path
         assert "needs.test-first.result == 'failure'" in cond, path
         assert job["with"]["mode"] == "fix", path
+
+
+waiting = load("waiting_972", "waiting.py")
+FIXTURES = __import__("json").loads((ROOT / "scripts" / "fixtures" / "waiting.json").read_text(encoding="utf-8"))
+
+
+def failed_test_first(labels, repo="DiluxOne/.github"):
+    """The fixtures' autopilot pull request whose check failed, with only
+    "test-first / Test first" failed at its head, in `repo`."""
+    pr = __import__("copy").deepcopy(next(p for p in FIXTURES["prs"] if p["title"] == "the autopilot's check failed"))
+    pr["labels"] = {"nodes": [{"name": n} for n in labels]}
+    pr["repository"] = dict(pr["repository"], nameWithOwner=repo)
+    pr["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"] = [
+        {"__typename": "CheckRun", "name": "test-first / Test first", "status": "COMPLETED", "conclusion": "FAILURE"},
+        {"__typename": "CheckRun", "name": "review / Claude review", "status": "COMPLETED", "conclusion": "SUCCESS"}]
+    return pr
+
+
+def test_with_rounds_left_the_board_names_the_fix_round_and_no_maintainer():
+    for repo in ("DiluxOne/.github", "DiluxOne/other"):
+        pr = failed_test_first(["autopilot", "autopilot:round-1"], repo)
+        assert waiting.blocker(pr, rounds=3) == (waiting.FIX_ROUND, waiting.AUTOPILOT), repo
+        board = waiting.waits_of(pr, ["boss"])
+        assert board["what"] == "the autopilot's fix round" and "who" not in board, (repo, board)
