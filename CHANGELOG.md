@@ -2,6 +2,12 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
+## [7.22.0](https://github.com/DiluxOne/.github/releases/tag/v7.22.0) · 2026-11-23
+
+### Features
+
+- a deterministic check that the docs are in step ([#969](https://github.com/DiluxOne/.github/pull/969))
+
 ## [7.21.0](https://github.com/DiluxOne/.github/releases/tag/v7.21.0) · 2026-11-23
 
 ### Features
@@ -12,6 +18,10 @@ Every version of the engine (the workflows, scripts, policy and kinds other repo
 
 - the "What waits" view fails on a 504 from a 50-item page ([#967](https://github.com/DiluxOne/.github/pull/967))
 - the gh-wait.sh self-test writes the job's rate-limit note ([#963](https://github.com/DiluxOne/.github/pull/963))
+
+### Maintenance
+
+- release v7.21.0 ([#971](https://github.com/DiluxOne/.github/pull/971))
 
 ## [7.20.4](https://github.com/DiluxOne/.github/releases/tag/v7.20.4) · 2026-11-22
 
