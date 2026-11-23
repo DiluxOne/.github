@@ -1513,7 +1513,7 @@ jobs:
       # each download checked against its SHA-256), before the repository's
       # code runs; `make pre-pr`'s own install then finds them in the cache.
       - name: The security gate's tools
-        run: python3 .dx-central/scripts/security-gate.py install
+        run: test ! -f .dx-central/scripts/security-gate.py || python3 .dx-central/scripts/security-gate.py install
 
       # #682: the tools the kind's `make pre-pr` needs that the runner
       # lacks (its pack's `pre-pr-tools`, scripts/pre-pr.py tools), so the
@@ -1798,7 +1798,7 @@ jobs:
       # each download checked against its SHA-256), before the repository's
       # code runs; `make pre-pr`'s own install then finds them in the cache.
       - name: The security gate's tools
-        run: python3 .dx-central/scripts/security-gate.py install
+        run: test ! -f .dx-central/scripts/security-gate.py || python3 .dx-central/scripts/security-gate.py install
 
       # #682: the tools the kind's `make pre-pr` needs that the runner
       # lacks (its pack's `pre-pr-tools`, scripts/pre-pr.py tools), before
