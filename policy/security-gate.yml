@@ -111,6 +111,10 @@ timeout: 600
 #                    script's flag or command, an environment variable, a
 #                    label, a file path), as a whole token; an identifier
 #                    shorter than `min-length` is ignored
+#   docs/map         a changed path that an entry of the docs map ties to
+#                    docs, while none of those docs changed (the map is
+#                    `docs-map`, in the kind's pack and in the repository's
+#                    .github/review-policy.yml, read at the merge base)
 # Its findings have the level `severity`, so `block` fails on them as on a
 # new high finding of the tools, and a suppression with its reason in
 # .github/review-suppressions.yml is the way out of a false one.

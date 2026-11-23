@@ -120,3 +120,69 @@ def test_c1_an_identifier_another_file_still_defines_is_not_removed(tmp_path):
     _, found = docs_findings(repo)
     assert not any("--out-dir" in f["message"] for f in found), found
     assert any("target-dir" in f["message"] for f in found), found
+
+
+# --- C2: the docs a map ties to a changed path -------------------------------
+
+MAP = "docs-map:\n  - paths: [\"src/**\"]\n    docs: [docs/api.md]\n"
+
+
+def central_with_kind(tmp_path, mode, kind, pack):
+    """The organisation's checkout of gate.central, with one more kind whose
+    pack is PACK."""
+    cent = gate.central(tmp_path, mode)
+    (cent / "kinds").unlink()
+    (cent / "kinds").mkdir()
+    for entry in (ROOT / "kinds").iterdir():
+        (cent / "kinds" / entry.name).symlink_to(entry)
+    (cent / "kinds" / kind).mkdir()
+    (cent / "kinds" / kind / "pack.yml").write_text(pack, encoding="utf-8")
+    return cent
+
+
+def map_repo(tmp_path, env, own, change, where="repo"):
+    files = {"src/a.py": "x = 1\n", "docs/api.md": "# API\n", ".github/review-policy.yml": own}
+    return gate.scratch(tmp_path, env, None, files, change, where=where)
+
+
+def map_findings(repo):
+    return [f for f in docs_findings(repo)[1] if f["rule"] == "docs/map"]
+
+
+def test_c2_a_kinds_map_names_the_docs_to_update_when_none_changed(tmp_path):
+    assert CHECK.is_file(), "scripts/docs-check.py is the documentation check"
+    cent = central_with_kind(tmp_path, "report", "mapped", "name: mapped\n" + MAP)
+    env = gate.environment(tmp_path, cent)
+    repo = map_repo(tmp_path, env, "kind: mapped\n", {"src/a.py": "x = 2\n"})
+    ran = run_gate(repo, env, "report")
+    assert ran.returncode == 0, ran.stdout + ran.stderr
+    found = map_findings(repo)
+    assert len(found) == 1, found
+    f = found[0]
+    assert f["file"] == "src/a.py" and "docs/api.md" in f["message"] and f["severity"] == "high" and f["status"] == "new", f
+    assert "src/a.py:0 docs/map (docs, new)" in ran.stdout, ran.stdout
+    # The same change with the doc edited: nothing.
+    again = map_repo(tmp_path, env, "kind: mapped\n", {"src/a.py": "x = 2\n", "docs/api.md": "# API\n\nx is 2.\n"}, where="again")
+    run_gate(again, env, "report")
+    assert map_findings(again) == []
+    # A change to no mapped path: nothing.
+    other = map_repo(tmp_path, env, "kind: mapped\n", {"README.md": "y\n"}, where="other")
+    run_gate(other, env, "report")
+    assert map_findings(other) == []
+
+
+def test_c2_a_repository_of_no_kind_uses_its_own_map_read_at_the_merge_base(tmp_path):
+    assert CHECK.is_file(), "scripts/docs-check.py is the documentation check"
+    cent = gate.central(tmp_path, "report")
+    env = gate.environment(tmp_path, cent)
+    repo = map_repo(tmp_path, env, MAP, {"src/a.py": "x = 2\n"})
+    run_gate(repo, env, "report")
+    found = map_findings(repo)
+    assert [(f["file"], "docs/api.md" in f["message"]) for f in found] == [("src/a.py", True)], found
+    # A change that drops its own map entry is still held to it.
+    dropped = map_repo(tmp_path, env, MAP, {"src/a.py": "x = 2\n", ".github/review-policy.yml": "docs-map: []\n"}, where="dropped")
+    run_gate(dropped, env, "report")
+    assert len(map_findings(dropped)) == 1
+    edited = map_repo(tmp_path, env, MAP, {"src/a.py": "x = 2\n", "docs/api.md": "# API 2\n"}, where="edited")
+    run_gate(edited, env, "report")
+    assert map_findings(edited) == []

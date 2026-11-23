@@ -14,6 +14,12 @@ tool and no model: it reads git between the merge base and HEAD.
                    environment variable, a label, a file path. Removed means
                    the head's whole tree no longer has it in that class.
 
+  docs/map         a changed path that an entry of the docs map ties to
+                   docs (`docs-map: [{paths: [glob], docs: [path or glob]}]`,
+                   the kind's pack's, then the repository's own in
+                   .github/review-policy.yml, both read at the merge base)
+                   while none of those docs changed: one finding per entry
+
   docs-check.py --test    self-test
 """
 import hashlib
@@ -25,6 +31,7 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+CENTRAL = os.path.normpath(os.path.join(HERE, ".."))
 sys.path.insert(0, HERE)
 import policy as pol  # noqa: E402  the globs (scripts/policy.py)
 
@@ -318,6 +325,52 @@ def searched_lines(repo, names, conf):
     return out
 
 
+# --- the map -----------------------------------------------------------------
+
+def entries(data):
+    """The well-formed entries of a `docs-map` value: [(paths, docs)]. Pure."""
+    out = []
+    for e in data if isinstance(data, list) else []:
+        if isinstance(e, dict):
+            paths = [str(p) for p in e.get("paths") or [] if p]
+            docs = [str(d) for d in e.get("docs") or [] if d]
+            if paths and docs:
+                out.append((paths, docs))
+    return out
+
+
+def doc_map(repo, base):
+    """The map: the kind's pack's entries, then the repository's own, the
+    kind and the repository's file both read at BASE, so a change cannot
+    drop its own entries; the pack is the organisation's checkout's."""
+    own = parse_yaml(show(repo, base, ".github/review-policy.yml") or "")
+    own = own if isinstance(own, dict) else {}
+    kind = str(own.get("kind") or "")
+    out = []
+    pack_file = os.path.join(CENTRAL, "kinds", kind, "pack.yml")
+    if kind and pol.KIND_RE.fullmatch(kind) and os.path.isfile(pack_file):
+        pack = pol.load_yaml(pack_file)
+        out += entries((pack if isinstance(pack, dict) else {}).get("docs-map"))
+    return out + entries(own.get("docs-map"))
+
+
+def map_findings(mapping, changed, severity):
+    """One finding per entry of MAPPING a path of CHANGED matches while none
+    of its docs changed. Pure."""
+    out = []
+    for paths, docs in mapping:
+        hit = [p for p in changed if pol.matches(p, paths) and not pol.matches(p, docs)]
+        if not hit or any(pol.matches(p, docs) for p in changed):
+            continue
+        listed = ", ".join(docs)
+        out.append({"tool": "docs", "rule": "docs/map", "file": hit[0], "line": 0, "severity": severity, "status": "new",
+                    "fingerprint": fingerprint("\n".join(sorted(docs)) + "\n\n" + "\n".join(sorted(hit))), "docs": docs,
+                    "message": clean(f"Changed {', '.join(hit[:3])}{' and more' if len(hit) > 3 else ''}, which the docs map ties to "
+                                     f"{listed}; none of those changed."),
+                    "fix": clean(f"Update {listed}, or write `Docs: none, <why>` in the description's What changes.", 300)})
+    return out
+
+
 def check(repo, base, conf=None, body=None):
     """The documentation check of the change from BASE (the merge base) to
     HEAD in REPO: {"findings": [...], "errors": [...], "exempt": ""}."""
@@ -326,6 +379,8 @@ def check(repo, base, conf=None, body=None):
     changes = name_status(repo, base)
     gone = removed(repo, base, changes, conf, errors)
     findings = stale_findings(gone, searched_lines(repo, list(gone), conf), str(conf["severity"]))
+    changed = sorted({p for _, old, new in changes for p in (old, new)})
+    findings += map_findings(doc_map(repo, base), changed, str(conf["severity"]))
     return {"findings": findings, "errors": errors, "exempt": ""}
 
 
@@ -365,6 +420,13 @@ def self_test():
     ok("a finding per line that names one, with its fix", [(f["file"], f["line"], f["class"]) for f in found],
        [("README.md", 2, "flag"), ("docs/x.md", 1, "file")])
     ok("a renamed file's fix names its new path", "a/c.py" in found[1]["fix"], True)
+    m = entries([{"paths": ["src/**"], "docs": ["docs/api.md"]}, {"paths": []}, "x"])
+    ok("a map's well-formed entries", m, [(["src/**"], ["docs/api.md"])])
+    ok("a mapped path changed and its docs not: one finding naming them",
+       [(f["rule"], f["file"], "docs/api.md" in f["message"]) for f in map_findings(m, ["src/a.py", "src/b.py"], "high")],
+       [("docs/map", "src/a.py", True)])
+    ok("its docs changed too, or no mapped path changed: none",
+       (map_findings(m, ["src/a.py", "docs/api.md"], "high"), map_findings(m, ["lib/a.py"], "high")), ([], []))
     ok("the policy's settings over the defaults", settings({"min-length": 6})["min-length"], 6)
     print("all tests passed" if not fails else f"{len(fails)} failed")
     return 1 if fails else 0
