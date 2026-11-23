@@ -122,6 +122,7 @@ def edited(tmp_path, body, **env):
     """The edit-start step on #9, refused for its shape, whose body is BODY."""
     files = {".dx-central/scripts/autopilot.py": f"REAL = {REAL!r}\n" + EDIT_CENTRAL,
              ".dx-central/scripts/receipts.py": f"REAL = {REAL!r}\n" + EDIT_CENTRAL}
+    tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "body.md").write_text(body)
     gh = f'case "$*" in\n  "issue view 9"*) cat {tmp_path / "body.md"} ;;\nesac\n'
     ran = run(step("issue-triage.yml", "step", job="edit-start"), tmp_path, central=False, files=files, stubs={"gh": gh},
@@ -180,3 +181,18 @@ def test_a_refusal_for_anything_but_its_shape_notes_nothing(tmp_path):
     assert ran.code == 0, ran.stderr
     assert not [c for c in called if "shape" in c]
     assert not [c for c in ran.of("gh") if "--body-file" in c]
+
+
+def test_the_edit_of_an_issue_with_no_spec_starts_it_as_today(tmp_path):
+    # #1002 C2: no Spec, next-step answers spec/start: a start, the agent writes it.
+    ran, called = edited(tmp_path, PRD)
+    assert (ran.output.get("start"), ran.output.get("mode")) == ("true", "start"), ran.stdout
+    assert "receipts.py state set shape_refused=" in called
+
+
+def test_a_changed_seal_a_hold_or_a_pull_request_start_nothing(tmp_path):
+    for i, env in enumerate(({"FAKE_SEAL": "changed"}, {"FAKE_HOLDER": "held by @alice (`/claim`)"}, {"FAKE_TAKEN": "1"})):
+        for j, body in enumerate((PRD, PRD + "\n### Spec: approach\n\nz\n")):
+            ran, called = edited(tmp_path / f"{i}-{j}", body, **env)
+            assert "start" not in ran.output and "mode" not in ran.output, (env, ran.stdout)
+            assert "receipts.py state set shape_refused=" not in called, env
