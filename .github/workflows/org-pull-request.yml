@@ -193,22 +193,24 @@ jobs:
   # An autopilot pull request whose review blocks: one round of fixes by the
   # autopilot (#83), which pushes and so runs this pipeline again; after its
   # rounds it hands the pull request to a person. So does one whose
-  # conventions or security gate (#956) fail, or whose review ends without
-  # a verdict (#741): a round
+  # conventions, security gate (#956) or "Test first" (#972) fail, or
+  # whose review ends without a verdict (#741): a round
   # from the failed jobs' log. So does one whose review says its
   # description does not match (#924): the round rewrites it.
   autopilot-fix:
     # #741: after the conventions too, so their failure (the review is then
     # skipped) starts a round; and on a review that failed before its
     # verdict (no outputs) as on one that blocks.
-    needs: [conventions, security-gate, review]
+    # #972: and after "Test first", whose failure the round reads from its
+    # summary, within the same autopilot-rounds cap.
+    needs: [conventions, security-gate, review, test-first]
     # Only dilux-bot's own pull requests, only once ready (a draft's own run
     # checks its work), and for an edit only when its review read the pull
     # request in this run (`fresh`, #928): one that kept the push's verdict
     # must not spend a round, the push's run has it.
     # #888: nor on a run whose commit is no longer the head: the head's run
     # starts the round.
-    if: always() && github.event_name == 'pull_request' && github.repository != 'DiluxOne/.github' && (needs.review.outputs.blocking == 'true' || needs.review.result == 'failure' || needs.conventions.result == 'failure' || needs.security-gate.result == 'failure' || needs.review.outputs.description-mismatch == 'true') && needs.review.outputs.current != 'false' && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (github.event.action != 'edited' || needs.review.outputs.fresh == 'true')
+    if: always() && github.event_name == 'pull_request' && github.repository != 'DiluxOne/.github' && (needs.review.outputs.blocking == 'true' || needs.review.result == 'failure' || needs.conventions.result == 'failure' || needs.security-gate.result == 'failure' || needs.test-first.result == 'failure' || needs.review.outputs.description-mismatch == 'true') && needs.review.outputs.current != 'false' && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'autopilot') && github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (github.event.action != 'edited' || needs.review.outputs.fresh == 'true')
     # The agent's jobs read the repository with the job's own token (#287).
     permissions:
       contents: read

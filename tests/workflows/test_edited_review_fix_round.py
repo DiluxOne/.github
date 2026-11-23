@@ -29,7 +29,7 @@ def starts(job, blocking="true", fresh="true", result="failure", draft=False, la
            "github.event.pull_request.user.login": author, "vars.DX_BOT_LOGIN": BOT,
            "needs.review.outputs.blocking": blocking, "needs.review.outputs.fresh": fresh, "needs.review.result": result,
            "needs.review.outputs.current": current, "needs.review.outputs.description-mismatch": mismatch,
-           "needs.conventions.result": "success", "needs.security-gate.result": "success"}
+           "needs.conventions.result": "success", "needs.security-gate.result": "success", "needs.test-first.result": "success"}
     return bool(evaluate(str(job["if"]), ctx))
 
 
@@ -94,7 +94,7 @@ def org_starts(job, action="edited", fresh="true", conventions="success", **kw):
            "github.event.pull_request.user.login": BOT, "vars.DX_BOT_LOGIN": BOT,
            "needs.review.outputs.blocking": "true", "needs.review.outputs.fresh": fresh, "needs.review.result": "success",
            "needs.review.outputs.current": "true", "needs.review.outputs.description-mismatch": "false",
-           "needs.conventions.result": conventions, "needs.security-gate.result": "success"}
+           "needs.conventions.result": conventions, "needs.security-gate.result": "success", "needs.test-first.result": "success"}
     ctx.update(kw)
     return bool(evaluate(str(job["if"]), ctx))
 

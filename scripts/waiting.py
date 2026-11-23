@@ -178,10 +178,11 @@ def checks_state(rollup):
 
 
 # The checks a fix round starts on (#741, autopilot.py FIX_JOBS), as the
-# check runs are named: the conventions', the review's and the security
-# gate's jobs (#956), and in the central repository (its own
+# check runs are named: the conventions', the review's, the security
+# gate's (#956) and "Test first"'s jobs (#972, an organisation check in
+# every repository), and in the central repository (its own
 # pull-request.yml) actionlint and the scripts too. A repository's own workflow is not among them: nothing re-runs it.
-FIX_CHECKS = ("conventions /", "review /", "security-gate /", "actionlint", "Scripts (self-tests)")
+FIX_CHECKS = ("conventions /", "review /", "security-gate /", "test-first /", "actionlint", "Scripts (self-tests)")
 CENTRAL_ONLY = ("actionlint", "Scripts (self-tests)")
 FIX_ROUND, ROUNDS_SPENT, NOT_RERUN = "the autopilot's fix round", "its checks fail after its rounds", "a check no fix round runs again"
 BOARD_EDITED = "its board edited by hand"

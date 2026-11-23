@@ -28,7 +28,7 @@ def event(repo, mismatch, blocking="false", description_ok=None):
     return {
         "github.event_name": "pull_request", "github.repository": repo, "github.event.action": "synchronize",
         "needs.review.outputs.blocking": blocking, "needs.review.result": "success", "needs.conventions.result": "success",
-        "needs.actionlint.result": "success", "needs.scripts.result": "success", "needs.security-gate.result": "success", "needs.review.outputs.current": "true", "needs.review.outputs.fresh": "",
+        "needs.actionlint.result": "success", "needs.scripts.result": "success", "needs.security-gate.result": "success", "needs.test-first.result": "success", "needs.review.outputs.current": "true", "needs.review.outputs.fresh": "",
         "needs.review.outputs.description-mismatch": mismatch,
         "needs.review.outputs.description-ok": description_ok or ("false" if mismatch == "true" else "true"),
         "github.event.pull_request.draft": False,

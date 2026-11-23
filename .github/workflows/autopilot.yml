@@ -138,8 +138,9 @@ name: Autopilot
 #                   dropped: one round, within the same cap, only when a
 #                   check failed in its last merge group, from the failed
 #                   jobs' log (`autopilot.py queue-failed`, .dx-io/queue.md).
-#                   Called too when a gate of the pipeline failed at the
-#                   head, or the review ended without a verdict (#741): a
+#                   Called too when a gate of the pipeline or "Test
+#                   first" (#972) failed at the head, or the review ended
+#                   without a verdict (#741): a
 #                   check round, within the same cap, from the failed jobs'
 #                   log of the calling run (`autopilot.py checks-failed`,
 #                   .dx-io/checks.md); a review that blocks with its verdict
