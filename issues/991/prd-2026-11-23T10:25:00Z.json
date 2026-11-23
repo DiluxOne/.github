@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 991,
+  "prd_sha256": "f5400f1fe463c7bec6ffdeb05c19eadb28e9adb2ab49561581b919332399931c",
+  "prd": "### Problem\n\nThe issue schema check reads any comment closer (two dashes and a greater-than sign) or comment opener (a less-than sign, an exclamation mark and two dashes) inside a PRD or Spec section as an HTML comment, even inside inline code or a fenced code block, and fails G1 with \"has an HTML comment; nothing in the PRD or Spec may be hidden from the person who reads it\". In DiluxOne/diluxone-mermaid that closer is Mermaid's edge syntax (an arrow from A to B is written as A, two dashes, a greater-than sign, B), so any issue that quotes a diagram is refused although nothing is hidden: https://github.com/DiluxOne/diluxone-mermaid/issues/15 (a reproduced bug) sat 10 days in `needs-human` because its Spec quoted an edge from `A` to `end` in backticks, and the autopilot does not start on it either. The test is in `check()` in `scripts/issue-schema.py` (it tests whether the section text contains the opener or the closer anywhere).\n\n### Scope\n\n- An HTML comment is found only where it would be hidden: outside inline code spans and fenced code blocks. A real HTML comment in the text still fails the check.\n- The same rule holds wherever the engine looks for hidden comments in a PRD or Spec (the check, G1, and the shape check of an edit).\n\n### Out of scope\n\n- The engine's own markers before an issue's first section.\n- Which sections must be present.\n\n### Acceptance criteria\n\n- C1: Given a Spec section that quotes a Mermaid edge from `A` to `B` in inline code or in a fenced code block, when the schema check runs, then it passes.\n- C2: Given a PRD or Spec section with a real HTML comment outside code, when the schema check runs, then it fails with the same message as today.\n- C3: Given a lone comment closer in plain text outside code, when the schema check runs, then it fails as today.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-23T10:25:00Z",
+  "policy": "DiluxOne/.github@c3324bfc70011f76918469cdd350d384c7679e78",
+  "how": "own-bug"
+}
