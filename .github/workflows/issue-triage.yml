@@ -1091,9 +1091,12 @@ jobs:
   # An edit that makes an accepted issue pass starts the autopilot, with no
   # label (#699 C2): only one the autopilot refused for its shape (its board's
   # `shape_refused`, which autopilot.yml notes with its refusal), and only
-  # when next-step, from the issue's state now, starts it from nothing (G1
-  # passes, the seal still matches, no Spec, no pull request, nobody holds
-  # it). An edit of the sealed PRD reads "changed" here and starts nothing:
+  # when next-step, from the issue's state now, starts it (G1 passes, the
+  # seal still matches, no pull request, nobody holds it): from nothing
+  # (`spec`, mode `start`, the agent writes the Spec) or, with the Spec on
+  # the issue, from it (`draft`, #1002: mode `continue`, which with no
+  # autopilot pull request starts it and opens the draft from the Spec
+  # rather than write it again). An edit of the sealed PRD reads "changed" here and starts nothing:
   # issue-accepted.yml's `unseal` takes the acceptance back (G2). The note
   # is cleared before the start, and autopilot.yml's concurrency group is the
   # issue's, so an edit storm starts one run.
@@ -1106,6 +1109,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       start: ${{ steps.step.outputs.start }}
+      mode: ${{ steps.step.outputs.mode }}
     steps:
       - name: App token
         id: bot
@@ -1156,7 +1160,10 @@ jobs:
           if BOARD="$board" python3 .dx-central/scripts/autopilot.py edit-starts <<<"$step"; then
             # Spent before the start: a second edit starts no second run.
             python3 .dx-central/scripts/receipts.py state set shape_refused= >/dev/null
-            echo "start=true" >> "$GITHUB_OUTPUT"
+            # The Spec already on it (#1002): a continue, so the draft
+            # opens from it instead of the Spec being written again.
+            mode=start; [ "$(jq -r '.action' <<<"$step")" != draft ] || mode=continue
+            { echo "start=true"; echo "mode=$mode"; } >> "$GITHUB_OUTPUT"
           fi
 
   autopilot:
@@ -1174,7 +1181,7 @@ jobs:
       contents: read
     uses: DiluxOne/.github/.github/workflows/autopilot.yml@v7
     with:
-      mode: ${{ github.event.label.name == 'autopilot:continue' && 'continue' || 'start' }}
+      mode: ${{ github.event.action == 'edited' && needs.edit-start.outputs.mode || github.event.label.name == 'autopilot:continue' && 'continue' || 'start' }}
       issue: ${{ format('{0}', github.event.issue.number) }}
       central-ref: ${{ inputs.central-ref }}
     secrets: inherit

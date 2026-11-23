@@ -1783,9 +1783,12 @@ def edit_starts(step, board):
     """Whether an edit of an accepted issue starts the autopilot (#699 C2).
     Pure. `step`: next-step's answer from the issue's state now; `board`: its
     board's state. Only an issue the autopilot refused for its shape, which
-    next-step now starts from nothing (G1 passes, the seal matches, no Spec,
-    no pull request, nobody holds it): any other edit starts nothing."""
-    return bool((board or {}).get("shape_refused")) and (step or {}).get("action") == "spec" and (step or {}).get("as") == "start"
+    next-step now starts (G1 passes, the seal matches, no pull request,
+    nobody holds it): from nothing (`spec`, no Spec yet), or from its Spec
+    (`draft`, #1002: the draft opens from it, issue-triage.yml starting it as
+    a continue). Any other edit starts nothing."""
+    step = step or {}
+    return bool((board or {}).get("shape_refused")) and step.get("action") in ("spec", "draft") and step.get("as") == "start"
 
 
 # A review finding someone who decides settled in a comment (#699 C5):
@@ -4237,9 +4240,9 @@ A class on html.
           inline_text("x @org/team\n\n**b** `c` [l](https://e) <img>"),
           "x @\u200borg/team \\*\\*b\\*\\* \\`c\\` \\[l\\](https:\u200b/\u200b/e) &lt;img&gt;")
     c2 = {"issue": {"state": "OPEN", "labels": ["accepted"]}, "lane": "human-issue", "may_start": [True, "ready"], "seal": "match"}
-    check("#699 C2: next-step on an edited accepted issue that passes now starts it, once refused for its shape",
+    check("#699 C2, #1002: next-step on an edited accepted issue that passes now starts it, Spec or not, once refused for its shape",
           (edit_starts(next_step(c2), {"shape_refused": "t"}), edit_starts(next_step(c2), {}), edit_starts(next_step(dict(c2, seal="changed")), {"shape_refused": "t"}),
-           edit_starts(next_step(dict(c2, spec=True)), {"shape_refused": "t"}), shape_refusal("w").startswith(SHAPE_MARK)), (True, False, False, False, True))
+           edit_starts(next_step(dict(c2, spec=True)), {"shape_refused": "t"}), shape_refusal("w").startswith(SHAPE_MARK)), (True, False, False, True, True))
     check("#561 C7: every state next-step reads is in the table",
           sorted(set((s["action"], s.get("how") or s.get("for") or s.get("as")) for s in steps7)), sorted(set(w for _, _, w in table)))
     check("#561 C7: every action is the bot's, a wait on a person's decision, or nothing",

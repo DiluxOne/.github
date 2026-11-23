@@ -46,8 +46,17 @@ def test_next_step_on_an_edited_accepted_issue_starts_it():
     # Still not ready, or a changed PRD (G2): no start.
     assert autopilot.edit_starts(autopilot.next_step(dict(state, may_start=[False, "the issue is not ready (G1): x"])), {"shape_refused": "t"}) is False
     assert autopilot.edit_starts(autopilot.next_step(dict(state, seal="changed")), {"shape_refused": "t"}) is False
-    # Its Spec or its pull request already there: no second start.
-    assert autopilot.edit_starts(autopilot.next_step(dict(state, spec=True)), {"shape_refused": "t"}) is False
+    # Its pull request already there: no second start.
+    assert autopilot.edit_starts(autopilot.next_step(dict(state, prs=[{"number": 3, "state": "OPEN", "author_type": "Bot", "labels": ["autopilot"]}])), {"shape_refused": "t"}) is False
+
+
+def test_an_edit_of_a_refused_issue_with_its_spec_starts_its_draft():
+    # #1002 C1: the Spec is on the issue, next-step answers draft/start.
+    state = {"issue": {"state": "OPEN", "labels": ["accepted"]}, "lane": "human-issue", "may_start": [True, "ready"], "seal": "match", "spec": True}
+    step = autopilot.next_step(state)
+    assert (step["action"], step["as"]) == ("draft", "start")
+    assert autopilot.edit_starts(step, {"shape_refused": "t"}) is True
+    assert autopilot.edit_starts(step, {}) is False
 
 
 def test_the_edit_job_runs_next_step_on_an_accepted_issues_edit():
@@ -69,7 +78,66 @@ def test_the_start_takes_the_edit_as_an_acceptance():
     assert "edit-start" in job["needs"]
     cond = " ".join(str(job["if"]).split())
     assert "(github.event.action == 'edited' && needs.edit-start.outputs.start == 'true')" in cond
-    assert job["with"]["mode"] == "${{ github.event.label.name == 'autopilot:continue' && 'continue' || 'start' }}"
+    mode = steps.EXPR.fullmatch(job["with"]["mode"]).group(1)
+    ctx = {"github.event.action": "labeled", "github.event.label.name": "autopilot:continue", "needs.edit-start.outputs.mode": ""}
+    assert steps.evaluate(mode, ctx) == "continue"
+    assert steps.evaluate(mode, dict(ctx, **{"github.event.label.name": "accepted"})) == "start"
+    # #1002: an edit's start takes the mode edit-start says.
+    edited = dict(ctx, **{"github.event.action": "edited", "github.event.label.name": ""})
+    assert steps.evaluate(mode, dict(edited, **{"needs.edit-start.outputs.mode": "continue"})) == "continue"
+    assert steps.evaluate(mode, dict(edited, **{"needs.edit-start.outputs.mode": "start"})) == "start"
+    assert jobs()["edit-start"]["outputs"]["mode"] == "${{ steps.step.outputs.mode }}"
+
+
+# #1002: the edit-start step with the central scripts stood in, but for
+# next-step and edit-starts, which are the real ones.
+REAL = str(ROOT / "scripts" / "autopilot.py")
+EDIT_CENTRAL = """import json, os, runpy, sys
+cmd = sys.argv[1:]
+open(os.path.join(os.environ["RUNNER_TEMP"], "central.log"), "a").write(os.path.basename(sys.argv[0]) + " " + " ".join(cmd) + "\\n")
+board = json.loads(os.environ.get("FAKE_BOARD") or "{}")
+if cmd[:1] in (["next-step"], ["edit-starts"]):
+    sys.argv = [REAL] + cmd
+    runpy.run_path(REAL, run_name="__main__")
+elif cmd[:2] == ["state", "get"]:
+    print(json.dumps(board if len(cmd) == 2 else board.get(cmd[2])))
+elif cmd[:1] == ["lane"]:
+    print("human-issue")
+elif cmd[:1] == ["holder"]:
+    held = os.environ.get("FAKE_HOLDER", "")
+    print(held or "nobody holds it")
+    sys.exit(1 if held else 0)
+elif cmd[:1] == ["verify-prd"]:
+    seal = os.environ.get("FAKE_SEAL", "match")
+    print(seal)
+    sys.exit(0 if seal == "match" else 1)
+elif cmd[:1] == ["may-start"]:
+    print("ready")
+elif cmd[:1] == ["taken"]:
+    sys.exit(1 if os.environ.get("FAKE_TAKEN") else 0)
+"""
+
+
+def edited(tmp_path, body, **env):
+    """The edit-start step on #9, refused for its shape, whose body is BODY."""
+    files = {".dx-central/scripts/autopilot.py": f"REAL = {REAL!r}\n" + EDIT_CENTRAL,
+             ".dx-central/scripts/receipts.py": f"REAL = {REAL!r}\n" + EDIT_CENTRAL}
+    (tmp_path / "body.md").write_text(body)
+    gh = f'case "$*" in\n  "issue view 9"*) cat {tmp_path / "body.md"} ;;\nesac\n'
+    ran = run(step("issue-triage.yml", "step", job="edit-start"), tmp_path, central=False, files=files, stubs={"gh": gh},
+              env=dict({"NUMBER": "9", "GH_TOKEN": "t", "FAKE_BOARD": '{"shape_refused": "2026-11-23T10:00:00Z"}'}, **env))
+    assert ran.code == 0, ran.stdout + ran.stderr
+    return ran, (ran.temp / "central.log").read_text().splitlines()
+
+
+PRD = "### Problem\n\nx\n\n### Scope\n\n- y\n"
+
+
+def test_the_edit_of_an_issue_with_its_spec_starts_it_as_a_continue(tmp_path):
+    ran, called = edited(tmp_path, PRD + "\n### Spec: approach\n\nz\n")
+    assert ran.output.get("start") == "true", ran.stdout
+    assert ran.output.get("mode") == "continue"
+    assert "receipts.py state set shape_refused=" in called
 
 
 # The central scripts' stand-in: each records its call; `lane` names one,

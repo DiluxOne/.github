@@ -55,7 +55,11 @@ def test_the_autopilot_starts_on_the_acceptance_it_sealed():
     auto = jobs("issue-triage.yml")["autopilot"]
     assert "own" in auto["needs"] and "steer" in auto["needs"]
     assert "(github.event.action == 'opened' && needs.own.outputs.accepted == 'true')" in auto["if"]
-    assert auto["with"]["mode"] == "${{ github.event.label.name == 'autopilot:continue' && 'continue' || 'start' }}"
+    # An opened or accepted issue starts; only `autopilot:continue` continues (an edit's mode is edit-start's, #1002).
+    expr = steps.EXPR.fullmatch(auto["with"]["mode"]).group(1)
+    for action, label, want in (("opened", "", "start"), ("labeled", "accepted", "start"), ("labeled", "autopilot:continue", "continue")):
+        ctx = {"github.event.action": action, "github.event.label.name": label, "needs.edit-start.outputs.mode": ""}
+        assert steps.evaluate(expr, ctx) == want, (action, label)
 
 
 PRD = ("### Problem\n\nIt breaks.\n\n### Scope\n\n- Fix it.\n\n### Out of scope\n\n- Nothing.\n\n"
