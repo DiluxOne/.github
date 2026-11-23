@@ -730,7 +730,8 @@ jobs:
           ROUND: "1"
           BUDGET: ${{ steps.policy.outputs.budget || '3' }}
           TIMEOUT: "${{ github.event.action == 'edited' && 60 || 30 }}"
-          A0: ${{ steps.claude.outputs.structured_output }}
+          # Skipped on a reuse; its answer named for model-cache.py's check.
+          A0: ${{ steps.claude.outputs.structured_output || steps.reuse.outputs.answer }}
           L0: ${{ steps.claude.outputs.execution_file }}
         run: |
           set -euo pipefail
@@ -785,7 +786,8 @@ jobs:
           ROUND: "2"
           BUDGET: ${{ steps.policy.outputs.budget || '3' }}
           TIMEOUT: "${{ github.event.action == 'edited' && 60 || 30 }}"
-          A0: ${{ steps.claude.outputs.structured_output }}
+          # Skipped on a reuse; its answer named for model-cache.py's check.
+          A0: ${{ steps.claude.outputs.structured_output || steps.reuse.outputs.answer }}
           L0: ${{ steps.claude.outputs.execution_file }}
           A1: ${{ steps.more1.outputs.structured_output }}
           L1: ${{ steps.more1.outputs.execution_file }}
@@ -842,7 +844,8 @@ jobs:
           ROUND: "3"
           BUDGET: ${{ steps.policy.outputs.budget || '3' }}
           TIMEOUT: "${{ github.event.action == 'edited' && 60 || 30 }}"
-          A0: ${{ steps.claude.outputs.structured_output }}
+          # Skipped on a reuse; its answer named for model-cache.py's check.
+          A0: ${{ steps.claude.outputs.structured_output || steps.reuse.outputs.answer }}
           L0: ${{ steps.claude.outputs.execution_file }}
           A1: ${{ steps.more1.outputs.structured_output }}
           L1: ${{ steps.more1.outputs.execution_file }}
@@ -901,7 +904,8 @@ jobs:
         if: steps.claude.outputs.structured_output != ''
         continue-on-error: true # without it, they read the review's own answer
         env:
-          A0: ${{ steps.claude.outputs.structured_output }}
+          # Skipped on a reuse; its answer named for model-cache.py's check.
+          A0: ${{ steps.claude.outputs.structured_output || steps.reuse.outputs.answer }}
           A1: ${{ steps.more1.outputs.structured_output }}
           A2: ${{ steps.more2.outputs.structured_output }}
           A3: ${{ steps.more3.outputs.structured_output }}
