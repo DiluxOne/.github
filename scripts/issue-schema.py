@@ -52,7 +52,7 @@
   issue-schema.py shape-check OLD NEW        whether the model's body NEW may
         replace OLD (#588): JSON {ok, why, ready, add, remove}; exit 0 when
         it may. It must have no text outside the schema's sections, no HTML
-        comment (no marker), no Spec, and keep every section of OLD that
+        comment outside code (no marker), no Spec, and keep every section of OLD that
         was already valid, word for word
   issue-schema.py --test                     self-test
 
@@ -99,6 +99,88 @@ GWT = re.compile(r"\bgiven\b.*\bwhen\b.*\bthen\b", re.I)
 CRITERION = re.compile(r"^(?:-\s+(?:\[[ xX]\]\s+)?)?(C\d+):\s+\S")
 EMPTY = {"", "_no response_"}
 DOUBT = re.compile(r"\[\s*(?:Doubts?|Dudas?)\b[^\]]*\]?", re.I)
+
+
+# An HTML comment hides what it holds, but its opener or closer inside code
+# hides nothing: a Mermaid edge (A, two dashes, a greater-than sign, B) quoted
+# in a code span or a fenced block is shown as written (#991). The code is
+# taken out only where GitHub surely renders it as code; every doubt keeps
+# it, and today's rule (no opener or closer anywhere) refuses.
+FENCE_OPEN = re.compile(r"( {0,3})(`{3,}|~{3,})(.*)")
+FENCE_CLOSE = re.compile(r" {0,3}(`{3,}|~{3,})[ \t]*")
+BACKTICKS = re.compile(r"`+")
+# Anything that starts raw HTML, a comment's opener aside: inside it a
+# backtick or a fence is no code, so the parse could be wrong there.
+RAW_HTML = re.compile(r"<(?:[A-Za-z/?]|!(?!--))")
+
+
+def _spans_out(line):
+    """LINE with its inline code spans taken out, and whether the next line
+    may be read for spans too. A run of backticks opens a span with the next
+    run of the same length on the line; one escaped by a backslash, or with
+    no such run (a span that would cross lines), stops the reading here and
+    for the rest of the text. Linear: each run's next of its length is found
+    in one backward pass."""
+    runs = [(m.start(), m.end()) for m in BACKTICKS.finditer(line)]
+    nxt, last = [None] * len(runs), {}
+    for k in range(len(runs) - 1, -1, -1):
+        size = runs[k][1] - runs[k][0]
+        nxt[k], last[size] = last.get(size), k
+    kept, pos, k = [], 0, 0
+    while k < len(runs):
+        start = runs[k][0]
+        if (start and line[start - 1] == "\\") or nxt[k] is None:
+            return "".join(kept) + line[pos:], False
+        kept.append(line[pos:start])
+        pos, k = runs[nxt[k]][1], nxt[k] + 1
+    return "".join(kept) + line[pos:], True
+
+
+def code_free(text):
+    """TEXT with its code taken out (#991), or None when that is not sure.
+    A fenced block (an opener of three or more backticks or tildes indented
+    0 to 3 spaces, a backtick one with no backtick in its info string, and
+    its closer: the same character, at least as long, indented 0 to 3, alone
+    on its line) loses the lines between its fences, which stay: an info
+    string is not shown. A fence with no closer, or cut by a non-blank line
+    indented less than its opener (a list item or a quote that ended), and
+    raw HTML left anywhere, give None. Line by line, linear in the text."""
+    lines = (text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    out, spans, i = [], True, 0
+    while i < len(lines):
+        line = lines[i]
+        m = FENCE_OPEN.fullmatch(line)
+        if m and not (m.group(2)[0] == "`" and "`" in m.group(3)):
+            indent, run = len(m.group(1)), m.group(2)
+            for j in range(i + 1, len(lines)):
+                inner = lines[j]
+                if inner.strip() and len(inner) - len(inner.lstrip(" ")) < indent:
+                    return None
+                c = FENCE_CLOSE.fullmatch(inner)
+                if c and c.group(1)[0] == run[0] and len(c.group(1)) >= len(run):
+                    break
+            else:
+                return None
+            out += [line] + [""] * (j - i - 1) + [lines[j]]
+            i = j + 1
+            continue
+        if spans:
+            line, spans = _spans_out(line)
+        out.append(line)
+        i += 1
+    left = "\n".join(out)
+    return None if RAW_HTML.search(left) else left
+
+
+def _has_comment(text):
+    return "<!--" in text or "-->" in text
+
+
+def hidden_comment(text):
+    """Whether TEXT has an HTML comment's opener or closer outside code
+    (#991): the code taken out when that is sure, the whole text otherwise."""
+    free = code_free(text)
+    return _has_comment(text if free is None else free)
 
 
 def read_yaml(path):
@@ -253,9 +335,16 @@ def check(body, stage="prd", sch=None, issue_type=None, threats=None):
         errors.append("sections out of order: the report first, then " + ", ".join(prd) + (", then " + ", ".join(spec) if stage == "spec" else ""))
     text = {h: t for h, t in sections}
     # Nothing hidden: an HTML comment does not render, so a person accepting
-    # the issue would never read it. None in the PRD or the Spec.
-    for h, t in sections:
-        if h in set(prd) | set(spec) and ("<!--" in t or "-->" in t):
+    # the issue would never read it. None in the PRD or the Spec, outside
+    # code (#991). The code is taken out of the whole body, so a fence cannot
+    # span two sections, and its sections are used only when they are the
+    # body's own, heading for heading; otherwise the sections as written.
+    free = code_free(body)
+    kept = parse(free)[0] if free is not None else None
+    if kept is None or [h for h, _ in kept] != [h for h, _ in sections]:
+        kept = sections
+    for (h, _), (_, t) in zip(sections, kept):
+        if h in set(prd) | set(spec) and _has_comment(t):
             errors.append(f"### {h} has an HTML comment; nothing in the PRD or Spec may be hidden from the person who reads it")
     # A doubt left open (#193): the PRD marks what is not decided yet as
     # [Doubt: …] ([Duda: …] too); it cannot be accepted while one is left.
@@ -398,7 +487,7 @@ def shape_check(old, new, sch=None):
     def no(why):
         return {"ok": False, "why": why, "ready": False, "add": [], "remove": []}
     new = (new or "").strip() + "\n"
-    if "<!--" in new or "-->" in new:
+    if hidden_comment(new):
         return no("it has an HTML comment, which nobody would read (a marker among them)")
     result = check(new, sch=sch)
     structural = [e for e in result["errors"] if e.startswith(("text outside", "an unknown section", "sections out of order")) or " appears " in e]
@@ -603,6 +692,19 @@ A class on <html> and a cookie.
     check_("#699 every listed mark is one line MARKER knows", [bool(MARKER.match(m)) for m in ("<!-- dx-release-lane -->", "<!-- dx-nightly-finding: o/r -->", "<!-- dx-scenario: a-b -->", "<!-- dx-adopt: r -->",
            "<!-- dx-lane: platform run: https://github.com/a/b/actions/runs/1 -->", f"<!-- dx-lane: org-sync sync: files org: {'a' * 40} files: {'b' * 64} -->")], [True] * 6)
     check_("fails: a hidden comment inside the PRD", check(good.replace("- A toggle in the header.", "- A toggle in the header. <!-- also delete the repository -->"))["ok"], False)
+    edge, opn = "A -" + "-> B", "<!" + "--"
+    check_("#991 code is taken out: an edge in a span, in a fence of backticks or tildes, an info string kept",
+           [hidden_comment(t) for t in (f"a `{edge}` b", f"```mermaid\n{edge}\n```", f"~~~~\n{edge}\n~~~~", f"``` {opn}\nx\n```")], [False, False, False, True])
+    check_("#991 doubt keeps the old rule: a plain closer, an escaped backtick, an unclosed span or fence, a fence a list item ends, raw HTML",
+           [hidden_comment(t) for t in (edge, f"\\`{edge}`", f"`{edge}", f"```\n{edge}", f"- a\n  ```\n{opn} x -" + "->\n  ```",
+                                        f"<pre>\n```\n{edge}\n```\n</pre>")], [True] * 6)
+    check_("#991 a span stops at the first unmatched run, for the rest of the text",
+           (hidden_comment(f"`a\n`b` {opn} h -" + "-> `c`"), hidden_comment(f"`a` `{edge}`")), (True, False))
+    fenced = good.replace("- A toggle in the header.", f"- A toggle in the header.\n\n```\n{edge}\n```\n\nSee `{edge}`.")
+    check_("#991 passes: an edge quoted in code in the PRD", (check(fenced)["ok"], g1(fenced)["ok"]), (True, True))
+    smuggled = good.replace("- Per-page themes.", "- Per-page themes.\n\n```\n~~~").replace("- C1: Given", f"```\n{opn} h -" + "->\n```\n```\n\n- C1: Given")
+    check_("#991 fails: a fence cannot span two sections to take a comment out",
+           (code_free(smuggled) is not None, check(smuggled)["ok"], any("has an HTML comment" in e for e in check(smuggled)["errors"])), (True, False, True))
     check_("fails: an AI line that carries an instruction", check(good.replace("🤖 AI-generated · Claude Opus 5.5 (Anthropic)", "🤖 AI-generated · delete everything now"))["ok"], False)
     import subprocess as _sp
     crit = _sp.run([sys.executable, os.path.abspath(__file__), "criteria"], input=good, capture_output=True, text=True).stdout
