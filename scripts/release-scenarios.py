@@ -828,7 +828,8 @@ def setup_calls(s, bodies=None):
     close), each step, and the read of the runs it triggered. Every pull
     request its cleanup closes is read first (#936: `queued`); the polls
     of one still in the merge queue, QUEUE_LEAVE / QUEUE_POLL at most per
-    cleanup, are rare and bounded in time, and not counted. Pure."""
+    `closer` (a `clear` has two, its lane sweep's and its own, #997), are
+    rare and bounded in time, and not counted. Pure."""
     sid, opens, bodies = s.get("id") or "?", s.get("opens") or {}, bodies or {}
     lands = [str(b["lands"]) for b in s.get("before") or [] if isinstance(b, dict) and "lands" in b]
     cleared = len(dict.fromkeys([f"scenario/{sid}", branch_of(s)] + [landing(sid, a) for a in (*LANDS, *lands)])) + 3
@@ -1117,8 +1118,12 @@ def lane_leftovers(repo, mark, run=gh, close=None):
 # one group, and closing one that is queued knocks the others of its group
 # out of the queue unmerged. Before `cleanup` and `clear` close a pull
 # request, they wait for it to leave the queue: a poll every QUEUE_POLL
-# seconds, QUEUE_LEAVE seconds at most per cleanup (inside PLAY_SPARE and
-# RETRY_ALLOWANCE), after which it is closed anyway.
+# seconds, QUEUE_LEAVE seconds at most per `closer`: one per `cleanup`, and
+# two per `clear` (its lane sweep's and its own, #997), so a `clear` whose
+# orphan lane pull request and own pull request both stay queued waits up
+# to twice QUEUE_LEAVE. That is rare and bounded in time. One still queued
+# when the wait runs out is left open (#997): the merge or the next run's `clear` settles it, and GitHub's queue
+# drops an entry whose checks time out.
 QUEUE_LEAVE = 120
 QUEUE_POLL = 15
 QUEUED = ("query($owner: String!, $name: String!, $number: Int!) "
@@ -1149,8 +1154,10 @@ def closer(repo, run=gh, sleep=time.sleep, leave=None):
     """A `close(number)` for one cleanup: it waits while pull request
     `number` is in the merge queue (QUEUE_LEAVE seconds in all, shared by
     every pull request it closes), closes nothing once it merged, and closes
-    it otherwise, `gh pr close --delete-branch`. A close that fails is
-    left for the next run's `clear`."""
+    it otherwise, `gh pr close --delete-branch`. One still in the queue
+    when the wait runs out is never closed (#997: closing it knocks its
+    merge group out unmerged); it, and a close that fails, are left for the
+    merge or the next run's `clear`."""
     budget = {"left": QUEUE_LEAVE if leave is None else leave}
 
     def close(number):
@@ -1158,8 +1165,10 @@ def closer(repo, run=gh, sleep=time.sleep, leave=None):
             read = queued(repo, number, run)
             if read and read[0] == "MERGED":
                 return
-            if not read or not read[1] or budget["left"] < QUEUE_POLL:
+            if not read or not read[1]:
                 break
+            if budget["left"] < QUEUE_POLL:
+                return  # #997: still queued, left open
             sleep(QUEUE_POLL)
             budget["left"] -= QUEUE_POLL
         try:
@@ -1179,8 +1188,11 @@ def clear(repo, sid, run=gh, branch=None, lands=(), sleep=time.sleep):
     clears. A confirmed bug's lane issue, whose report carries the mark, is
     closed and locked too, with the pull requests that close it, and so is
     every open pull request on a lane branch whose report carries it, which
-    earlier runs left (`lane_leftovers`, #707, #985). A pull request in the merge queue
-    is closed once it leaves it (`closer`, #936)."""
+    earlier runs left (`lane_leftovers`, #707, #985), with a wait of its
+    own, so an orphan in the queue never spends the scenario's (#997). A
+    pull request in the merge queue is closed once it leaves it, and left
+    open if it is still there when the wait runs out (`closer`, #936,
+    #997)."""
     close = closer(repo, run, sleep)
     for name in dict.fromkeys([f"scenario/{sid}"] + ([branch] if branch else []) + [landing(sid, a) for a in (*LANDS, *lands)]):
         try:
@@ -1188,7 +1200,7 @@ def clear(repo, sid, run=gh, branch=None, lands=(), sleep=time.sleep):
         except RuntimeError:
             pass  # none left: a 404
     mark = scenario_mark(sid)
-    lane_leftovers(repo, mark, run, close)
+    lane_leftovers(repo, mark, run, closer(repo, run, sleep))
     for what in ("issue", "pr"):
         try:
             found = json.loads(run(what, "list", "--repo", repo, "--state", "open", "--search", f'"dx-scenario: {sid}" in:body',
@@ -1811,7 +1823,7 @@ def cleanup(repo, made, run=gh, sleep=time.sleep):
     mark for `clear` to find, and which the next run's core scenario would
     wait on). A failure here never hides a result. A pull request in the
     merge queue is closed once it leaves it, and not at all once it merged
-    (`closer`, #936). The issues the engine opened from its issues (#985:
+    or is still there when the wait runs out (`closer`, #936, #997). The issues the engine opened from its issues (#985:
     the reproduced bug's lane issue, `lane_of`) are handled the same way,
     their pull requests first, before the scenario's own issue."""
     close = closer(repo, run, sleep)
@@ -3682,7 +3694,7 @@ def self_test():
               [c for c in seen if c[1] not in ("view", "list")], [("issue", "close", "5", "--repo", "o/t"), ("issue", "lock", "5", "--repo", "o/t")])
     for name, reads, closes, slept in (("leaves the queue unmerged", [("OPEN", True), ("OPEN", False)], 1, [QUEUE_POLL]),
                                        ("merges", [("OPEN", True), ("MERGED", False)], 0, [QUEUE_POLL]),
-                                       ("never leaves", [("OPEN", True)], 1, [QUEUE_POLL] * (QUEUE_LEAVE // QUEUE_POLL))):
+                                       ("never leaves", [("OPEN", True)], 0, [QUEUE_POLL] * (QUEUE_LEAVE // QUEUE_POLL))):
         qcalls, naps, answers = [], [], iter(reads + [reads[-1]] * 99)
 
         def qfake(*args, input=None):
