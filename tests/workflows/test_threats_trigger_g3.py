@@ -166,3 +166,51 @@ def test_c3_g7_reads_the_organisations_entries_and_the_spec_alone():
         text = (ROOT / doc).read_text(encoding="utf-8")
         assert wired or "again at the auto-merge decision" not in text, doc
         assert wired or "not by the auto-merge decision" in text or "nor the diff's lines" in text, doc
+
+
+def _threats_snippet(run):
+    """The brief step's lines from the threat trigger's run to its `fi`."""
+    lines = run.splitlines()
+    start = next(i for i, l in enumerate(lines) if "threats --brief" in l and "impact.py" in l)
+    end = next(i for i in range(start, len(lines)) if lines[i].strip() == "fi")
+    return "\n".join(lines[start:end + 1])
+
+
+def test_c3_the_brief_fails_closed_when_the_trigger_cannot_tell(tmp_path):
+    # Exit 2 (it cannot tell) puts "Threats required" in the brief, as the
+    # decision fails closed; and so does a fire when the map itself is empty.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    ran = subprocess.run([sys.executable, str(ROOT / "scripts" / "impact.py"), "threats", "--brief", "--base", "nope", "--head", "HEAD", "--kind", ""],
+                         cwd=repo, capture_output=True, text=True)
+    assert ran.returncode == 2 and ran.stdout.startswith("Threats required: the trigger could not tell")
+    flow = yaml.safe_load((ROOT / ".github" / "workflows" / "claude-review.yml").read_text(encoding="utf-8"))
+    run = next(s["run"] for s in flow["jobs"]["review"]["steps"] if "review-brief.sh" in str(s.get("run", "")))
+    local = (ROOT / "scripts" / "local-review.sh").read_text(encoding="utf-8")
+    for name, snippet in (("claude-review.yml", _threats_snippet(run)), ("local-review.sh", _threats_snippet(local))):
+        for code, out, want in ((2, "", "the trigger could not tell (impact.py exit 2)"), (2, "Threats required: the trigger could not tell (x)", "(x)"),
+                                (1, "Threats required: workflow: w", "workflow: w"), (0, "", None)):
+            stub = tmp_path / "bin" / ".dx-central" / "scripts"
+            stub.mkdir(parents=True, exist_ok=True)
+            (stub / "impact.py").write_text(f"import sys\nprint({out!r}, end='')\nsys.exit({code})\n", encoding="utf-8")
+            work = tmp_path / "work"
+            work.mkdir(exist_ok=True)
+            impact = work / "impact.md"
+            impact.write_text("", encoding="utf-8")
+            env = {"PATH": "/usr/bin:/bin", "RUNNER_TEMP": str(work), "IMPACT": str(impact), "impact": str(impact), "work": str(work),
+                   "CENTRAL": str(tmp_path / "bin" / ".dx-central"), "BASE": "a", "HEAD": "b", "kind": "", "KIND": ""}
+            subprocess.run(["bash", "-euo", "pipefail", "-c", snippet.replace("python3 ", f"{sys.executable} ").replace('"$CENTRAL/scripts/impact.py"', ".dx-central/scripts/impact.py")], cwd=tmp_path / "bin", env=env, check=True)
+            got = impact.read_text(encoding="utf-8")
+            if want is None:
+                assert got == "", f"{name}: nothing when it does not fire"
+            else:
+                assert got.startswith("Threats required") and want in got, f"{name}, exit {code}, empty map: {got!r}"
+
+
+def test_c3_the_profile_needs_no_section_when_there_is_no_spec():
+    # A pull request a person claimed has no Spec: the profile does not call
+    # the missing section a major there.
+    profile = (ROOT / "review-profiles" / "general.md").read_text(encoding="utf-8")
+    assert "there is no Spec to read it from" in profile and "there is no\n   section to miss" in profile
+    assert "There is no Spec to read it from" in (ROOT / "scripts" / "impact.py").read_text(encoding="utf-8")

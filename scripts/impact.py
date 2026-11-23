@@ -40,7 +40,9 @@ that match a path or an identifier pattern are kept.
         its `Spec: threats` section, one line per entry that fires (exit 1),
         or nothing (exit 0); 2 when it cannot tell. --brief prints, when it
         fires, the review brief's lines instead: "Threats required: <why>"
-        and the Spec's threats section as it stands (or that it has none). The entries are the
+        and the Spec's threats section as it stands (or that it has none),
+        and when it cannot tell, "Threats required: the trigger could not
+        tell", so that the brief fails closed as the decision does. The entries are the
         organisation's (policy/threats.yml) and the kind's (`threats:` in
         kinds/<kind>/surface.yml, add-only), read from this checkout of the
         engine, never from the change's head: on a Spec, the paths its
@@ -457,6 +459,14 @@ def brief_lines(spec, hits):
     return f"Threats required: {'; '.join(hits)}\n\n{said}"
 
 
+def unknown_lines(why):
+    """The brief's lines when the trigger cannot tell (exit 2): it fails
+    closed, as the decision does, so the review checks by hand. Pure."""
+    return (f"Threats required: the trigger could not tell ({why}); check by hand whether the change "
+            "touches an input, a permission, authentication, a secret or a workflow, and if it does, "
+            "that the Spec's threats section covers each with what stops it.")
+
+
 def fixture_problems(entries, label):
     """[(name, ok)] for each entry: its keys, and its fixtures (`fail` ones
     fire, `pass` ones do not), for impact.py's and surface.py's --test."""
@@ -560,6 +570,8 @@ def self_test():
        == "Threats required: workflow: w, x\n\nThe Spec's threats section, as it stands:\n\n- Tampering: none.")
     ok("the brief's lines: a Spec with none says so", "has no threats section" in brief_lines("### Spec: files\n\n- x\n", ["w"]))
     ok("the brief's lines: nothing when it does not fire", brief_lines("x", []) == "")
+    ok("the brief's lines: a trigger that cannot tell fails closed",
+       unknown_lines("bad yaml").startswith("Threats required: the trigger could not tell (bad yaml)"))
     if not fail:
         print("all tests passed")
     return fail
@@ -608,6 +620,8 @@ def main(argv):
                 hits += [h for h in on_change(".", opts["base"], opts["head"], entries=entries) if h not in hits]
         except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as e:
             print(f"impact.py: {e}", file=sys.stderr)
+            if brief:
+                print(unknown_lines(str(e).splitlines()[0][:200] if str(e) else type(e).__name__))
             return 2
         if hits:
             print(brief_lines(spec, hits) if brief else "\n".join(hits))
