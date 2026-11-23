@@ -58,6 +58,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CENTRAL = os.path.normpath(os.path.join(HERE, ".."))
 sys.path.insert(0, HERE)
 import policy as pol  # noqa: E402  the YAML reader and the packs (scripts/policy.py)
+import importlib.util  # noqa: E402
+
+_spec = importlib.util.spec_from_file_location("docs_check", os.path.join(HERE, "docs-check.py"))
+docs_check = importlib.util.module_from_spec(_spec)  # the documentation check (#957, scripts/docs-check.py)
+_spec.loader.exec_module(docs_check)
 
 POLICY = os.path.join(CENTRAL, "policy", "security-gate.yml")
 SUPPRESSIONS = os.path.join(".github", "review-suppressions.yml")
@@ -781,6 +786,12 @@ def brief(result):
 
 def run(repo, base, data, mode_value, env=os.environ):
     findings, merge_base, errors = scan(repo, base, data, env)
+    # #957: the documentation check, on the same change, as the gate's own.
+    docs = docs_check.check(repo, merge_base, data.get("docs"))
+    for f in docs["findings"]:
+        f["severity"] = f["severity"] if f.get("severity") in LEVELS else "high"
+    findings += suppress(docs["findings"], suppressions(repo))
+    errors += docs["errors"]
     result = {"mode": mode_value, "base": merge_base, "head": git(repo, "rev-parse", "HEAD").strip(),
               "caps": data.get("caps") or {}, "findings": ordered(findings), "errors": errors}
     result["blocking"] = [f["fingerprint"] for f in blocking(findings, data)]
