@@ -27,7 +27,7 @@ name: Screenshots
 #     screenshots:
 #       needs: review
 #       permissions: { contents: read }
-#       uses: DiluxOne/.github/.github/workflows/pr-screenshots.yml@v7
+#       uses: DiluxOne/.github/.github/workflows/pr-screenshots.yml@v7-next
 #       secrets:
 #         DILUX_BOT_PRIVATE_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
 

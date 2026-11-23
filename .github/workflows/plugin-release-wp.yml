@@ -135,7 +135,7 @@ name: WordPress plugin release
 #   jobs:
 #     release:
 #       if: github.event_name == 'push'
-#       uses: DiluxOne/.github/.github/workflows/plugin-release-wp.yml@v7
+#       uses: DiluxOne/.github/.github/workflows/plugin-release-wp.yml@v7-next
 #       with:
 #         slug: diluxone-offload
 #         version-constant: DILUXONE_OFFLOAD_VERSION   # optional
