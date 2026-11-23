@@ -16,6 +16,17 @@ In this order:
    dependencies with known vulnerabilities and unsafe GitHub workflows are
    the deterministic security gate's (#956): when the brief carries its
    section, take its findings as found and spend your attention on the logic.
+   When the brief's "Impact map (deterministic)" (#958, built from git with
+   no model) says **Threats required**, the change touches an input, a
+   permission, authentication, a secret or a workflow, whatever its issue's
+   Type: check that the Spec's threats section it carries covers each thing
+   named there, with what stops it, and that the code does what it says. A
+   section that is missing, or that leaves one of them out, is a major
+   finding. When the brief says there is no Spec to read it from (a pull
+   request a person claimed, or one before its issue's Spec), there is no
+   section to miss: check that the code guards each thing named there, and
+   rate what it leaves open by its own severity. When it says the trigger
+   could not tell, check by hand what the change touches.
 2. **Correctness.** The change does what its title says; edge cases
    (empty, huge, concurrent, failing network, partial failure); a result
    that is ignored when it can fail; state that can be left half-written.

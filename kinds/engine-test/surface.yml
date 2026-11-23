@@ -11,3 +11,7 @@
 # (scripts/release-scenarios.py risk_problems). `**` crosses directories.
 high-risk:
   - "scenarios/high-risk-waits/**"
+
+# Nothing of its own for the threat trigger (#958, scripts/impact.py
+# threats): the organisation's (policy/threats.yml) apply.
+threats: []

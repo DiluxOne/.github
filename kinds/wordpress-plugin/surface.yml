@@ -271,3 +271,45 @@ sensitive:
           head: "<?php\necho esc_html( $title );\n"
         - base: "<?php\nreturn esc_html( sprintf( '%s', $name ) );\n"
           head: "<?php\n$greeting = sprintf( '%s', $name );\nreturn esc_html( $greeting );\n"
+
+# The kind's part of the threat trigger (#958, scripts/impact.py threats),
+# added to the organisation's (policy/threats.yml, add-only): a Spec or a
+# change that touches one of these needs its `Spec: threats` section at G3,
+# whatever its issue's Type. Each pattern is a Python regular expression
+# over one line; `fixtures` as in policy/threats.yml.
+threats:
+  - id: wp-input
+    what: a request's input (superglobals, REST or AJAX parameters, an endpoint)
+    pattern: '(?i)\$_(?:GET|POST|REQUEST|COOKIE|FILES|SERVER)\b|->get_(?:param|params|json_params|body_params|query_params|file_params)\s*\(|\bwp_ajax_(?:nopriv_)?\w+|\badmin_post_(?:nopriv_)?\w+|\bregister_rest_route\b'
+    fixtures:
+      fail:
+        - "$name = sanitize_text_field( wp_unslash( $_POST['name'] ) );"
+        - "$id = $request->get_param( 'id' );"
+        - "add_action( 'wp_ajax_dx_export', 'dx_export' );"
+      pass:
+        - "$title = get_the_title( $post );"
+  - id: wp-permission
+    what: a permission check, a capability or a role
+    pattern: '(?i)\b(?:current_user_can|user_can|author_can|map_meta_cap|add_cap|remove_cap|add_role|remove_role|set_role|permission_callback|is_super_admin|grant_super_admin)\b'
+    fixtures:
+      fail:
+        - "if ( ! current_user_can( 'manage_options' ) ) { return; }"
+        - "'permission_callback' => '__return_true',"
+      pass:
+        - "$can = true;"
+  - id: wp-auth
+    what: authentication or a user's password
+    pattern: '(?i)\b(?:wp_set_auth_cookie|wp_set_current_user|wp_signon|wp_authenticate|wp_set_password|wp_hash_password|wp_check_password|wp_clear_auth_cookie|application_passwords?|is_user_logged_in)\b'
+    fixtures:
+      fail:
+        - "wp_set_auth_cookie( $user_id );"
+      pass:
+        - "$user = wp_get_current_user();"
+  - id: wp-nonce
+    what: a nonce or a referer check
+    pattern: '(?i)\b(?:wp_verify_nonce|check_admin_referer|check_ajax_referer|wp_create_nonce|wp_nonce_field|wp_nonce_url)\b'
+    fixtures:
+      fail:
+        - "check_admin_referer( 'dx_save' );"
+      pass:
+        - "save();"

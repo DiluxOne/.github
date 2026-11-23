@@ -1,0 +1,96 @@
+# The deterministic trigger for threats (#958, scripts/impact.py threats):
+# when a change or its Spec touches what one of these entries names, gate G3
+# (scripts/issue-schema.py check) needs the Spec's `Spec: threats` section
+# whatever the issue's Type, and the review checks it; otherwise nothing
+# changes. These are the organisation's; a kind adds its own under a
+# `threats:` key of its kinds/<kind>/surface.yml (add-only, as `high-risk`
+# is). It is read from the engine's checkout (.dx-central), never from a
+# pull request's head, so a change cannot alter the trigger it is judged by.
+#
+# Each entry: `id`, `what` (how G3's error and the decision name it), and
+# `paths` (globs: `**` crosses directories, `*` does not) and/or `pattern`
+# (a Python regular expression over one line: a line of the Spec, or one the
+# diff adds or removes in code; it names things like `secrets.`, never reads a
+# value). A diff's lines in a docs path (`docs-paths`, the organisation's and
+# the kind's) or a declared test (`test-first:`, read at the base, never the
+# head) are prose about the code and
+# fire only an entry with `docs: true`, as a kind's whose Markdown an agent
+# runs. `fixtures`: `fail` and `pass`, each a line of text, or
+# `{path: ...}` for a path; `python3 scripts/impact.py --test` and
+# `python3 scripts/surface.py --test` run them.
+#
+# Wide on purpose, but not loose: a trigger that fires too often makes a Bug
+# write a threats section (a cost), one that misses lets a change to who may
+# do what through with no threat model.
+threats:
+  - id: workflow
+    what: a GitHub workflow or action
+    paths: [".github/workflows/**", "**/action.yml", "**/action.yaml"]
+    fixtures:
+      fail:
+        - path: .github/workflows/x.yml
+        - path: action.yml
+        - path: tools/setup/action.yaml
+      pass:
+        - path: docs/workflows.md
+        - "The workflow page in the docs says it."
+
+  - id: secret
+    what: a secret or a token
+    pattern: '(?i)\bsecrets\.[A-Za-z_]|\b(?:GITHUB_TOKEN|GH_TOKEN|api[_-]?keys?|access[_-]?tokens?|private[_-]?keys?|client[_-]?secrets?|app[_-]?tokens?)\b'
+    fixtures:
+      fail:
+        - "TOKEN: ${{ secrets.DX_TOKEN }}"
+        - "Read the API_KEY from the environment."
+        - "GH_TOKEN: ${{ steps.bot.outputs.token }}"
+      pass:
+        - "Keep the change secretly small."
+        - "A tokenizer splits the words."
+
+  - id: permissions
+    what: permissions
+    pattern: '(?i)(?:^|[\s`{,"''])permissions\s*:|\bpermission_callback\b|\b(?:id-token|contents|pull-requests|issues|actions|packages|deployments|statuses|checks)\s*:\s*write\b|\bpull_request_target\b'
+    fixtures:
+      fail:
+        - "permissions: write-all"
+        - "  contents: write"
+        - "Run it on `pull_request_target`."
+        - "The job's `permissions:` grow."
+      pass:
+        - "Ask the maintainer for permission first."
+        - "contents: read"
+
+  - id: authentication
+    what: authentication, a password or a session
+    pattern: '(?i)authenticat|\b(?:oauth\w*|jwt|saml|password\w*|passwd|session[_ -]?(?:id|token|cookie)s?|auth[_ -]?cookies?|set-cookie|bearer)\b'
+    fixtures:
+      fail:
+        - "wp_authenticate( $user, $pass );"
+        - "The OAuth callback answers."
+        - "It stores the password hash."
+      pass:
+        - "The author of the issue is named."
+
+  - id: nonce-capability
+    what: a nonce, a CSRF check or a capability
+    pattern: '(?i)nonce|\b(?:csrf|xsrf)\b|\bcapabilit(?:y|ies)\b|\bcurrent_user_can\b|\buser_can\b|\bmap_meta_cap\b'
+    fixtures:
+      fail:
+        - "wp_verify_nonce( $n, 'dx_save' )"
+        - "Check the CSRF token."
+        - "if ( current_user_can( 'manage_options' ) )"
+      pass:
+        - "The announcement goes out once."
+
+  - id: input
+    what: a request's input or untrusted text parsed
+    pattern: '(?i)\$_(?:GET|POST|REQUEST|COOKIE|FILES|SERVER)\b|php://input|\b(?:req|request)\.(?:body|query|params|args|form|files|headers|cookies)\b|\b(?:unserialize|maybe_unserialize|pickle\.loads?|yaml\.load|marshal\.loads?)\s*\(|\bgithub\.event\.(?:issue|comment|pull_request|review|discussion)\.(?:title|body)\b|\bgithub\.head_ref\b'
+    fixtures:
+      fail:
+        - "$id = $_POST['id'];"
+        - "const q = req.query.q;"
+        - "TITLE: ${{ github.event.pull_request.title }}"
+        - "data = pickle.loads(blob)"
+      pass:
+        - "The request was answered."
+        - "conf = yaml.safe_load(fh)"

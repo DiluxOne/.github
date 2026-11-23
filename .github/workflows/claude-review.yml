@@ -528,12 +528,34 @@ jobs:
           # for the reviewer to check one by one. None when it closes no
           # issue, or several, or the issue cannot be read.
           : > "$RUNNER_TEMP/criteria.md"
+          : > "$RUNNER_TEMP/issue-body.md"
           closes=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json closingIssuesReferences --jq '[.closingIssuesReferences[].number] | select(length == 1) | .[0]' 2>/dev/null || true)
           if [ -n "$closes" ]; then
-            gh issue view "$closes" --repo "$GITHUB_REPOSITORY" --json body --jq .body 2>/dev/null \
-              | python3 .dx-central/scripts/issue-schema.py criteria > "$RUNNER_TEMP/criteria.md" || : > "$RUNNER_TEMP/criteria.md"
+            gh issue view "$closes" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/issue-body.md" 2>/dev/null || : > "$RUNNER_TEMP/issue-body.md"
+            python3 .dx-central/scripts/issue-schema.py criteria < "$RUNNER_TEMP/issue-body.md" > "$RUNNER_TEMP/criteria.md" || : > "$RUNNER_TEMP/criteria.md"
           fi
           export CRITERIA="$RUNNER_TEMP/criteria.md"
+          # #958: the impact map, built from git with no model at BASE..HEAD
+          # (scripts/impact.py, the engine's copy): the files the issue's Spec
+          # names and the diff changes, who calls them, the kind's surface and
+          # the tests. The issue's body is data in a file, never in run:. One
+          # that cannot be built leaves the brief without it.
+          IMPACT="$RUNNER_TEMP/impact.md"
+          python3 .dx-central/scripts/impact.py map --spec "$RUNNER_TEMP/issue-body.md" --base "$BASE" --head "$HEAD" --kind "${KIND:-}" > "$IMPACT" 2>/dev/null || : > "$IMPACT"
+          # The threat trigger on the Spec and the change: when it fires, why,
+          # and the Spec's threats section, for the review to check it.
+          rc=0; python3 .dx-central/scripts/impact.py threats --brief --spec "$RUNNER_TEMP/issue-body.md" --base "$BASE" --head "$HEAD" --kind "${KIND:-}" > "$RUNNER_TEMP/threats.md" 2>/dev/null || rc=$?
+          # Exit 1 fires; any other but 0 cannot tell and fails closed, as the
+          # decision does (impact.py prints its line; a fixed one if it did not).
+          # The part goes in even when the map itself could not be built.
+          if [ "$rc" -ne 0 ]; then
+            [ "$rc" -eq 1 ] || [ -s "$RUNNER_TEMP/threats.md" ] || echo "Threats required: the trigger could not tell (impact.py exit $rc); check by hand whether the change touches an input, a permission, authentication, a secret or a workflow." > "$RUNNER_TEMP/threats.md"
+            # Tested apart from the append: shellcheck refuses reading and
+            # writing one file in the same command (SC2094, actionlint).
+            if [ -s "$IMPACT" ]; then echo >> "$IMPACT"; fi
+            cat "$RUNNER_TEMP/threats.md" >> "$IMPACT"
+          fi
+          export IMPACT
           # Each file's diff as a file (#287): the reviewers have no shell.
           # #956: the security gate's result, when its artifact came.
           SECURITY="$RUNNER_TEMP/security-gate/security-gate.json"

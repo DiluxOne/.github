@@ -20,6 +20,10 @@ What counts lives in the kind's pack, as data: kinds/<kind>/surface.yml.
               repository's (#764); scripts/policy.py reads them
   files       globs (`**` crosses directories, `*` does not) of the files
               the surface is read in; `exclude` the ones never read
+  threats     the kind's part of the threat trigger (#958, scripts/impact.py
+              threats), added to policy/threats.yml: `id`, `what`, `paths`
+              and/or `pattern` (over one line), `docs: true` when its pattern
+              reads the docs and test lines of a diff too, and `fixtures`
   surface     the entries: `id`, `what` (how the message names it),
               `pattern` (a Python regular expression over a whole file, so a
               call may span lines), optionally `files` of its own, and
@@ -322,6 +326,18 @@ def self_test():
                 files = fixture_files(pack, entry, f)
                 got = sensitive_findings(one, [p for p, (b, h) in files.items() if b != h], {p: b for p, (b, h) in files.items() if b is not None}, {p: h for p, (b, h) in files.items() if h is not None})
                 ok(f"{kind}/sensitive/{eid}: pass fixture {i + 1} is not" + (f" (found {describe(got)})" if got else ""), not got)
+        # #958: the kind's part of the threat trigger, with its fixtures
+        # (scripts/impact.py reads it, add-only over policy/threats.yml).
+        ok(f"{kind}: threats is a list", isinstance(pack.get("threats", []), list))
+        if pack.get("threats"):
+            impact = _impact()
+            try:
+                entries = impact.threat_entries(kind)[len(impact.threat_entries("")):]
+            except ValueError as e:
+                ok(f"{kind}: its threats entries are well formed ({e})", False)
+                entries = []
+            for name, good in impact.fixture_problems(entries, kind):
+                ok(name, good)
     ok("a kind with no pack is refused", _raises(lambda: load_pack("no-such-kind")))
     ok("a kind that is not a name is refused", _raises(lambda: load_pack("../x")))
     ok("the organisation's docs paths are there without a kind", "*.md" in docs_paths(""))
@@ -402,6 +418,14 @@ def self_test():
     if not fail:
         print("all tests passed")
     return fail
+
+
+def _impact():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("impact", os.path.join(os.path.dirname(os.path.abspath(__file__)), "impact.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def _raises(fn):
