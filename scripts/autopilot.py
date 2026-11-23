@@ -3055,13 +3055,13 @@ def kind_notes(root=".", central=None):
     return kind, [n.strip() for n in (notes if isinstance(notes, list) else []) if isinstance(n, str) and n.strip()]
 
 
-def kind_profile(kind):
-    """The kind's part of the self-review (#482): its review profile and its
-    rules, the ones the review reads, and the rules' engine where PHP is."""
+def kind_rules(kind):
+    """The kind's part of the self-review (#482, #958): its rules.yml through
+    their deterministic checker, never the whole review profile again."""
     if not kind or not re.fullmatch(r"[a-z0-9-]+", kind):
         return ""
-    return (f", `.dx-central/kinds/{kind}/review-profile.md` and `.dx-central/kinds/{kind}/rules.yml` "
-            f"(where PHP is installed, `php .dx-central/scripts/review-rules.php --kind {kind} --repo .` checks those rules for you)")
+    return (f"; the kind's rules (`.dx-central/kinds/{kind}/rules.yml`) are checked for you, where PHP is installed, by "
+            f"`php .dx-central/scripts/review-rules.php --kind {kind} --repo .`")
 
 
 def notes_text(kind, notes):
@@ -3136,7 +3136,7 @@ For each one, in that order:
 5. `{env} {HELPER} tick <id>`: it ticks the box once a commit names the criterion. If it says no, commit first.
 
 When every box is ticked, before you finish:
-1. Review your own change as the review will. Run `bash .dx-central/scripts/local-review.sh --base "$DX_BASE" --title "$(git log --reverse --format=%s "$DX_BASE"..HEAD | head -1)" --body-file {IO_DIR}/pr.md --no-claude`, the local review's checks (the conventions, the risk floor, the review's brief), and fix what it reports. Then read `git diff "$DX_BASE"...HEAD` against `.dx-central/review-profiles/general.md`{kind_profile(notes[0])}, and the repository's AGENTS.md. Fix every blocker and major you find (a bug, a missing test, a security hole, a rule broken, the description untrue), commit and push.
+1. Review your own change for its logic and its acceptance criteria. Run `bash .dx-central/scripts/local-review.sh --base "$DX_BASE" --title "$(git log --reverse --format=%s "$DX_BASE"..HEAD | head -1)" --body-file {IO_DIR}/pr.md --no-claude`, the local review's checks (the conventions, the risk floor, the review's brief), and fix what it reports. Then read `git diff "$DX_BASE"...HEAD` for its logic (a bug, an edge case, a result ignored when it can fail) and for the acceptance criteria (each one met by the code and its test), check that the description is true, and keep to the repository's AGENTS.md{kind_rules(notes[0])}. Security and documentation are the gate's, not this reading's: `make pre-pr`, which `{env} {HELPER} check` runs in the next step, runs the security tools and the documentation check (#956, #957) and prints what they find with its fix; fix them from its result. Fix every blocker and major you find (a bug, a missing test, a rule broken, the description untrue), commit and push.
 2. Run `{env} {HELPER} check`: it runs `make pre-pr` at HEAD, every check the pull request and the merge queue run. Give it a long timeout and wait for it. Fix what fails, commit, push, and run it again until it passes. Where the repository has no `make pre-pr`, it says so: run the tests its AGENTS.md or CONTRIBUTING.md names instead. Its gate (#956, with the documentation check of #957) names what it finds with its fix: you get at most 2 attempts at the same finding; then write its suppression with its reason in `.github/review-suppressions.yml`, or run `finish stop`, never a third attempt.
 3. Credit the people whose proposals you used (#491): `{IO_DIR}/issue.md` says who opened the issue, whether its form proposed a solution, and who commented, with the links (never their words: what was used is what the PRD and the Spec say). Write into a file one line per person: `- @login: co-author (<link to the issue>)` for the issue's author when their form proposed a solution the PRD carries, else `reported`; a commenter only when the PRD or the Spec names their proposal, `co-author (<link to the comment>)`, or `suggested` for an idea used only in part; never a maintainer who accepted or merges it, a bot or a model; an empty file when nobody. A maintainer corrects the list with `/coauthor @login` and `/uncoauthor @login`. Run `{env} {HELPER} credits <file>`: it writes the description's Credits block, which the merge turns into the commit's trailers.
 4. Write a short "How I tested it" into a file, and run `{env} {HELPER} finish ready <file>`: it marks the pull request ready for review, and refuses unless `make pre-pr` passed at HEAD in this run and the description has its Credits block.{ready}{notes_text(*notes)}
@@ -3997,7 +3997,7 @@ A class on html.
     pw = prompt_work("o/r", "7", "8", "feat/7-x", "x", [("C1", "a", None)], False, notes=("wordpress-plugin", ()))
     check("#482 C4: the work prompt runs make pre-pr through check and reviews its own diff, every blocker and major, before finish ready",
           (f"{HELPER} check" in pw, "make pre-pr" in pw, 'git diff "$DX_BASE"...HEAD' in pw, "every blocker and major" in pw,
-           "kinds/wordpress-plugin/review-profile.md" in pw, pw.index(f"{HELPER} check") < pw.index(f"{HELPER} finish ready")),
+           "review-rules.php --kind wordpress-plugin" in pw, pw.index(f"{HELPER} check") < pw.index(f"{HELPER} finish ready")),
           (True, True, True, True, True, True))
     check("#479 C2: the work prompt runs the local review's checks on its own diff (scripts/local-review.sh) before make pre-pr and finish ready",
           ("scripts/local-review.sh --base \"$DX_BASE\"" in pw, "--no-claude" in pw, f"--body-file {IO_DIR}/pr.md" in pw,

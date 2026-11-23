@@ -94,8 +94,10 @@ name: Autopilot
 #
 # Before `finish ready` (#482) the agent runs the local review's checks on
 # its own diff (scripts/local-review.sh --no-claude: the conventions, the
-# risk floor, the review's brief, #479) and reviews it against the
-# review's profiles and the kind's rules, fixing every blocker and major,
+# risk floor, the review's brief, #479) and reviews it for its logic and
+# its acceptance criteria, its kind's rules through their checker (#958:
+# security and documentation are the gate's, `make pre-pr`'s result, not
+# the model's to read again), fixing every blocker and major,
 # and runs `autopilot.py check`, which runs `make pre-pr` at HEAD (every
 # check the pull request and the merge queue run, #479): `finish ready`
 # refuses a head where it did not pass in this run, where the Makefile has
