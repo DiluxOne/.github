@@ -828,7 +828,8 @@ def setup_calls(s, bodies=None):
     close), each step, and the read of the runs it triggered. Every pull
     request its cleanup closes is read first (#936: `queued`); the polls
     of one still in the merge queue, QUEUE_LEAVE / QUEUE_POLL at most per
-    cleanup, are rare and bounded in time, and not counted. Pure."""
+    `closer` (a `clear` has two, its lane sweep's and its own, #997), are
+    rare and bounded in time, and not counted. Pure."""
     sid, opens, bodies = s.get("id") or "?", s.get("opens") or {}, bodies or {}
     lands = [str(b["lands"]) for b in s.get("before") or [] if isinstance(b, dict) and "lands" in b]
     cleared = len(dict.fromkeys([f"scenario/{sid}", branch_of(s)] + [landing(sid, a) for a in (*LANDS, *lands)])) + 3
@@ -1117,9 +1118,11 @@ def lane_leftovers(repo, mark, run=gh, close=None):
 # one group, and closing one that is queued knocks the others of its group
 # out of the queue unmerged. Before `cleanup` and `clear` close a pull
 # request, they wait for it to leave the queue: a poll every QUEUE_POLL
-# seconds, QUEUE_LEAVE seconds at most per cleanup (inside PLAY_SPARE and
-# RETRY_ALLOWANCE). One still queued when the wait runs out is left open
-# (#997): the merge or the next run's `clear` settles it, and GitHub's queue
+# seconds, QUEUE_LEAVE seconds at most per `closer`: one per `cleanup`, and
+# two per `clear` (its lane sweep's and its own, #997), so a `clear` whose
+# orphan lane pull request and own pull request both stay queued waits up
+# to twice QUEUE_LEAVE. That is rare and bounded in time. One still queued
+# when the wait runs out is left open (#997): the merge or the next run's `clear` settles it, and GitHub's queue
 # drops an entry whose checks time out.
 QUEUE_LEAVE = 120
 QUEUE_POLL = 15
