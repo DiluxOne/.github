@@ -3,7 +3,8 @@ touches an input, a permission, authentication, a secret or a workflow
 (policy/threats.yml, and the kind's `threats:` in its surface.yml), G3 needs
 the `Spec: threats` section whatever the issue's Type, and says why;
 otherwise the schema is as it was. The draft's G3 passes the kind, and the
-auto-merge decision checks it again on the Spec and on the change."""
+auto-merge decision checks it again on the Spec and on the paths the change
+touches, with the organisation's entries."""
 import importlib.util
 import json
 import subprocess
@@ -140,3 +141,28 @@ def test_c3_the_review_checks_the_threats_the_trigger_asks_for():
     assert ".dx-central/scripts/impact.py threats --brief" in run, "the brief carries why, and the Spec's threats section"
     profile = (ROOT / "review-profiles" / "general.md").read_text(encoding="utf-8")
     assert "Threats required" in profile, "the general profile says how the review checks it"
+
+
+def test_c3_the_spec_prompt_names_the_trigger_when_the_prd_does_not_fire():
+    # G3 at the draft runs the trigger on the Spec: a PRD that does not fire
+    # still tells the model what makes `Spec: threats` required.
+    assert ap.prd_threats(PRD, "") == []
+    prompt = ap.prompt_spec("o/r", 7, PRD, issue_type="Bug", watch=ap.threat_watch(""))
+    assert "### Spec: threats" in prompt and "if your Spec's files or text touch" in prompt
+    assert "a GitHub workflow or action" in prompt and "a secret or a token" in prompt
+    fallback = ap.prompt_spec("o/r", 7, PRD, issue_type="Bug")
+    assert "an input, a permission, authentication, a secret or a workflow" in fallback
+    fired = ap.prompt_spec("o/r", 7, PRD, issue_type="Bug", threats=["workflow: a GitHub workflow or action, .github/workflows/x.yml"])
+    assert "required here whatever the issue's Type, because it touches workflow" in fired
+
+
+def test_c3_g7_reads_the_organisations_entries_and_the_spec_alone():
+    # auto-merge.yml's decide step exports no KIND nor THREATS: at G7 the
+    # trigger is the organisation's entries on the changed paths and on the
+    # Spec's text, and the docs say no more than that.
+    flow = (ROOT / ".github" / "workflows" / "auto-merge.yml").read_text(encoding="utf-8")
+    wired = "export KIND" in flow or "THREATS=" in flow
+    for doc in ("docs/agents.md", "kinds/README.md"):
+        text = (ROOT / doc).read_text(encoding="utf-8")
+        assert wired or "again at the auto-merge decision" not in text, doc
+        assert wired or "not by the auto-merge decision" in text or "nor the diff's lines" in text, doc

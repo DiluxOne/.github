@@ -2946,7 +2946,12 @@ def spec_answer(answer):
 THREATS_PHASE = "\n   ### Spec: threats  (a short STRIDE over its data, permissions and inputs: each threat and what stops it)"
 
 
-def prompt_spec(repo, number, prd_text, ev=None, issue_type="", mode="full", answered="", answer="", threats=()):
+# What the threat trigger watches (policy/threats.yml's `what`s), when the
+# trigger's entries cannot be read for the Spec's prompt.
+THREAT_WATCH = ("an input, a permission, authentication, a secret or a workflow",)
+
+
+def prompt_spec(repo, number, prd_text, ev=None, issue_type="", mode="full", answered="", answer="", threats=(), watch=()):
     # A feature's phases (#193), before any code: what it touches and can
     # break, its threats, where it goes. G3 refuses a Feature's Spec without them.
     phases = ("\n   ### Spec: impact  (what it touches, sibling code that does the same, what it can break)"
@@ -2958,6 +2963,11 @@ def prompt_spec(repo, number, prd_text, ev=None, issue_type="", mode="full", ans
     if threats and issue_type != "Feature":
         phases = (THREATS_PHASE[:-1] + "; required here whatever the issue's Type, because it touches "
                   + "; ".join(threats)[:300] + ")")
+    elif issue_type != "Feature":
+        # G3 runs the trigger on the Spec itself: a Spec whose files or text
+        # touch one of these needs its threats though the PRD did not.
+        phases = (THREATS_PHASE[:-1] + "; required whatever the issue's Type if your Spec's files or text touch "
+                  + "; ".join(watch or THREAT_WATCH)[:300] + ": G3 refuses the Spec without it then, otherwise leave it out)")
     who = f"which the `{REPRO}` lane of the autonomy policy accepted" if ev else "which a maintainer accepted"
     # #734: the "Test first" check runs each test at the base, from the
     # paths the repository declares (`test-first:`, scripts/test-first.py).
@@ -2984,6 +2994,16 @@ Do not create a branch, commit or open a pull request: the workflow opens the dr
 {NO_KEY}
 
 {FOREGROUND}"""
+
+
+def threat_watch(kind):
+    """What the threat trigger watches (#958), each entry's `what`, the
+    organisation's and the kind's, for the Spec's prompt; () when it cannot
+    be read (the prompt names THREAT_WATCH; G3 still checks the Spec)."""
+    try:
+        return tuple(dict.fromkeys(e["what"] for e, _, _ in _load("impact", "impact.py").threat_entries(kind)))
+    except Exception:  # noqa: BLE001  the prompt goes on; G3 decides
+        return ()
 
 
 def prd_threats(prd_text, kind):
@@ -7410,9 +7430,9 @@ def main(argv):
         print(why)
         return 0 if ok else 2 if no_way and why == no_way else 1
     if argv[:2] == ["prompt", "spec"]:
-        prd = schema.part_text(body, "prd")
+        prd, kind = schema.part_text(body, "prd"), kind_notes()[0]
         print(prompt_spec(repo, number, prd, ev, os.environ.get("ISSUE_TYPE", ""), mode_of(pol), read_file_env("SETTLED"),
-                          read_file_env("ANSWERS"), prd_threats(prd, kind_notes()[0])))
+                          read_file_env("ANSWERS"), prd_threats(prd, kind), threat_watch(kind)))
         return 0
     if argv[:2] == ["prompt", "work"]:
         info = pr_json(repo, pr, "body")
