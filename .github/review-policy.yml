@@ -146,3 +146,12 @@ test-first:
       # gate G7 waits on for a criterion's test (scripts/autopilot.py).
       check: "Scripts (self-tests)"
   not-tests: ["tests/release/**", "tests/**/fixtures/**", "scripts/fixtures/**", "tests/examples/**", "evals/**"]
+
+# The docs map (#957, scripts/docs-check.py): the documentation check of the
+# security gate asks a change to one of `paths` to change one of `docs` too,
+# unless the description's What changes says why not (`Docs: none, <why>`).
+# Read at the merge base, so a pull request cannot drop its own entry; a
+# kind's pack can hold the same key for all its repositories.
+docs-map:
+  - paths: ["scripts/security-gate.py", "scripts/docs-check.py", "policy/security-gate.yml"]
+    docs: ["docs/testing-and-quality.md", "docs/configuration.md"]

@@ -9,7 +9,9 @@ request's check (.github/workflows/security-gate.yml) and for the review's
 brief (review-brief.sh SECURITY=). What it runs (the tools pinned to a
 version and a SHA-256, the rules, the severities, the caps) is data in
 policy/security-gate.yml; a kind adds rules or excludes paths in its pack's
-`security:` key. No kind is named here.
+`security:` key. No kind is named here. It also runs the documentation
+check (#957, scripts/docs-check.py): its findings (`tool: docs`) are the
+gate's own, under the same setting, caps, suppressions and attempts.
 
 Each finding is one of:
   new           on a line the change adds or modifies; for osv-scanner, a

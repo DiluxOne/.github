@@ -124,8 +124,8 @@ files:
       repo: never
       limit: "`off`, `report` or `block`; the tools, rules and levels are policy/security-gate.yml's"
       read-by: [scripts/security-gate.py]
-      issue: "#956"
-      says: "What the security gate does with what it finds: `off` runs nothing, `report` shows it, `block` fails on a new critical or high finding."
+      issue: "#956, #957"
+      says: "What the security gate, its documentation check included, does with what it finds: `off` runs nothing, `report` shows it, `block` fails on a new critical or high finding."
     - key: test-repo
       identity: true
       default: "`<org lowercased>-test`"
@@ -355,6 +355,14 @@ files:
   # .github/review-policy.yml is laid over it, lists added, values replaced,
   # within the limits each says.
   policy/review-policy.default.yml:
+    - key: docs-map
+      default: []
+      org: never
+      repo: any
+      limit: "`{paths: [glob], docs: [path or glob]}` entries, read at the merge base, so a pull request cannot drop its own; added after the kind's"
+      read-by: [scripts/docs-check.py]
+      issue: "#957"
+      says: The docs the documentation check asks to change with a path of the repository.
     - key: trusted-authors
       org: any
       repo: any
@@ -549,6 +557,14 @@ files:
       read-by: [scripts/security-gate.py]
       issue: "#956"
       says: What the kind adds to the security gate, and what it leaves out.
+    - key: docs-map
+      default: []
+      org: any
+      repo: never
+      limit: "`{paths: [glob], docs: [path or glob]}` entries, read at the merge base; the repository's own `docs-map` (.github/review-policy.yml) is added after them"
+      read-by: [scripts/docs-check.py]
+      issue: "#957"
+      says: The docs the documentation check asks to change with a path of the kind's repositories.
     - key: battery-needs
       org: any
       repo: never
