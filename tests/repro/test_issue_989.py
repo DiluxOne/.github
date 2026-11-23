@@ -100,3 +100,18 @@ def test_a_dependabot_pull_request_is_read_on_its_own_and_the_run_succeeds(tmp_p
     assert done.returncode == 0, done.stdout + done.stderr
     assert pull_reads(calls) == ["7"], "the Dependabot pull request is not read on its own"
     assert "#7" not in "".join(l for l in done.stdout.splitlines() if l.startswith(("::warning::", "::error::")))
+
+
+def test_an_unreadable_pull_request_is_left_out_with_a_warning_and_the_run_goes_on(tmp_path):
+    # #8 is refused like GitHub refuses it; #9 is a person's, with changes
+    # requested 10 days ago: its reminder (at 7) is due, its close (at 14) not.
+    person = node(9, "ana", "User", changes=True, created="2026-11-10T09:00:00Z")
+    done, calls = run_daily(tmp_path, [node(8, "dependabot[bot]", "Bot"), person], unreadable=[8])
+    assert done.returncode == 0, done.stdout + done.stderr
+    warnings = [l for l in done.stdout.splitlines() if l.startswith("::warning::")]
+    assert any("#8" in l for l in warnings), f"no warning names the pull request that could not be read: {done.stdout}"
+    assert any("commits" in l for l in warnings if "#8" in l), "the warning does not name the field GitHub refused"
+    assert "::error::" not in done.stdout
+    reminded = [c for c in calls if c[:3] == ["pr", "comment", "9"]]
+    assert reminded and "a reminder" in reminded[0][-1], "the other pull request's reminder is not posted"
+    assert any(c[:3] == ["issue", "comment", "5"] and "### o/r" in c[-1] for c in calls), "the daily list is not written"

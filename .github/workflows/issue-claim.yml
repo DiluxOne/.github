@@ -53,7 +53,10 @@ name: Issue claims
 #                   closed with thanks at 14 (one that waits on a review is
 #                   listed as waiting on the maintainer, its author's clock
 #                   stopped); and the daily list, one comment per repository
-#                   on the organisation's open `run:claims` issue.
+#                   on the organisation's open `run:claims` issue. Each
+#                   open pull request is read on its own; one GitHub will
+#                   not show the token is left out with a warning naming it
+#                   and the field refused, and never fails the run (#989).
 #
 # Every release ends in the autopilot's start (the `autopilot` job): a
 # released claim, a stalled pull request closed, an adopted one. A claimed
