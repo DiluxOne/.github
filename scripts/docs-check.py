@@ -232,8 +232,8 @@ def removed(repo, base, changes, conf, errors):
                 before[c] |= ids
         if st != "D":
             text = show(repo, "HEAD", new)
-            if text is None:
-                errors.append(f"docs check: {new} could not be read at HEAD")
+            if text is None and not git(repo, "ls-tree", "HEAD", "--", new, check=False).startswith("160000 "):
+                errors.append(f"docs check: {clean(new, 120)} could not be read at HEAD, so nothing read its names")
             for c, ids in identifiers(new, text).items():
                 after[c] |= ids
     minimum = int(conf.get("min-length") or 4)
@@ -244,7 +244,7 @@ def removed(repo, base, changes, conf, errors):
                 gone[name] = (c, "")
     if gone:
         # Still in the head's tree, in the same class: not removed.
-        files = head_files_naming(repo, list(gone), docs)
+        files = head_files_naming(repo, list(gone), docs, errors)
         still = {c: set() for c in CLASSES}
         for path in files:
             for c, ids in identifiers(path, show(repo, "HEAD", path)).items():
@@ -257,16 +257,24 @@ def removed(repo, base, changes, conf, errors):
     return gone
 
 
-def head_files_naming(repo, names, docs):
+def grep(repo, args, names, errors):
+    """`git grep ARGS` at HEAD for any of NAMES (fixed strings): its output,
+    "" for no match; a grep that failed is an error, never nothing found."""
+    argv = ["git", "-C", repo, "grep", "-I", "-F", "-z", *args]
+    for n in names:
+        argv += ["-e", n]
+    got = subprocess.run(argv + ["HEAD", "--"], capture_output=True, text=True)
+    if got.returncode > 1:
+        errors.append(f"docs check: git grep failed ({clean(got.stderr, 200)})")
+    return got.stdout if got.returncode == 0 else ""
+
+
+def head_files_naming(repo, names, docs, errors):
     """The files at HEAD, docs left out, whose text has one of NAMES."""
     if not names:
         return []
-    args = ["grep", "-l", "-I", "-F", "-z"]
-    for n in names:
-        args += ["-e", n]
-    got = subprocess.run(["git", "-C", repo, *args, "HEAD", "--"], capture_output=True, text=True)
     out = []
-    for item in got.stdout.split("\0"):
+    for item in grep(repo, ["-l"], names, errors).split("\0"):
         path = item[len("HEAD:"):] if item.startswith("HEAD:") else item
         if path and not pol.matches(path, docs):
             out.append(path)
@@ -302,17 +310,13 @@ def stale_findings(gone, lines, severity):
     return out
 
 
-def searched_lines(repo, names, conf):
+def searched_lines(repo, names, conf, errors):
     """{(path, n): text} of the docs' lines and the workflow headers' lines
     at HEAD that have one of NAMES."""
     if not names:
         return {}
-    args = ["grep", "-n", "-I", "-F", "-z"]
-    for n in names:
-        args += ["-e", n]
-    got = subprocess.run(["git", "-C", repo, *args, "HEAD", "--"], capture_output=True, text=True)
     out, headers = {}, {}
-    for rec in got.stdout.split("\n"):
+    for rec in grep(repo, ["-n"], names, errors).split("\n"):
         parts = rec.split("\0")
         if len(parts) < 3:
             continue
@@ -400,7 +404,7 @@ def check(repo, base, conf=None, body=None):
     errors = []
     changes = name_status(repo, base)
     gone = removed(repo, base, changes, conf, errors)
-    findings = stale_findings(gone, searched_lines(repo, list(gone), conf), str(conf["severity"]))
+    findings = stale_findings(gone, searched_lines(repo, list(gone), conf, errors), str(conf["severity"]))
     why = exemption(body)
     if not why:
         changed = sorted({p for _, old, new in changes for p in (old, new)})

@@ -339,3 +339,28 @@ def test_c4_two_attempts_at_a_docs_finding_then_a_suppression_or_finish_stop_and
     assert again.returncode != 0 and "finish stop" in again.stdout, again.stdout
     assert "Docs: none, <why>" in again.stdout and "pr.md" in again.stdout, again.stdout
     assert attempts.helper(mapped, env, io2, "push").returncode != 0
+
+
+def check_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("docs_check_t", CHECK)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_a_changed_submodule_is_no_error_and_a_failed_grep_is_one(tmp_path):
+    mod = check_module()
+    env = dict(gate.os.environ, GIT_CONFIG_GLOBAL="/dev/null", GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
+               GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+    repo = tmp_path / "r"
+    repo.mkdir()
+    gate.git(repo, env, "init", "-q", "-b", "main")
+    gate.git(repo, env, "commit", "-q", "--allow-empty", "-m", "base")
+    sha = gate.git(repo, env, "rev-parse", "HEAD").strip()
+    gate.git(repo, env, "update-index", "--add", "--cacheinfo", f"160000,{sha},vendor/lib")
+    gate.git(repo, env, "commit", "-qm", "a submodule")
+    got = mod.check(str(repo), "HEAD~1", None, None)
+    assert got["errors"] == [] and got["findings"] == [], got
+    errors = []
+    assert mod.grep(str(tmp_path / "not-a-repo"), ["-l"], ["--some-flag"], errors) == "" and errors, errors
