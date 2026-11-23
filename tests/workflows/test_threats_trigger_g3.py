@@ -7,6 +7,7 @@ auto-merge decision checks it again on the Spec and on the paths the change
 touches, with the organisation's entries."""
 import importlib.util
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -214,3 +215,32 @@ def test_c3_the_profile_needs_no_section_when_there_is_no_spec():
     profile = (ROOT / "review-profiles" / "general.md").read_text(encoding="utf-8")
     assert "there is no Spec to read it from" in profile and "there is no\n   section to miss" in profile
     assert "There is no Spec to read it from" in (ROOT / "scripts" / "impact.py").read_text(encoding="utf-8")
+
+
+def test_c3_the_threats_part_never_reads_and_writes_the_map_in_one_command(tmp_path):
+    # `{ [ -s "$IMPACT" ] && echo; cat ...; } >> "$IMPACT"` is shellcheck's
+    # SC2094, which fails actionlint (#974, round 2): the test of the map and
+    # the append are two commands. A map with lines keeps them, then a blank
+    # line, then the threats part.
+    flow = yaml.safe_load((ROOT / ".github" / "workflows" / "claude-review.yml").read_text(encoding="utf-8"))
+    run = next(s["run"] for s in flow["jobs"]["review"]["steps"] if "review-brief.sh" in str(s.get("run", "")))
+    local = (ROOT / "scripts" / "local-review.sh").read_text(encoding="utf-8")
+    for name, snippet, var in (("claude-review.yml", _threats_snippet(run), "IMPACT"), ("local-review.sh", _threats_snippet(local), "impact")):
+        for line in snippet.splitlines():
+            head, appends, _ = line.partition(f'>> "${var}"')
+            if appends and not head.lstrip().startswith("if "):
+                assert f'"${var}"' not in head, f"{name}: one command reads and appends to the map: {line.strip()}"
+        if shutil.which("shellcheck"):
+            checked = subprocess.run(["shellcheck", "-s", "bash", "-i", "SC2094", "-"], input=snippet, capture_output=True, text=True)
+            assert checked.returncode == 0, f"{name}: {checked.stdout}"
+        stub = tmp_path / name / ".dx-central" / "scripts"
+        stub.mkdir(parents=True)
+        (stub / "impact.py").write_text("import sys\nprint('Threats required: workflow: w', end='')\nsys.exit(1)\n", encoding="utf-8")
+        work = tmp_path / name / "work"
+        work.mkdir()
+        impact = work / "impact.md"
+        impact.write_text("the map\n", encoding="utf-8")
+        env = {"PATH": "/usr/bin:/bin", "RUNNER_TEMP": str(work), "IMPACT": str(impact), "impact": str(impact), "work": str(work),
+               "CENTRAL": str(tmp_path / name / ".dx-central"), "BASE": "a", "HEAD": "b", "kind": "", "KIND": ""}
+        subprocess.run(["bash", "-euo", "pipefail", "-c", snippet.replace("python3 ", f"{sys.executable} ").replace('"$CENTRAL/scripts/impact.py"', ".dx-central/scripts/impact.py")], cwd=tmp_path / name, env=env, check=True)
+        assert impact.read_text(encoding="utf-8") == "the map\n\nThreats required: workflow: w", name
