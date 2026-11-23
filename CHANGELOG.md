@@ -2,11 +2,25 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
+## [7.23.0](https://github.com/DiluxOne/.github/releases/tag/v7.23.0) · 2026-11-23
+
+### Features
+
+- an impact map and a threats trigger before the code ([#974](https://github.com/DiluxOne/.github/pull/974))
+
+### Fixes
+
+- release scenario high-risk-waits fails ([#982](https://github.com/DiluxOne/.github/pull/982))
+
 ## [7.22.1](https://github.com/DiluxOne/.github/releases/tag/v7.22.1) · 2026-11-23
 
 ### Fixes
 
 - a failed "Test first" check starts no fix round ([#973](https://github.com/DiluxOne/.github/pull/973))
+
+### Maintenance
+
+- release v7.22.1 ([#976](https://github.com/DiluxOne/.github/pull/976))
 
 ## [7.22.0](https://github.com/DiluxOne/.github/releases/tag/v7.22.0) · 2026-11-23
 
