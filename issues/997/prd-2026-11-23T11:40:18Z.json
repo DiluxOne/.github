@@ -1,0 +1,9 @@
+{
+  "kind": "prd-seal",
+  "issue": 997,
+  "prd_sha256": "748c869b37580631c0b95237271c2afdd621b81112a22d18adaf676eeda27913",
+  "prd": "### Problem\n\nThe release candidate v7.23.1 fails the release scenario `low-risk-merges` in what the engine did: its `until` or `expect` did not hold, or could no longer hold, so the lane releases nothing and `v7` stays where it is.\nReproduced by: https://github.com/DiluxOne/.github/actions/runs/45162885895 scenario `low-risk-merges`.\n\n### Scope\n\n- The cause of the failure above, in the engine, fixed with a test that would have caught it.\n\n### Out of scope\n\n- Changing the gates or what they check.\n\n### Acceptance criteria\n\n- C1: Given v7.23.1's candidate with the fix, when the release lane plays `low-risk-merges` in the test repository, then it passes and the lane releases it.\n\n### Criticality\n\nCritical",
+  "accepted_by": "policy (lane bugfix-reproduced)",
+  "at": "2026-11-23T11:40:18Z",
+  "policy": "DiluxOne/.github@c55ddf71745d"
+}
