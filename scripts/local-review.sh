@@ -259,12 +259,16 @@ security="$(git rev-parse --git-dir)/dx-review/security-gate.json"
 if [ ! -f "$security" ] || [ "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("head", ""))' "$security" 2>/dev/null)" != "$(git rev-parse "$HEAD")" ]; then
   security=''
 fi
+# #958: the impact map of the change, from the diff alone (there is no
+# issue's Spec before the pull request), as the review's brief carries it.
+impact="$work/impact.md"
+python3 "$CENTRAL/scripts/impact.py" map --base "$BASE" --head "$HEAD" --kind "$kind" > "$impact" 2>/dev/null || : > "$impact"
 # owner/name from the origin remote, or the directory's name without one.
 repo=$(git remote get-url origin 2>/dev/null | sed -E 's#(\.git)?$##; s#.*[:/]([^/]+/[^/]+)$#\1#' || true)
 REPO=${repo:-$(basename "$(git rev-parse --show-toplevel)")} \
   TITLE=$title BODY=$body BASE=$BASE HEAD=$HEAD FLOOR=$floor REASONS=$reasons PROFILE=$profile KIND=$kind \
   MODE=$mode RANGE="$last..$HEAD" LAST=$last PREVIOUS_JSON=$last_json \
-  SECURITY=$security CENTRAL=$CENTRAL WORK=$work OUT="$work/brief.md" bash "$CENTRAL/scripts/review-brief.sh"
+  SECURITY=$security IMPACT=$impact CENTRAL=$CENTRAL WORK=$work OUT="$work/brief.md" bash "$CENTRAL/scripts/review-brief.sh"
 echo "$work/brief.md: $(head -1 "$work/brief.md")"
 
 if [ "$use_claude" -eq 0 ]; then
