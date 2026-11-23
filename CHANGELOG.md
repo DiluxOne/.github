@@ -2,6 +2,16 @@
 
 Every version of the engine (the workflows, scripts, policy and kinds other repositories call), newest first, built from git by `scripts/changelog.py`: what merged in it, by type. What a major, a minor and a patch mean for whoever calls these workflows is in [docs/versioning.md](docs/versioning.md).
 
+## [7.23.1](https://github.com/DiluxOne/.github/releases/tag/v7.23.1) · 2026-11-23
+
+### Fixes
+
+- release scenario low-risk-merges fails ([#999](https://github.com/DiluxOne/.github/pull/999))
+- the schema check reads a Mermaid arrow in code as a hidden comment ([#992](https://github.com/DiluxOne/.github/pull/992))
+- the review stops before examining every file, inside its limits ([#988](https://github.com/DiluxOne/.github/pull/988))
+- each release run leaves a reproduced bug's pull request open ([#987](https://github.com/DiluxOne/.github/pull/987))
+- the Claims daily run fails when a Dependabot pull request is open ([#990](https://github.com/DiluxOne/.github/pull/990))
+
 ## [7.23.0](https://github.com/DiluxOne/.github/releases/tag/v7.23.0) · 2026-11-23
 
 ### Features
@@ -11,6 +21,10 @@ Every version of the engine (the workflows, scripts, policy and kinds other repo
 ### Fixes
 
 - release scenario high-risk-waits fails ([#982](https://github.com/DiluxOne/.github/pull/982))
+
+### Maintenance
+
+- release v7.23.0 ([#984](https://github.com/DiluxOne/.github/pull/984))
 
 ## [7.22.1](https://github.com/DiluxOne/.github/releases/tag/v7.22.1) · 2026-11-23
 
