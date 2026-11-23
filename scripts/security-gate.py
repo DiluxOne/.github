@@ -80,7 +80,9 @@ LOCKFILES = {"package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock
              "conan.lock", "renv.lock", "bun.lock", "deno.lock"}
 WORKFLOW_RE = re.compile(r"^(?:\.github/workflows/[^/]+|(?:.*/)?action)\.ya?ml$")
 CLASSES = ("leaked secrets, the OWASP Top 10 patterns its Semgrep rules cover, dependencies with known "
-           "vulnerabilities and unsafe GitHub workflows")
+           "vulnerabilities and unsafe GitHub workflows; its documentation check (#957, scripts/docs-check.py) also checked for "
+           "docs and workflow header comments that still name what the change removed or renamed, and for the docs the map ties to "
+           "a changed path that did not change (whether a text explains well is still yours to judge)")
 
 
 def load_policy(path=POLICY):

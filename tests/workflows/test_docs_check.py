@@ -269,3 +269,73 @@ def test_c3_autopilot_check_gives_make_pre_pr_the_description_it_writes(tmp_path
     told = attempts.helper(repo, env, io, "check")
     assert told.returncode == 0, told.stdout + told.stderr
     assert "(Docs: none): the refactor keeps the API" in told.stdout
+
+
+# --- C4: the gate's setting decides, as for a security finding ---------------
+
+def test_c4_report_block_and_off_treat_a_docs_finding_as_the_gate_treats_its_own(tmp_path):
+    assert CHECK.is_file(), "scripts/docs-check.py is the documentation check"
+    cent = gate.central(tmp_path, "report")
+    env = gate.environment(tmp_path, cent)
+    repo = gate.scratch(tmp_path, env, None, base_files(), renamed())
+    report = run_gate(repo, env, "report")
+    assert report.returncode == 0 and "README.md:3 docs/stale-name (docs, new)" in report.stdout, report.stdout
+    assert "Documentation check: 6 stale name(s)" in report.stdout, report.stdout
+    block = run_gate(repo, env, "block")
+    assert block.returncode == 1 and "(it fails the gate)" in block.stdout and "docs/stale-name" in block.stdout, block.stdout
+    (repo / ".git" / "gate.json").unlink()
+    off = run_gate(repo, env, "off")
+    assert off.returncode == 0 and "nothing runs" in off.stdout and "- [" not in off.stdout, off.stdout
+    assert not (repo / ".git" / "gate.json").exists()
+    # The review's brief says the gate checked the docs, so it does not hunt for them again.
+    mod = gate.gate_module()
+    text = mod.brief({"mode": "report", "findings": [], "blocking": [], "docs": {"exempt": ""}})
+    assert "still name what the change removed or renamed" in text and "docs the map ties to a changed path" in text, text
+
+
+def test_c4_45_docs_findings_keep_the_30_first_and_15_more_within_8_kb(tmp_path):
+    many = [{"tool": "docs", "rule": "docs/stale-name", "file": f"docs/page-{i:02}.md", "line": i + 1, "severity": "high",
+             "status": "new", "fingerprint": f"{i:012x}", "message": "Still names the flag --" + "x" * 30 + ", which the change removed.",
+             "fix": "Update or remove the mention: " + "y" * 40} for i in range(45)]
+    path = tmp_path / "gate.json"
+    path.write_text(json.dumps({"mode": "report", "findings": many, "blocking": [], "caps": {"findings": 30, "bytes": 8192},
+                                "docs": {"exempt": ""}}))
+    out = subprocess.run([sys.executable, str(GATE), "report", str(path)], capture_output=True, text=True, check=True).stdout
+    shown = [line for line in out.splitlines() if line.startswith("- [")]
+    assert len(out.encode("utf-8")) <= 8192 and len(shown) == 30 and "15 more not shown" in out, out
+    assert [re.search(r"page-(\d+)", line).group(1) for line in shown] == [f"{i:02}" for i in range(30)]
+
+
+def attempts_at_two(tmp_path, env, repo, rule, ap):
+    """DX_IO with the marker's count at 2 for the first `new` finding of RULE."""
+    run_gate(repo, env, "report")
+    result = json.loads((repo / ".git" / "gate.json").read_text())
+    f = next(f for f in result["findings"] if f["rule"] == rule and f["status"] == "new")
+    io = tmp_path / ("io-" + rule.replace("/", "-"))
+    io.mkdir()
+    (io / ap.ATTEMPTS).write_text(json.dumps({"counts": {ap.finding_key(f): 2}}))
+    return io, f
+
+
+def test_c4_two_attempts_at_a_docs_finding_then_a_suppression_or_finish_stop_and_push_refuses(tmp_path):
+    assert CHECK.is_file(), "scripts/docs-check.py is the documentation check"
+    import test_security_gate_attempts as attempts
+    ap = attempts.autopilot()
+    cent = gate.central(tmp_path, "report")
+    env = gate.environment(tmp_path, cent)
+    repo = gate.scratch(tmp_path, env, None, base_files(), renamed())
+    io, f = attempts_at_two(tmp_path, env, repo, "docs/stale-name", ap)
+    third = attempts.helper(repo, env, io, "check")
+    out = third.stdout + third.stderr
+    assert third.returncode != 0, out
+    assert "The gate still finds these after 2 attempts" in out and "The security gate still" not in out, out
+    assert ".github/review-suppressions.yml" in out and "finish stop" in out and f"rule: docs/stale-name, file: {f['file']}" in out, out
+    pushed = attempts.helper(repo, env, io, "push")
+    assert pushed.returncode != 0 and "third attempt" in pushed.stdout, pushed.stdout
+    # A docs/map finding's way out also names `Docs: none, <why>` in pr.md.
+    mapped = map_repo(tmp_path, env, MAP, {"src/a.py": "x = 2\n"}, where="mapped")
+    io2, _ = attempts_at_two(tmp_path, env, mapped, "docs/map", ap)
+    again = attempts.helper(mapped, env, io2, "check")
+    assert again.returncode != 0 and "finish stop" in again.stdout, again.stdout
+    assert "Docs: none, <why>" in again.stdout and "pr.md" in again.stdout, again.stdout
+    assert attempts.helper(mapped, env, io2, "push").returncode != 0
