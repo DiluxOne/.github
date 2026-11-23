@@ -1028,8 +1028,10 @@ def lane_of(repo, report, run=gh):
     engine opened from issue `report` (#985): labelled
     `lane:bugfix-reproduced` (listed, never searched) and titled exactly
     "The bug reproduced from #<report>", compared as a number, so #12 never
-    matches #120. A read that fails finds none."""
+    matches #120. A read that fails, or a `report` that is no number, finds
+    none."""
     try:
+        report = int(report)
         found = json.loads(run("issue", "list", "--repo", repo, "--state", "open", "--label", "lane:bugfix-reproduced",
                                "--json", "number,title", "--limit", "50") or "[]")
     except (RuntimeError, ValueError):
@@ -1037,7 +1039,7 @@ def lane_of(repo, report, run=gh):
     out = []
     for item in found if isinstance(found, list) else []:
         m = LANE_ISSUE.match(str(item.get("title") or "")) if isinstance(item, dict) else None
-        if m and int(m.group(1)) == int(report) and isinstance(item.get("number"), int):
+        if m and int(m.group(1)) == report and isinstance(item.get("number"), int):
             out.append(item["number"])
     return out
 
@@ -3659,6 +3661,7 @@ def self_test():
     check("#985 lane_of: compared as a number, #12 never matches #120",
           lane_of("o/t", "12", lambda *a, input=None: json.dumps([{"number": 1, "title": "The bug reproduced from #120"}, {"number": 2, "title": "The bug reproduced from #12"}])), [2])
     check("#985 lane_of: a read that fails finds none", lane_of("o/t", "5", lambda *a, input=None: "not json"), [])
+    check("#985 lane_of: a report that is no number finds none", lane_of("o/t", "x", lambda *a, input=None: "[]"), [])
     check("#784 cleanup: a view that is not JSON never hides a result", cleanup("o/t", [("issue", "5")], lambda *a, input=None: "not json"), None)
 
     def vfake(answer):
