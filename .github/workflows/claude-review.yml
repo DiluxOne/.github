@@ -1166,6 +1166,11 @@ jobs:
           # a review that did not finish, never a clean one. A `central-ref`
           # older than the script, or a brief with no list, checks nothing.
           shown="$RUNNER_TEMP/shown-files.txt" examined=""
+          # #986: how many times the review continued (the whole step, or
+          # the answer an automatic re-run reused).
+          k=${CONTINUATIONS:-$(jq -r '.continuations // 0' <<<"$OUT" 2>/dev/null || echo 0)}
+          case "$k" in ''|*[!0-9]*) k=0;; esac
+          rounds=""; if [ "$k" -gt 0 ]; then rounds=" in 1 + $k continuation$([ "$k" = 1 ] || echo s)"; fi
           if [ -f .dx-central/scripts/review-examined.py ] && [ -f "$shown" ]; then
             printf '%s' "$OUT" > "$RUNNER_TEMP/review-examined.json"
             left=$(python3 .dx-central/scripts/review-examined.py missing "$RUNNER_TEMP/review-examined.json" "$shown") && got=0 || got=$?
@@ -1178,7 +1183,7 @@ jobs:
               # shellcheck disable=SC2016 # sed's end of line, not a shell expression.
               names=$(head -20 <<<"$left" | sed 's/^/- `/; s/$/`/')
               if [ "$n" -gt 20 ]; then names=$(printf '%s\n- and %s more' "$names" "$((n - 20))"); fi
-              post "$(printf '<!-- dx-review -->\n### Claude review · did not finish\n\nThe reviewer answered at %s without examining every changed file, so this pull request is treated as high risk and blocked. Not examined:\n\n%s\n\nRe-run the job; the log is in [the run](%s).\n<!-- dx-review-record %s -->' "${SHA:0:7}" "$names" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$keep")"
+              post "$(printf '<!-- dx-review -->\n### Claude review · did not finish\n\nThe reviewer answered at %s without examining every changed file%s, so this pull request is treated as high risk and blocked. Not examined:\n\n%s\n\nRe-run the job; the log is in [the run](%s).\n<!-- dx-review-record %s -->' "${SHA:0:7}" "${rounds:+, after $k continuation$([ "$k" = 1 ] || echo s)}" "$names" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$keep")"
               exit 1
             elif [ "$got" -eq 0 ]; then
               examined=$(grep -c . "$shown" || true)

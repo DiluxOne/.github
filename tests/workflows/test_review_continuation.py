@@ -201,3 +201,33 @@ def test_c1_the_task_and_whole_steps_run(tmp_path):
     assert [e["file"] for e in whole["examined"]] == SHOWN
     assert ran.output["continuations"] == "1"
     assert ran.output["turns"] == "23" and ran.output["cost"] == "0.68", ran.output
+
+
+# C2 ------------------------------------------------------------------------
+
+def test_c2_next_stops_when_the_limits_are_reached_or_no_answer_came(tmp_path):
+    first = answer(tmp_path, "a0.json", dict(CLEAN, examined=[{"file": "a.py", "checked": "x"}]))
+    out = nxt(tmp_path, [first], [log(tmp_path, "l0.json", 0.5, 60)])
+    assert (out["go"], out["turns"], out["prompt"]) == ("false", "0", ""), out
+    out = nxt(tmp_path, [first], [log(tmp_path, "l0.json", 2.97, 20)])
+    assert (out["go"], out["budget"]) == ("false", "0.03"), out
+    # The last continuation gave no structured answer.
+    none = answer(tmp_path, "a1.json", "")
+    out = nxt(tmp_path, [first, none], [log(tmp_path, "l0.json", 0.3, 10), log(tmp_path, "l1.json", 0.1, 3, session="")])
+    assert out["go"] == "false", out
+    # A session that is not a UUID never reaches --resume.
+    out = nxt(tmp_path, [first], [log(tmp_path, "l0.json", 0.3, 10, session="--dangerously-skip-permissions")])
+    assert (out["go"], out["session"]) == ("false", ""), out
+
+
+def test_c2_the_merged_answer_that_still_misses_files_did_not_finish(tmp_path):
+    first = answer(tmp_path, "a0.json", dict(CLEAN, examined=[{"file": "a.py", "checked": "x"}]))
+    more = answer(tmp_path, "a1.json", dict(CLEAN, examined=[{"file": "lib/b.py", "checked": "y"}]))
+    whole = merge(first, more)
+    ran = verdict(tmp_path, whole, CONTINUATIONS="1")
+    body = posted(ran)
+    assert "did not finish" in body, body
+    assert "`docs/c.md`" in body and "`lib/b.py`" not in body
+    assert "after 1 continuation" in body
+    assert ran.output.get("blocking") == "true" and ran.output.get("risk") == "high", ran.output
+    assert ran.code == 1
