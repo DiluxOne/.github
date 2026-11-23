@@ -460,6 +460,12 @@ def gh(*args, input_text=None, check=True):
     return out.stdout
 
 
+def gh_run(*args):
+    """gh's exit code, stdout and stderr, for a caller that judges them."""
+    out = subprocess.run(["gh"] + list(args), capture_output=True, text=True)
+    return out.returncode, out.stdout, out.stderr
+
+
 def gh_json(*args):
     text = gh(*args)
     return json.loads(text) if text.strip() else None
@@ -779,13 +785,44 @@ def on_pull_request(repo, event, cfg, when):
 
 PRS_QUERY = """query($q: String!) {
   search(query: $q, type: ISSUE, first: 100) {
-    nodes { ... on PullRequest { number createdAt reviewDecision author { __typename login }
+    nodes { ... on PullRequest { number } }
+  }
+}"""
+
+PR_QUERY = """query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) { number createdAt reviewDecision author { __typename login }
       latestReviews(first: 20) { nodes { state submittedAt } }
       commits(last: 1) { nodes { commit { committedDate authors(first: 5) { nodes { user { login } } } statusCheckRollup { state } } } }
       closingIssuesReferences(first: 5) { nodes { number } }
-      comments(last: 50) { nodes { author { login } body } } } }
+      comments(last: 50) { nodes { author { login } body } } }
   }
 }"""
+
+
+class Unreadable(Exception):
+    """A pull request GitHub refuses to read with this token: GitHub's
+    message and the path of the field it refused."""
+
+
+def read_pull(repo, number, run=None):
+    """One open pull request, read on its own (#989), so one GitHub cannot
+    read never takes the others with it: Unreadable when gh fails, the
+    answer has errors, or the pull request is null."""
+    owner, name = repo.split("/", 1)
+    code, out, err = (run or gh_run)("api", "graphql", "-f", f"query={PR_QUERY}", "-F", f"owner={owner}", "-F", f"name={name}", "-F", f"number={number}")
+    try:
+        data = json.loads(out) if out.strip() else {}
+    except ValueError:
+        data = {}
+    data = data if isinstance(data, dict) else {}
+    pr = ((data.get("data") or {}).get("repository") or {}).get("pullRequest")
+    errors = [e for e in data.get("errors") or [] if isinstance(e, dict)]
+    if code != 0 or errors or not pr:
+        said = [f"{e.get('message') or e.get('type') or 'refused'} (at {'.'.join(str(p) for p in e.get('path') or []) or '?'})" for e in errors]
+        said = said or [err.strip() or "GitHub returned no pull request"]
+        raise Unreadable(" ".join("; ".join(said).split())[:300])
+    return pr
 
 
 def daily(repo, cfg, when):
@@ -799,8 +836,18 @@ def daily(repo, cfg, when):
             print(f"::warning::#{n}: {str(err)[:300]}")
             failed.append(n)
     data = gh_json("api", "graphql", "-f", f"query={PRS_QUERY}", "-F", f"q=repo:{repo} is:pr is:open")
-    for pr in ((data or {}).get("data") or {}).get("search", {}).get("nodes") or []:
+    for found in ((data or {}).get("data") or {}).get("search", {}).get("nodes") or []:
+        if not (found or {}).get("number"):
+            continue
+        pr = found
         try:
+            try:
+                pr = read_pull(repo, found["number"])
+            except Unreadable as err:
+                # Left out, never counted in `failed`: one pull request
+                # GitHub will not show this token does not fail the run.
+                print(f"::warning::#{found['number']} could not be read, left out today: {err}")
+                continue
             start += daily_pull(repo, pr, cfg, when, waiting)
         except (RuntimeError, OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as err:
             print(f"::warning::#{(pr or {}).get('number')}: {str(err)[:300]}")
@@ -1155,6 +1202,23 @@ def self_test():
     close, why = pr_limit("ana", others, cfg)
     check("3a a third open pull request is closed, linking the other two", (close, all(u in why for u in others)), (True, True))
     check("3a a second is not", pr_limit("ana", others[:1], cfg), (False, ""))
+    # #989: one pull request GitHub refuses is Unreadable, naming the field.
+    refused = json.dumps({"data": {"repository": {"pullRequest": None}},
+                          "errors": [{"type": "FORBIDDEN", "path": ["repository", "pullRequest", "commits"], "message": "Resource not accessible by integration"}]})
+    try:
+        read_pull("o/r", 8, run=lambda *a: (1, refused, "gh: Resource not accessible by integration"))
+        check("#989 a refused read raises Unreadable", "returned", "raised")
+    except Unreadable as err:
+        check("#989 a refused read raises Unreadable, naming GitHub's message and the path",
+              ("Resource not accessible" in str(err), "repository.pullRequest.commits" in str(err)), (True, True))
+    try:
+        read_pull("o/r", 8, run=lambda *a: (1, "", "gh: HTTP 502"))
+        check("#989 a failed gh raises Unreadable", "returned", "raised")
+    except Unreadable as err:
+        check("#989 a failed gh raises Unreadable with its stderr", "HTTP 502" in str(err), True)
+    readable = {"number": 9, "author": {"__typename": "User", "login": "ana"}}
+    check("#989 a readable pull request is returned",
+          read_pull("o/r", 9, run=lambda *a: (0, json.dumps({"data": {"repository": {"pullRequest": readable}}}), "")), readable)
     if not failed:
         print("all tests passed")
     return failed
