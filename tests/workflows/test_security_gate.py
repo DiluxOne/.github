@@ -394,6 +394,23 @@ def test_added_files_with_a_space_or_a_non_ascii_name_are_scanned(tmp_path):
         assert (tmp_path / "head" / name).read_text() == "one\ntwo\n"
 
 
+def test_an_added_line_that_starts_with_plus_plus_is_not_read_as_a_file_header(tmp_path):
+    mod = gate_module()
+    env = dict(os.environ, GIT_CONFIG_GLOBAL="/dev/null", GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t",
+               GIT_COMMITTER_EMAIL="t@t")
+    repo = tmp_path / "r"
+    repo.mkdir()
+    git(repo, env, "init", "-q", "-b", "main")
+    (repo / "a.c").write_text("one\n-- two\nthree\nfour\nfive\nsix\n", encoding="utf-8")
+    git(repo, env, "add", "-A")
+    git(repo, env, "commit", "-qm", "base")
+    (repo / "a.c").write_text("one\n++ b/elsewhere.c\nthree\nfour\nfive\nsix\nseven\n", encoding="utf-8")
+    git(repo, env, "commit", "-qam", "change")
+    diff = git(repo, env, "diff", "-U0", "--no-color", "--no-ext-diff", "HEAD~1", "HEAD")
+    assert "\n--- two\n+++ b/elsewhere.c\n" in diff
+    assert mod.added_lines(diff) == {"a.c": {2, 7}}
+
+
 def test_a_changed_file_that_cannot_be_read_fails_the_gate_loudly(tmp_path, monkeypatch):
     cent = central(tmp_path, "block")
     env = environment(tmp_path, cent)

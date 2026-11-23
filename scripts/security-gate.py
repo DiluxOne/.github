@@ -271,7 +271,7 @@ def default_base(repo, env=os.environ):
     raise SystemExit("security-gate: no base to compare with (origin/HEAD, origin/main or main): pass --base REF")
 
 
-HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 
 ESCAPES = {"a": 7, "b": 8, "f": 12, "n": 10, "r": 13, "t": 9, "v": 11, "\\": 92, '"': 34}
@@ -300,9 +300,17 @@ def diff_name(name):
 
 def added_lines(diff):
     """{path: set(line)} of the lines a `git diff -U0` adds or modifies, by
-    their number at the head; a deleted file is left out. Pure."""
-    out, path = {}, None
+    their number at the head; a deleted file is left out. A hunk's own lines
+    are counted off its header, so an added "++ x" (shown "+++ x") or a
+    removed "-- x" is never read as a file's header. Pure."""
+    out, path, left = {}, None, 0
     for line in diff.splitlines():
+        if left > 0 and line[:1] in ("+", "-", " "):
+            left -= 1
+            continue
+        if left > 0 and line.startswith("\\"):
+            continue
+        left = 0
         if line.startswith("+++ "):
             name = diff_name(line[4:])
             path = None if name == "/dev/null" else (name[2:] if name.startswith("b/") else name)
@@ -310,9 +318,11 @@ def added_lines(diff):
                 out.setdefault(path, set())
             continue
         m = HUNK.match(line)
-        if m and path is not None:
-            start, count = int(m.group(1)), int(m.group(2) if m.group(2) is not None else 1)
-            out[path].update(range(start, start + count))
+        if m:
+            start, count = int(m.group(3)), int(m.group(4) if m.group(4) is not None else 1)
+            left = int(m.group(2) if m.group(2) is not None else 1) + count
+            if path is not None:
+                out[path].update(range(start, start + count))
     return out
 
 
@@ -862,6 +872,10 @@ def self_test():
     quoted = "--- /dev/null\n+++ b/a b.py\t\n@@ -0,0 +1 @@\n+x\n--- /dev/null\n+++ \"b/\\303\\251 \\\"q\\\".py\"\n@@ -0,0 +1 @@\n+y\n"
     check("a name with a space (git appends a tab) or quoted with octal bytes is the file's own",
           added_lines(quoted), {"a b.py": {1}, 'é "q".py': {1}})
+    plus = ("--- a/a.c\n+++ b/a.c\n@@ -2 +2 @@\n--- two\n\\ No newline at end of file\n+++ b/x.c\n@@ -9,0 +9 @@\n+s\n"
+            "--- a/b.c\n+++ b/b.c\n@@ -0,0 +1 @@\n+t\n")
+    check("an added '++ ' or removed '-- ' line inside a hunk is no file's header",
+          added_lines(plus), {"a.c": {2, 9}, "b.c": {1}})
     check("each tool is told to ignore the tree's config and inline ignores",
           ("useDefault = true" in GITLEAKS_CONFIG, HELD), (True, (".semgrepignore",)))
     check("Semgrep's dependencies: one pip call, hashes required, wheels only, nothing resolved",
