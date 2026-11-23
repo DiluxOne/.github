@@ -214,6 +214,10 @@ jobs:
           permission-issues: write
           permission-pull-requests: write
           permission-actions: read # the reproduction's run, which the lane checks
+          # A pull request's statusCheckRollup rolls up its head's check runs
+          # and commit statuses; without these GitHub refuses the read (#989).
+          permission-checks: read
+          permission-statuses: read
 
       - name: The organisation's scripts and policy
         env:
