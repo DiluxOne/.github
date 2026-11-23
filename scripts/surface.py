@@ -22,7 +22,8 @@ What counts lives in the kind's pack, as data: kinds/<kind>/surface.yml.
               the surface is read in; `exclude` the ones never read
   threats     the kind's part of the threat trigger (#958, scripts/impact.py
               threats), added to policy/threats.yml: `id`, `what`, `paths`
-              and/or `pattern` (over one line), and `fixtures`
+              and/or `pattern` (over one line), `docs: true` when its pattern
+              reads the docs and test lines of a diff too, and `fixtures`
   surface     the entries: `id`, `what` (how the message names it),
               `pattern` (a Python regular expression over a whole file, so a
               call may span lines), optionally `files` of its own, and

@@ -45,13 +45,16 @@ that match a path or an identifier pattern are kept.
         tell", so that the brief fails closed as the decision does. The entries are the
         organisation's (policy/threats.yml) and the kind's (`threats:` in
         kinds/<kind>/surface.yml, add-only), read from this checkout of the
-        engine, never from the change's head: on a Spec, the paths its
-        `Spec: files` names and its text, line by line; on a change, the
-        paths it changes and the lines its diff adds or removes
+        engine, never from the change's head: on a Spec (the issue body's
+        Spec sections, as G3 reads them), the paths its `Spec: files` names
+        and its text, line by line; on a change, the paths it changes and
+        the lines its diff adds or removes in code, never in a docs path or
+        a declared test (but for an entry with `docs: true`)
   impact.py kind       the kind the repository in the working directory
                        declares, or nothing
   impact.py --test     self-test, on scratch repositories
 """
+import fnmatch
 import importlib.util
 import os
 import re
@@ -350,7 +353,7 @@ def render(parts, limit=LIMIT):
     for key, title, rows in sections:
         for i, line in enumerate([title] + rows + [""]):
             n = len(line.encode("utf-8")) + 1
-            if key in cut or size + n > limit - reserve:
+            if cut or size + n > limit - reserve:
                 if line and i > 0:
                     cut[key] = cut.get(key, 0) + 1
                 elif i == 0:
@@ -429,23 +432,70 @@ def on_text(text, kind="", entries=None):
 
 def diff_lines(patch):
     """The lines a unified diff adds or removes, never its file headers. Pure."""
-    out, in_hunk = [], False
+    return [line for _, line in diff_file_lines(patch)]
+
+
+def diff_file_lines(patch):
+    """[(path, line)] of the lines a unified diff adds or removes, each with
+    the file it is in (its `+++ b/` name, or `--- a/` for a file deleted; a
+    name git quotes stays quoted, so it matches no prose glob and counts as
+    code). Pure."""
+    out, in_hunk, path = [], False, ""
     for line in (patch or "").splitlines():
         if line.startswith("diff --git "):
-            in_hunk = False
+            in_hunk, path = False, ""
+        elif not in_hunk and line.startswith("--- a/"):
+            path = line[6:]
+        elif not in_hunk and line.startswith("+++ b/"):
+            path = line[6:]
         elif line.startswith("@@"):
             in_hunk = True
         elif in_hunk and line[:1] in ("+", "-"):
-            out.append(line[1:])
+            out.append((path, line[1:]))
     return out
 
 
-def on_change(root, base, head, kind="", entries=None):
+def spec_part(text):
+    """The Spec sections of an issue's body, from its first `### Spec: `
+    heading to the end, as G3 and the decision read them (autopilot.py
+    spec_of); "" when it has none. Pure."""
+    m = SPEC_HEAD.search(text or "")
+    return text[m.start():] if m else ""
+
+
+def prose_globs(kind=""):
+    """The docs-paths (the organisation's and the kind's, shell `case`
+    globs: `*` crosses directories) whose lines are prose, not code."""
+    return surface.docs_paths(kind)
+
+
+def is_prose(path, docs, tests):
+    """Whether PATH is prose or a test, whose diff lines do not fire an
+    entry that does not ask for them (`docs: true`): a docs path, or a
+    declared test path. Pure."""
+    return path in tests or any(fnmatch.fnmatchcase(path, g) for g in docs)
+
+
+def on_change(root, base, head, kind="", entries=None, repo=""):
     """The trigger on a change: the paths it changes, and the lines its diff
-    adds or removes."""
+    adds or removes in code. A line of a docs path (the organisation's and
+    the kind's `docs-paths`) or of a declared test (`test-first:`) is prose
+    about the code, not the code, and fires only an entry with `docs: true`
+    (a kind whose Markdown is what an agent runs): the review's trigger then
+    fires on no more than what the code does, as G3 at the draft reads the
+    Spec alone (#974)."""
     entries = threat_entries(kind) if entries is None else entries
     changed, patch, _ = changed_files(root, base, head)
-    return threat_hits(entries, changed, diff_lines(patch))
+    pairs = diff_file_lines(patch)
+    docs = prose_globs(kind)
+    tf, decl = declaration(root, repo, head or "HEAD")
+    tests = {p for p, _ in tf.tests_of(decl, sorted({p for p, _ in pairs}))} if decl else set()
+    every = [line for _, line in pairs]
+    code = [line for p, line in pairs if not is_prose(p, docs, tests)]
+    out = []
+    for e in entries:
+        out += threat_hits([e], changed, every if e[0].get("docs") else code)
+    return out
 
 
 def brief_lines(spec, hits):
@@ -564,7 +614,32 @@ def self_test():
         got = on_change(d, mid, "HEAD", "wordpress-plugin")
         ok(f"a change: a workflow it adds, an input a line reads ({got})",
            any(h.startswith("workflow:") for h in got) and any(h.startswith("input:") for h in got) and any(h.startswith("wp-input:") for h in got))
+        mid = git(d, "rev-parse", "HEAD").stdout.strip()
+        write("docs/auth.md", "The access_token expires; the password is never logged.\n")
+        write("README.md", "Set GH_TOKEN and `permissions:` as the docs say.\n")
+        write("tests/Unit/AuthTest.php", "<?php\n$_POST['password'] = 'x';\n")
+        sh("add", "-A")
+        sh("commit", "-qm", "prose")
+        ok("a change: docs and declared tests that name a token fire nothing (#974)",
+           on_change(d, mid, "HEAD", "wordpress-plugin") == [])
+        doc_entry = ({"id": "d", "what": "w", "docs": True}, [], re.compile("access_token"))
+        ok("a change: an entry with docs: true reads the docs' lines too",
+           on_change(d, mid, "HEAD", entries=[doc_entry]) == ['d: w, "access_token"'])
+        write("app.php", "<?php\n$t = $access_token;\n")
+        sh("add", "-A")
+        sh("commit", "-qm", "code")
+        ok("a change: the same word in code fires", any(h.startswith("secret:") for h in on_change(d, mid, "HEAD", "wordpress-plugin")))
         ok("the kind is the repository's", main_kind(d) == "wordpress-plugin")
+    ok("a diff's lines with their files, a deleted one by its old name",
+       diff_file_lines("diff --git a/x b/x\n--- a/x\n+++ /dev/null\n@@ -1 +0,0 @@\n--- a/y\n"
+                       "diff --git a/z b/z\n--- /dev/null\n+++ b/z\n@@ -0,0 +1 @@\n+new\n") == [("x", "-- a/y"), ("z", "new")])
+    ok("prose: a docs glob crosses directories, a declared test is one, code is not",
+       is_prose("docs/a/b.md", ["*.md"], set()) and is_prose("t/x.php", [], {"t/x.php"}) and not is_prose("src/a.py", ["*.md"], set()))
+    ok("the Spec part of an issue body, the PRD left out",
+       spec_part("## PRD\n\nThe password page.\n\n### Spec: files\n\n- `a.py`\n") == "### Spec: files\n\n- `a.py`\n" and spec_part("## PRD\n\nx\n") == "")
+    late = render({"files": ["src/" + "a" * 90 + f"{i:03d}.py" for i in range(45)], "surface": [], "tests": {}, "callers": [("`n`", ["c.py"])], "kind": ""})
+    ok("once a section is cut, no later one goes in, not even its title",
+       "Who calls" not in late and "files, 1 line(s) of callers" in late.splitlines()[-1])
     ok("the brief's lines: why, and the Spec's threats as they stand",
        brief_lines("### Spec: files\n\n- x\n\n### Spec: threats\n\n- Tampering: none.\n", ["workflow: w, x"])
        == "Threats required: workflow: w, x\n\nThe Spec's threats section, as it stands:\n\n- Tampering: none.")
@@ -612,12 +687,13 @@ def main(argv):
         print("impact.py: --base and --head go together", file=sys.stderr)
         return 64
     if argv[0] == "threats":
+        repo = (opts.get("repo") or os.environ.get("GITHUB_REPOSITORY") or "").split("/")[-1]
         try:
             kind = opts.get("kind") if opts.get("kind") is not None else repo_kind(".")
             entries = threat_entries(kind)
-            hits = on_text(spec, entries=entries) if spec else []
+            hits = on_text(spec_part(spec), entries=entries) if spec_part(spec) else []
             if opts.get("base"):
-                hits += [h for h in on_change(".", opts["base"], opts["head"], entries=entries) if h not in hits]
+                hits += [h for h in on_change(".", opts["base"], opts["head"], kind, entries, repo) if h not in hits]
         except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as e:
             print(f"impact.py: {e}", file=sys.stderr)
             if brief:

@@ -38,6 +38,9 @@ threats:
         - path: README.md
   - id: agent-permissions
     what: the tools or permissions an agent, a skill or a command is allowed
+    # A skill's Markdown is what the agent runs: its lines fire this too,
+    # though skills/*.md are docs-paths.
+    docs: true
     pattern: '(?i)\b(?:allowed-tools|allowedTools|disallowedTools|bypassPermissions|dangerously-skip-permissions|permissionMode)\b'
     fixtures:
       fail:
