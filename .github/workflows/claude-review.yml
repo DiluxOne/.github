@@ -32,9 +32,15 @@ name: Claude review
 #      and returns a structured verdict; it posts nothing. It goes over every
 #      changed file of the diff hunk by hunk, asking what each change can
 #      break, and its verdict says for each changed file the brief showed
-#      what it checked (`examined`, #953): an answer that leaves one out is
-#      a review that did not finish (scripts/review-examined.py), blocked as
-#      one, never a clean review. A second agent, in
+#      what it checked (`examined`, #953). An answer that leaves one out,
+#      with turns and budget left, continues in the same session (#986,
+#      `--resume`) with only the files it left out, at most three times,
+#      all the rounds within the 60 turns and the policy's budget; the
+#      answers are merged into one verdict (scripts/review-examined.py
+#      `next` and `merge`), and the summary says how many continuations it
+#      took, its cost theirs too. One that still leaves a file out is a
+#      review that did not finish, blocked as one, never a clean review.
+#      A second agent, in
 #      a fresh context, checks each new blocker and major against the code
 #      (#234, scripts/review-verify.py): one it rejects stays in the summary
 #      as a minor marked not confirmed, and in the record; the workflow posts
@@ -1239,16 +1245,25 @@ jobs:
           jq -r --slurpfile open "$RUNNER_TEMP/open-threads.json" '.resolved_threads[] | select(. as $id | $open[0] | map(.id) | index($id))' <<<"$OUT" > "$RUNNER_TEMP/resolve.txt"
           echo "$(wc -l < "$RUNNER_TEMP/resolve.txt") of the bot's earlier threads to resolve."
 
-          # What the run cost, from Claude Code's execution log.
+          # What the run cost, from Claude Code's execution logs: the review's,
+          # its continuations' (#986) and the verifier's (#234), summed.
           cost=""; turns=""
           if [ -n "$EXECUTION_FILE" ] && [ -f "$EXECUTION_FILE" ]; then
-            cost=$(jq -r '[.[] | select(.type == "result")] | last | .total_cost_usd // empty' "$EXECUTION_FILE" 2>/dev/null || true)
-            turns=$(jq -r '[.[] | select(.type == "result")] | last | .num_turns // empty' "$EXECUTION_FILE" 2>/dev/null || true)
-          fi
-          # The verifier's spend counts too (#234).
-          if [ -n "$cost" ] && [ -n "${VERIFY_EXECUTION_FILE:-}" ] && [ -f "$VERIFY_EXECUTION_FILE" ]; then
-            vcost=$(jq -r '[.[] | select(.type == "result")] | last | .total_cost_usd // 0' "$VERIFY_EXECUTION_FILE" 2>/dev/null || echo 0)
-            cost=$(python3 -c 'import sys; print(float(sys.argv[1]) + float(sys.argv[2] or 0))' "$cost" "${vcost:-0}" 2>/dev/null || echo "$cost")
+            logs=("$EXECUTION_FILE")
+            for f in "${MORE1_EXECUTION_FILE:-}" "${MORE2_EXECUTION_FILE:-}" "${MORE3_EXECUTION_FILE:-}"; do
+              if [ -n "$f" ] && [ -f "$f" ]; then logs+=("$f"); fi
+            done
+            last='[.[] | select(.type == "result")] | last'
+            cost=$(jq -r "$last | .total_cost_usd // empty" "$EXECUTION_FILE" 2>/dev/null || true)
+            turns=$(jq -s -r "[.[] | $last | .num_turns // 0] | add" "${logs[@]}" 2>/dev/null || true)
+            if [ -n "$cost" ]; then
+              more=$(jq -s -r "[.[] | $last | .total_cost_usd // 0] | add" "${logs[@]}" 2>/dev/null || echo "$cost")
+              vcost=0
+              if [ -n "${VERIFY_EXECUTION_FILE:-}" ] && [ -f "$VERIFY_EXECUTION_FILE" ]; then
+                vcost=$(jq -r "$last | .total_cost_usd // 0" "$VERIFY_EXECUTION_FILE" 2>/dev/null || echo 0)
+              fi
+              cost=$(python3 -c 'import sys; print(round(float(sys.argv[1]) + float(sys.argv[2] or 0), 6))' "$more" "${vcost:-0}" 2>/dev/null || echo "$cost")
+            fi
           fi
           spent=""; if [ -n "$cost" ]; then spent=$(printf ' · $%.2f, %s turns' "$cost" "${turns:-?}"); fi
           count=$((COUNT + 1))
@@ -1266,11 +1281,12 @@ jobs:
           # will come) from one still to run on a new commit.
           # #928 C4: the record's `blocking` is the one decided above, the
           # heading's and the step's, never the model's own boolean.
-          record=$(jq -c --arg risk "$risk" --arg floor "$FLOOR" --arg sha "$SHA" --arg model "$MODEL" --arg mode "$MODE" --argjson count "$count" --argjson max "${MAX_AUTO:-5}" --arg cost "${cost:-}" --argjson files "$files" --arg type "$type" --arg text "$text" --argjson blocking "$blocking" --argjson examined "${examined:-null}" \
-            '{risk:$risk, model_risk:.risk, floor:$floor, complexity, blocking:$blocking, type:$type, description_matches:.description_matches, text:$text, lessons, findings:[.findings[] | del(.detail)], verification:(.verification // null), criteria:(.criteria // []), sha:$sha, model:$model, mode:$mode, count:$count, max:$max, cost:$cost, files:$files} + (if $examined == null then {} else {examined:$examined} end)' <<<"$OUT")
+          record=$(jq -c --arg risk "$risk" --arg floor "$FLOOR" --arg sha "$SHA" --arg model "$MODEL" --arg mode "$MODE" --argjson count "$count" --argjson max "${MAX_AUTO:-5}" --arg cost "${cost:-}" --argjson files "$files" --arg type "$type" --arg text "$text" --argjson blocking "$blocking" --argjson examined "${examined:-null}" --argjson k "$k" \
+            '{risk:$risk, model_risk:.risk, floor:$floor, complexity, blocking:$blocking, type:$type, description_matches:.description_matches, text:$text, lessons, findings:[.findings[] | del(.detail)], verification:(.verification // null), criteria:(.criteria // []), sha:$sha, model:$model, mode:$mode, count:$count, max:$max, cost:$cost, files:$files} + (if $examined == null then {} else {examined:$examined} end) + (if $k > 0 then {continuations:$k} else {} end)' <<<"$OUT")
           # #953: how many of the changed files the review examined (all of
           # them, or it did not finish above); the list stays out.
-          seen=""; if [ -n "$examined" ]; then seen=$'\n\n'"<sub>Examined $examined of $examined changed files.</sub>"; fi
+          seen=""; if [ -n "$examined" ]; then seen=$'\n\n'"<sub>Examined $examined of $examined changed files$rounds.</sub>"
+          elif [ -n "$rounds" ]; then seen=$'\n\n'"<sub>Reviewed$rounds.</sub>"; fi
           body=$(cat <<EOF
           <!-- dx-review -->
           ### Claude review · risk **$risk** · complexity **$complexity** · type **$type**$blk
@@ -1407,12 +1423,19 @@ jobs:
         if: always()
         env:
           EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+          MORE1_EXECUTION_FILE: ${{ steps.more1.outputs.execution_file }}
+          MORE2_EXECUTION_FILE: ${{ steps.more2.outputs.execution_file }}
+          MORE3_EXECUTION_FILE: ${{ steps.more3.outputs.execution_file }}
           VERIFY_EXECUTION_FILE: ${{ steps.verify.outputs.execution_file }}
           REUSED: ${{ steps.reuse.outputs.hit }}
         run: |
           [ -f .dx-central/scripts/model-cache.py ] || exit 0
           args=()
           [ -z "$EXECUTION_FILE" ] || args+=(--log "Review=$EXECUTION_FILE")
+          # #986: each continuation of the review.
+          [ -z "$MORE1_EXECUTION_FILE" ] || args+=(--log "Review, continued 1=$MORE1_EXECUTION_FILE")
+          [ -z "$MORE2_EXECUTION_FILE" ] || args+=(--log "Review, continued 2=$MORE2_EXECUTION_FILE")
+          [ -z "$MORE3_EXECUTION_FILE" ] || args+=(--log "Review, continued 3=$MORE3_EXECUTION_FILE")
           [ -z "$VERIFY_EXECUTION_FILE" ] || args+=(--log "Verify=$VERIFY_EXECUTION_FILE")
           [ "$REUSED" != true ] || args+=(--reused)
           python3 .dx-central/scripts/model-cache.py summary --title "The review's cost" --started "${DX_STARTED:-}" "${args[@]}" >> "$GITHUB_STEP_SUMMARY" || true

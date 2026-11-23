@@ -231,3 +231,27 @@ def test_c2_the_merged_answer_that_still_misses_files_did_not_finish(tmp_path):
     assert "after 1 continuation" in body
     assert ran.output.get("blocking") == "true" and ran.output.get("risk") == "high", ran.output
     assert ran.code == 1
+
+
+# C3 ------------------------------------------------------------------------
+
+def test_c3_the_summary_says_how_many_continuations_and_the_total_cost(tmp_path):
+    out = dict(CLEAN, examined=[{"file": f, "checked": "x"} for f in SHOWN], continuations=2)
+    ran = verdict(tmp_path, out, CONTINUATIONS="2",
+                  EXECUTION_FILE=log(tmp_path, "l0.json", 0.28, 13),
+                  MORE1_EXECUTION_FILE=log(tmp_path, "l1.json", 0.40, 10),
+                  MORE2_EXECUTION_FILE=log(tmp_path, "l2.json", 0.12, 5),
+                  VERIFY_EXECUTION_FILE=log(tmp_path, "v.json", 0.10, 4))
+    body = posted(ran)
+    assert ran.code == 0, ran.stderr[-1500:]
+    assert "Examined 3 of 3 changed files in 1 + 2 continuations" in body, body
+    assert "$0.90, 28 turns" in body, body
+    record = json.loads(re.search(r"<!-- dx-review-record (.*?) -->", body).group(1))
+    assert record["continuations"] == 2 and record["cost"] == "0.9", record
+
+
+def test_c3_the_runs_cost_counts_each_continuation():
+    s = step(WORKFLOW, "The run's cost")
+    for i in (1, 2, 3):
+        assert s["env"][f"MORE{i}_EXECUTION_FILE"] == f"${{{{ steps.more{i}.outputs.execution_file }}}}"
+    assert 'Review, continued' in s["run"]
