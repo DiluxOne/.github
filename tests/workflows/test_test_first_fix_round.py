@@ -94,3 +94,15 @@ def test_with_rounds_left_the_board_names_the_fix_round_and_no_maintainer():
         assert waiting.blocker(pr, rounds=3) == (waiting.FIX_ROUND, waiting.AUTOPILOT), repo
         board = waiting.waits_of(pr, ["boss"])
         assert board["what"] == "the autopilot's fix round" and "who" not in board, (repo, board)
+
+
+def test_with_the_rounds_spent_the_board_hands_it_to_the_maintainer_as_for_conventions():
+    for repo in ("DiluxOne/.github", "DiluxOne/other"):
+        cap = waiting.rounds_cap()  # policy/autonomy.yml's autopilot-rounds, which the board reads
+        pr = failed_test_first(["autopilot", f"autopilot:round-{cap}"], repo)
+        assert waiting.blocker(pr) == (waiting.ROUNDS_SPENT, waiting.MAINTAINER), repo
+        board = waiting.waits_of(pr, ["boss"])
+        assert board["who"] == ["boss"] and "still fail after the autopilot's rounds" in board["what"], (repo, board)
+        conventions = __import__("copy").deepcopy(pr)
+        conventions["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"][0]["name"] = "conventions / Conventions"
+        assert waiting.blocker(conventions) == waiting.blocker(pr), repo
