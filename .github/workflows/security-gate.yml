@@ -10,7 +10,11 @@ name: Security gate
 # does is org.yml `security-gate`: `off` runs nothing, `report` shows the
 # findings and passes, `block` fails on a new critical or high one. A
 # finding on a line the pull request did not touch is pre-existing and never
-# fails it.
+# fails it. The same gate runs the documentation check (#957,
+# scripts/docs-check.py): docs and workflow header comments that still name
+# what the pull request removed or renamed, and the docs its `docs-map` ties
+# to a changed path that did not change, unless the description's What
+# changes says why (`Docs: none, <why>`).
 #
 # A fork's pull request too, so it runs on `pull_request` only, with a
 # read-only token not kept in the checkout and no secret: the gate's script
@@ -68,10 +72,15 @@ jobs:
         id: gate
         # Under `report` it passes whatever it finds; under `block` it
         # fails on a new critical or high finding. The report goes to the
-        # log and to the job summary.
+        # log and to the job summary. The description, untrusted, reaches
+        # it through env: and a file, read only for `Docs: none, <why>`.
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           set -o pipefail
-          python3 .dx-central/scripts/security-gate.py run --base HEAD^1 --json "$RUNNER_TEMP/security-gate.json" | tee -a "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
+          python3 .dx-central/scripts/security-gate.py run --base HEAD^1 --json "$RUNNER_TEMP/security-gate.json" \
+            --body-file "$RUNNER_TEMP/pr-body.md" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Keep the result for the review
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

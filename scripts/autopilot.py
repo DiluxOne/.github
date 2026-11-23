@@ -5534,15 +5534,16 @@ def stop_group(proc, grace=20):
             continue
 
 
-def make_pre_pr(left, log=None):
+def make_pre_pr(left, log=None, env=None):
     """`make pre-pr` in a process group of its own, its output to the
     terminal or to the file log: its exit code, or TIMEOUT once it runs past
-    left seconds (None: no limit), its whole group then stopped (#673)."""
+    left seconds (None: no limit), its whole group then stopped (#673).
+    ENV (None: this process's) is its environment."""
     if left is not None and left <= 0:
         return TIMEOUT
     out = open(log, "w", encoding="utf-8") if log else None
     try:
-        proc = subprocess.Popen(["make", "pre-pr"], stdout=out, stderr=subprocess.STDOUT if out else None, start_new_session=True)
+        proc = subprocess.Popen(["make", "pre-pr"], stdout=out, stderr=subprocess.STDOUT if out else None, start_new_session=True, env=env)
         try:
             return proc.wait(timeout=left)
         except subprocess.TimeoutExpired:
@@ -5566,6 +5567,17 @@ def timeout_note(head, mode):
                     "after your step and marks the pull request ready only if it passes; if it fails, the next run brings you its output.")
 
 
+def prepr_env(io, env=None):
+    """The environment of `check`'s `make pre-pr`: DX_PR_BODY is the
+    description the agent writes (DX_IO/pr.md), whose What changes the
+    gate's documentation check reads for `Docs: none, <why>` (#957)."""
+    env = dict(os.environ if env is None else env)
+    body = os.path.join(io, "pr.md") if io else ""
+    if body and os.path.isfile(body):
+        env["DX_PR_BODY"] = os.path.abspath(body)
+    return env
+
+
 def run_pre_pr(io):
     """`check`: `make pre-pr` at HEAD, as committed, in the foreground; its
     head and exit code kept for `finish ready`. Up to the work step's
@@ -5584,7 +5596,7 @@ def run_pre_pr(io):
     gate_json = gate_result_path()
     if os.path.exists(gate_json):
         os.remove(gate_json)
-    rc = make_pre_pr(time_left(os.environ.get(DEADLINE_ENV, ""), time.time()))
+    rc = make_pre_pr(time_left(os.environ.get(DEADLINE_ENV, ""), time.time()), env=prepr_env(io))
     # #956 C4: the security gate's findings, attempt by attempt.
     try:
         with open(gate_json, encoding="utf-8") as fh:
@@ -6469,7 +6481,7 @@ def main(argv):
                     fh.write("This repository has no `make pre-pr`.\n")
             else:
                 print(f"Running `make pre-pr` at {head[:7]} in full (#673).", flush=True)
-                rc = make_pre_pr(time_left(os.environ.get(DEADLINE_ENV, ""), time.time()), log)
+                rc = make_pre_pr(time_left(os.environ.get(DEADLINE_ENV, ""), time.time()), log, env=prepr_env(os.environ.get(IO_ENV, "")))
             with open(result_file, "w", encoding="utf-8") as fh:
                 json.dump({"head": head, "rc": rc}, fh)
             return 0

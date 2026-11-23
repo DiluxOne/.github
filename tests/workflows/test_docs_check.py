@@ -186,3 +186,86 @@ def test_c2_a_repository_of_no_kind_uses_its_own_map_read_at_the_merge_base(tmp_
     edited = map_repo(tmp_path, env, MAP, {"src/a.py": "x = 2\n", "docs/api.md": "# API 2\n"}, where="edited")
     run_gate(edited, env, "report")
     assert map_findings(edited) == []
+
+
+# --- C3: the description says why no doc needed changing --------------------
+
+def body(what, after=""):
+    return f"## 📝 What changes\n\n{what}\n\n## 💡 Why\n\nCloses #1.{after}\n"
+
+
+def test_c3_docs_none_with_a_why_in_what_changes_passes_the_map_and_the_why_is_in_the_json(tmp_path):
+    assert CHECK.is_file(), "scripts/docs-check.py is the documentation check"
+    cent = gate.central(tmp_path, "block")
+    env = gate.environment(tmp_path, cent)
+    repo = map_repo(tmp_path, env, MAP, {"src/a.py": "x = 2\n"})
+    good = tmp_path / "good.md"
+    good.write_text(body("A refactor of src/a.py.\n\n- Docs: none, the refactor keeps the API"))
+    ran = run_gate(repo, env, "block", "--body-file", str(good))
+    assert ran.returncode == 0, ran.stdout + ran.stderr
+    result, _ = docs_findings(repo)
+    assert map_findings(repo) == []
+    assert result["docs"]["exempt"] == "the refactor keeps the API"
+    assert "(Docs: none): the refactor keeps the API" in ran.stdout, ran.stdout
+    # The same through DX_PR_BODY, as `make pre-pr` reads it.
+    via_env = subprocess.run([sys.executable, str(cent / "scripts" / "security-gate.py"), "run", "--mode", "block", "--base", "main",
+                              "--json", str(repo / ".git" / "gate.json")], cwd=repo, env=dict(env, DX_PR_BODY=str(good)),
+                             capture_output=True, text=True, timeout=600)
+    assert via_env.returncode == 0 and map_findings(repo) == [], via_env.stdout
+    # No why, or the line outside What changes: the map still asks.
+    for name, text in (("nowhy.md", body("A refactor.\n\nDocs: none,")),
+                       ("outside.md", body("A refactor.", "\n\nDocs: none, the refactor keeps the API")),
+                       ("comment.md", body("<!-- Docs: none, the refactor keeps the API -->"))):
+        path = tmp_path / name
+        path.write_text(text)
+        ran = run_gate(repo, env, "block", "--body-file", str(path))
+        assert ran.returncode == 1 and len(map_findings(repo)) == 1, (name, ran.stdout)
+        assert docs_findings(repo)[0]["docs"]["exempt"] == "", name
+
+
+def test_c3_docs_none_never_exempts_a_stale_name(tmp_path):
+    assert CHECK.is_file(), "scripts/docs-check.py is the documentation check"
+    cent = gate.central(tmp_path, "report")
+    env = gate.environment(tmp_path, cent)
+    repo = gate.scratch(tmp_path, env, None, base_files(), renamed())
+    good = tmp_path / "good.md"
+    good.write_text(body("Docs: none, nothing to say"))
+    run_gate(repo, env, "report", "--body-file", str(good))
+    assert any(f["rule"] == "docs/stale-name" for f in docs_findings(repo)[1])
+
+
+def test_c3_the_pull_requests_check_reads_the_description_through_env_and_a_file(tmp_path):
+    assert CHECK.is_file(), "scripts/docs-check.py is the documentation check"
+    from steps import run as run_step, step
+    cent = gate.central(tmp_path, "block")
+    env = gate.environment(tmp_path, cent)
+    repo = map_repo(tmp_path, env, MAP, {"src/a.py": "x = 2\n"}, where="wf/work")
+    (repo / ".dx-central").symlink_to(cent)
+    runner = {k: v for k, v in env.items() if not k.startswith(("GITHUB_", "RUNNER_"))}
+    s = step("security-gate.yml", "gate")
+    assert "github.event.pull_request.body" in str(s.get("env")) and "pull_request.body" not in s["run"], "the body through env: only"
+    told = body('Docs: none, the API stays; "$(touch pwned)"')
+    ran = run_step(s, tmp_path / "wf", env=runner, central=False, exprs={"github.event.pull_request.body": told})
+    assert ran.code == 0, ran.stdout + ran.stderr
+    assert not (repo / "pwned").exists()
+    result = json.loads((ran.temp / "security-gate.json").read_text())
+    assert result["docs"]["exempt"].startswith("the API stays") and not [f for f in result["findings"] if f["rule"] == "docs/map"]
+    silent = run_step(s, tmp_path / "wf", env=runner, central=False, exprs={"github.event.pull_request.body": body("A refactor.")})
+    assert silent.code == 1 and "docs/map (docs, new)" in silent.stdout, silent.stdout
+
+
+def test_c3_autopilot_check_gives_make_pre_pr_the_description_it_writes(tmp_path):
+    assert CHECK.is_file(), "scripts/docs-check.py is the documentation check"
+    import test_security_gate_attempts as attempts
+    cent = gate.central(tmp_path, "block")
+    env = gate.environment(tmp_path, cent)
+    repo = map_repo(tmp_path, env, MAP, {"src/a.py": "x = 2\n"})
+    io = tmp_path / "io"
+    io.mkdir()
+    (io / "pr.md").write_text(body("A refactor."))
+    asked = attempts.helper(repo, env, io, "check")
+    assert asked.returncode != 0 and "docs/map (docs, new)" in asked.stdout, asked.stdout + asked.stderr
+    (io / "pr.md").write_text(body("A refactor.\n\nDocs: none, the refactor keeps the API"))
+    told = attempts.helper(repo, env, io, "check")
+    assert told.returncode == 0, told.stdout + told.stderr
+    assert "(Docs: none): the refactor keeps the API" in told.stdout

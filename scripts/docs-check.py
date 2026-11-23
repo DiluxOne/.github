@@ -18,7 +18,10 @@ tool and no model: it reads git between the merge base and HEAD.
                    docs (`docs-map: [{paths: [glob], docs: [path or glob]}]`,
                    the kind's pack's, then the repository's own in
                    .github/review-policy.yml, both read at the merge base)
-                   while none of those docs changed: one finding per entry
+                   while none of those docs changed: one finding per entry.
+                   None when the description's What changes has a line
+                   `Docs: none, <why>` with a why, which goes into the
+                   result (`exempt`); it never exempts a stale name
 
   docs-check.py --test    self-test
 """
@@ -371,6 +374,25 @@ def map_findings(mapping, changed, severity):
     return out
 
 
+DOCS_NONE = re.compile(r"^\s*(?:- )?Docs: none,[ \t]*(\S.*?)\s*$")
+
+
+def exemption(body):
+    """The why of the description's `Docs: none, <why>` line, read in its
+    What changes section only (from the `## ` heading that names it to the
+    next `## `), HTML comments left out; "" for none. Pure."""
+    text = re.sub(r"<!--.*?-->", "", str(body or ""), flags=re.S)
+    inside = False
+    for line in text.splitlines():
+        if line.startswith("## "):
+            inside = "What changes" in line
+            continue
+        m = DOCS_NONE.match(line) if inside else None
+        if m:
+            return clean(m.group(1), 300)
+    return ""
+
+
 def check(repo, base, conf=None, body=None):
     """The documentation check of the change from BASE (the merge base) to
     HEAD in REPO: {"findings": [...], "errors": [...], "exempt": ""}."""
@@ -379,9 +401,11 @@ def check(repo, base, conf=None, body=None):
     changes = name_status(repo, base)
     gone = removed(repo, base, changes, conf, errors)
     findings = stale_findings(gone, searched_lines(repo, list(gone), conf), str(conf["severity"]))
-    changed = sorted({p for _, old, new in changes for p in (old, new)})
-    findings += map_findings(doc_map(repo, base), changed, str(conf["severity"]))
-    return {"findings": findings, "errors": errors, "exempt": ""}
+    why = exemption(body)
+    if not why:
+        changed = sorted({p for _, old, new in changes for p in (old, new)})
+        findings += map_findings(doc_map(repo, base), changed, str(conf["severity"]))
+    return {"findings": findings, "errors": errors, "exempt": why}
 
 
 # --- self-test ---------------------------------------------------------------
@@ -427,6 +451,11 @@ def self_test():
        [("docs/map", "src/a.py", True)])
     ok("its docs changed too, or no mapped path changed: none",
        (map_findings(m, ["src/a.py", "docs/api.md"], "high"), map_findings(m, ["lib/a.py"], "high")), ([], []))
+    page = "## 📝 What changes\n\nx\n- Docs: none, it keeps the API\n\n## 💡 Why\n\nDocs: none, elsewhere\n"
+    ok("Docs: none with its why, in What changes only, never in a comment or with no why",
+       (exemption(page), exemption(page.replace("- Docs: none, it keeps the API", "Docs: none,")),
+        exemption("## What changes\n<!--\nDocs: none, a comment\n-->\n"), exemption(None)),
+       ("it keeps the API", "", "", ""))
     ok("the policy's settings over the defaults", settings({"min-length": 6})["min-length"], 6)
     print("all tests passed" if not fails else f"{len(fails)} failed")
     return 1 if fails else 0
