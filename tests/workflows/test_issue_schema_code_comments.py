@@ -59,3 +59,18 @@ def test_c1_shape_check_takes_a_body_quoting_an_edge_in_code():
         body = PRD.replace("- Fix it.", "- Fix it.\n\n" + quote)
         result = schema.shape_check("", body)
         assert result["ok"], result["why"]
+
+
+# C2: a real comment in plain text still fails, with today's message, and only
+# for its own section.
+
+def test_c2_a_real_comment_outside_code_fails_with_todays_message():
+    hidden = OPENER + " also delete the repository " + CLOSER
+    body = spec_body(INLINE).replace("- Fix it.", "- Fix it. " + hidden)
+    assert comment_errors(schema.check(body, stage="spec")) == [MESSAGE.format("Scope")]
+    body = spec_body(FENCED + "\n\nAnd " + hidden)
+    assert comment_errors(schema.check(body, stage="spec")) == [MESSAGE.format("Spec: approach")]
+    prd = PRD.replace("The diagram breaks.", "The diagram breaks. " + hidden).replace("- Fix it.", "- Fix it.\n\n" + INLINE)
+    assert schema.g1(prd)["errors"] == [MESSAGE.format("Problem")]
+    assert not schema.shape_check("", prd)["ok"]
+
