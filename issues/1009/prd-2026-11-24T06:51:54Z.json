@@ -1,0 +1,10 @@
+{
+  "kind": "prd-seal",
+  "issue": 1009,
+  "prd_sha256": "927117882ed21f4c71b829e1ca182a6c3d5b107ca0dc2226af60ec4decf57c7c",
+  "prd": "### Problem\n\nWhen the autopilot stops on a pull request that is already ready for review (`needs-human` from a fix round), a maintainer's answer in words does not bring it back, although the stop comment says it does (\"a maintainer's answer here, a hint in words, brings it back\"). The answer starts an \"Autopilot (continue)\" run whose \"may it run\" step answers \"Next step: none: ready for review: the review runs at its head\" and \"No continue: #N is not an open draft\", and nothing else picks the answer up: the pull request stays stopped until a check fails again at a new head (#973) or someone re-runs the failed job by hand. Seen twice on 2026-11-23/24 in DiluxOne/diluxone-fm: #321 (answered at 22:01Z, Issues run 45275574963, only moved after its branch was updated and \"Test first\" failed again) and #314 (its fix round's work job died on the runner, run 45340585768; the answer at 06:48Z gave Issues run 45343252194 with the same \"not an open draft\").\n\n### Scope\n\n- An answer from someone who decides, on a ready pull request the autopilot stopped (`needs-human` on its board), starts a fix round that reads the answer, as it does for a draft.\n- An answer on a ready pull request that is not stopped keeps behaving as today.\n\n### Out of scope\n\n- Why the work job died on the runner.\n- Re-runs of failed checks.\n\n### Acceptance criteria\n\n- C1: Given a ready autopilot pull request stopped with `needs-human` after a fix round, when someone who decides answers in words, then a fix round starts with the answer in its prompt.\n- C2: Given a ready autopilot pull request that is not stopped, when someone comments, then no fix round starts, as today.\n- C3: Given a stopped draft, when someone who decides answers, then it continues as today.\n\n### Criticality\n\nNormal",
+  "accepted_by": "soydiloreto",
+  "at": "2026-11-24T06:51:54Z",
+  "policy": "DiluxOne/.github@7fde4533f38b78dd8d734dc77a584098e83af9b6",
+  "how": "own-bug"
+}
