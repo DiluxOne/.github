@@ -345,8 +345,11 @@ jobs:
             # repository: `taken` leaves its own open draft out (#696).
             prs="$RUNNER_TEMP/prs/${repo//\//_}.json"
             if [ ! -f "$prs" ]; then
-              gh pr list --repo "$repo" --state all --label autopilot --limit 500 --json number,body,state,mergedAt > "$prs.tmp" && mv "$prs.tmp" "$prs" \
-                || { echo "unreadable" > "$prs"; }
+              if gh pr list --repo "$repo" --state all --label autopilot --limit 500 --json number,body,state,mergedAt > "$prs.tmp"; then
+                mv "$prs.tmp" "$prs"
+              else
+                echo "unreadable" > "$prs"
+              fi
             fi
             jq -e 'type == "array"' "$prs" >/dev/null 2>&1 || { echo "::warning::$repo: its autopilot pull requests could not be read; #$n is not started."; continue; }
             # The state next-step reads, gathered as the edit-start job of

@@ -1162,7 +1162,7 @@ jobs:
             python3 .dx-central/scripts/receipts.py state set shape_refused= >/dev/null
             # The Spec already on it (#1002): a continue, so the draft
             # opens from it instead of the Spec being written again.
-            mode=start; [ "$(jq -r '.action' <<<"$step")" != draft ] || mode=continue
+            mode="start"; [ "$(jq -r '.action' <<<"$step")" != draft ] || mode="continue"
             { echo "start=true"; echo "mode=$mode"; } >> "$GITHUB_OUTPUT"
           fi
 

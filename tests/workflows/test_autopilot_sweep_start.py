@@ -218,3 +218,17 @@ def test_sweep_start_says_no_to_a_person_s_stop_or_hold():
         assert autopilot.sweep_start(step, {}, labels, "")[0] == "", labels
     step = autopilot.next_step(dict(state, issue={"state": "OPEN", "labels": ["accepted"], "assignees": ["alice"]}))
     assert autopilot.sweep_start(step, {}, ["accepted"], "")[0] == ""
+
+
+def test_the_missed_start_step_passes_shellcheck():
+    # `a && b || c` is shellcheck's SC2015, which fails actionlint (#1003,
+    # round 1): the read of the pull requests is an if, not a chain.
+    import shutil, subprocess
+    import pytest
+    if not shutil.which("shellcheck"):
+        pytest.skip("no shellcheck")
+    script = steps.expand(steps.step("autopilot-sweep.yml", "Start a missed one", job="sweep")["run"], {})
+    # The ones actionlint leaves out of its shellcheck run.
+    checked = subprocess.run(["shellcheck", "-s", "bash", "-e", "SC1091,SC2194,SC2050,SC2154,SC2157", "-"],
+                             input=script, capture_output=True, text=True)
+    assert checked.returncode == 0, checked.stdout

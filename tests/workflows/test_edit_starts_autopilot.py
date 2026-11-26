@@ -196,3 +196,17 @@ def test_a_changed_seal_a_hold_or_a_pull_request_start_nothing(tmp_path):
             ran, called = edited(tmp_path / f"{i}-{j}", body, **env)
             assert "start" not in ran.output and "mode" not in ran.output, (env, ran.stdout)
             assert "receipts.py state set shape_refused=" not in called, env
+
+
+def test_the_edit_start_step_passes_shellcheck():
+    # An unquoted `mode=continue` is shellcheck's SC2209 (`continue` is a
+    # builtin), which fails actionlint (#1003, round 1): the modes are quoted.
+    import shutil, subprocess
+    import pytest
+    if not shutil.which("shellcheck"):
+        pytest.skip("no shellcheck")
+    script = steps.expand(step("issue-triage.yml", "step", job="edit-start")["run"], {})
+    # The ones actionlint leaves out of its shellcheck run.
+    checked = subprocess.run(["shellcheck", "-s", "bash", "-e", "SC1091,SC2194,SC2050,SC2154,SC2157", "-"],
+                             input=script, capture_output=True, text=True)
+    assert checked.returncode == 0, checked.stdout
