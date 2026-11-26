@@ -23,8 +23,8 @@ name: What waits (update)
 # in nobody's required check, and the newest runs after the last event). A
 # failed request is a warning; the digest's daily run sweeps the view. The
 # board is written with the App's token for the item's repository alone
-# (#619). It never
-# checks out the repository's code: only DiluxOne/.github's scripts. A
+# (#619). It never checks out the repository's code: only DiluxOne/.github's
+# scripts. A
 # comment of a bot (the board, the mention) starts nothing, nor does an
 # event on the bot's own `run:` issues, so it never feeds itself. One run
 # at a time per item, queued, so a mention is never posted twice.
