@@ -1765,6 +1765,73 @@ def rate_limit_step(board, labels=(), now=None):
     return "continue", "a run stopped on the API's rate limit, which has reset since: the next run takes it"
 
 
+# #1002 C3: an autopilot pull request's text that closes issue N.
+CLOSES_NUMBER = re.compile(r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b")
+# The board's keys of the sweep's other passes (the core, the rate limit) and
+# of its own start: an issue that carries one is not a missed start.
+SWEEP_HELD_KEYS = ("swept_start", "core_wait", "core_started", "rate_limited")
+
+
+def closed_by_person(prs, number):
+    """Whether an autopilot pull request closed unmerged closes issue NUMBER
+    (#1002, the maintainer's answer: a person closed the draft, and the
+    sweep never undoes that decision). `prs`: `gh pr list --state all
+    --label autopilot --json number,body,state,mergedAt` of its repository;
+    an open or merged one is not counted here. Pure."""
+    for p in prs or []:
+        if not isinstance(p, dict) or p.get("mergedAt") or str(p.get("state") or "CLOSED").upper() != "CLOSED":
+            continue
+        if str(number) in CLOSES_NUMBER.findall(p.get("body") or ""):
+            return True
+    return False
+
+
+def open_by_autopilot(prs, number):
+    """Whether an open autopilot pull request closes issue NUMBER (#1002:
+    `autopilot.py taken` leaves the autopilot's own draft out, #696, so the
+    sweep reads it here). `prs`: `gh pr list --state all --label autopilot
+    --json number,body,state,mergedAt` of its repository. Pure."""
+    return any(isinstance(p, dict) and str(p.get("state") or "").upper() == "OPEN"
+               and str(number) in CLOSES_NUMBER.findall(p.get("body") or "") for p in prs or [])
+
+
+def sweep_start(step, board, labels=(), busy="", closed=False, drafted=False):
+    """Whether the hourly sweep starts an accepted issue whose start was
+    missed (#1002 C3, autopilot-sweep.yml). Pure. `step`: next-step's answer
+    from the issue's state (a hold, an unmatched seal, a question asked, a
+    pull request on its way all answer something else than a start);
+    `board`: its board; `labels`: its labels; `busy`: runs-busy's ids (or
+    any text when they could not be read); `closed`: a person closed its
+    autopilot pull request unmerged; `drafted`: its autopilot pull request
+    is open. Only next-step's start (`spec` or
+    `draft`, as `start`), once (`swept_start`), with no wait of the sweep's
+    other passes on its board, no `needs-human` (C4: a claim, an assignee,
+    a question asked already make next-step wait), no continue already
+    asked for and no run
+    queued or in progress. Returns (what, why): `start` or ""."""
+    step, board, labels = step or {}, board if isinstance(board, dict) else {}, list(labels or ())
+    held = [k for k in SWEEP_HELD_KEYS if board.get(k) not in (None, False, "", [])]
+    if "swept_start" in held:
+        return "", f"the sweep already started it once ({board.get('swept_start')}): a person takes it from here"
+    if held:
+        return "", f"its board says `{held[0]}`: the sweep's other pass has it"
+    if "autopilot:continue" in labels:
+        return "", "a continue is already asked for"
+    if "needs-human" in labels:
+        # #1002 C4: next-step reads `needs-human` on the pull request only;
+        # on the issue it is a stop that waits on a person all the same.
+        return "", "the autopilot stopped and a person has it (`needs-human`)"
+    if drafted:
+        return "", "its autopilot pull request is open: its own flow has it"
+    if closed:
+        return "", "a person closed its autopilot pull request unmerged: the sweep does not start it again"
+    if not (step.get("action") in ("spec", "draft") and step.get("as") == "start"):
+        return "", str(step.get("why") or "next-step starts nothing")
+    if str(busy or "").strip():
+        return "", "an autopilot run of it is queued or in progress, or its runs could not be read"
+    return "start", f"a missed start: {step.get('why')}"
+
+
 # The autopilot's refusal of an accepted issue for its shape (#699 C2): said
 # once on the issue with this mark, and noted on its board (`shape_refused`)
 # so an edit that makes it pass starts it (issue-triage.yml `edit-start`).
@@ -1783,9 +1850,12 @@ def edit_starts(step, board):
     """Whether an edit of an accepted issue starts the autopilot (#699 C2).
     Pure. `step`: next-step's answer from the issue's state now; `board`: its
     board's state. Only an issue the autopilot refused for its shape, which
-    next-step now starts from nothing (G1 passes, the seal matches, no Spec,
-    no pull request, nobody holds it): any other edit starts nothing."""
-    return bool((board or {}).get("shape_refused")) and (step or {}).get("action") == "spec" and (step or {}).get("as") == "start"
+    next-step now starts (G1 passes, the seal matches, no pull request,
+    nobody holds it): from nothing (`spec`, no Spec yet), or from its Spec
+    (`draft`, #1002: the draft opens from it, issue-triage.yml starting it as
+    a continue). Any other edit starts nothing."""
+    step = step or {}
+    return bool((board or {}).get("shape_refused")) and step.get("action") in ("spec", "draft") and step.get("as") == "start"
 
 
 # A review finding someone who decides settled in a comment (#699 C5):
@@ -4237,9 +4307,9 @@ A class on html.
           inline_text("x @org/team\n\n**b** `c` [l](https://e) <img>"),
           "x @\u200borg/team \\*\\*b\\*\\* \\`c\\` \\[l\\](https:\u200b/\u200b/e) &lt;img&gt;")
     c2 = {"issue": {"state": "OPEN", "labels": ["accepted"]}, "lane": "human-issue", "may_start": [True, "ready"], "seal": "match"}
-    check("#699 C2: next-step on an edited accepted issue that passes now starts it, once refused for its shape",
+    check("#699 C2, #1002: next-step on an edited accepted issue that passes now starts it, Spec or not, once refused for its shape",
           (edit_starts(next_step(c2), {"shape_refused": "t"}), edit_starts(next_step(c2), {}), edit_starts(next_step(dict(c2, seal="changed")), {"shape_refused": "t"}),
-           edit_starts(next_step(dict(c2, spec=True)), {"shape_refused": "t"}), shape_refusal("w").startswith(SHAPE_MARK)), (True, False, False, False, True))
+           edit_starts(next_step(dict(c2, spec=True)), {"shape_refused": "t"}), shape_refusal("w").startswith(SHAPE_MARK)), (True, False, False, True, True))
     check("#561 C7: every state next-step reads is in the table",
           sorted(set((s["action"], s.get("how") or s.get("for") or s.get("as")) for s in steps7)), sorted(set(w for _, _, w in table)))
     check("#561 C7: every action is the bot's, a wait on a person's decision, or nothing",
@@ -4398,6 +4468,23 @@ A class on html.
            rate_limit_step({}, now=200)[0], rate_limit_step({"rate_limited": 100}, ["autopilot:continue"], now=200)[0],
            rate_limit_step({"rate_limited": "x"}, now=200)[0]),
           ("continue", "", "", "", ""))
+    s1002 = {"issue": {"state": "OPEN", "labels": ["accepted"]}, "lane": "human-issue", "may_start": [True, "ready"], "seal": "match", "spec": True}
+    check("#1002 C3: the sweep starts a missed start once, with no run, no continue, no wait and no draft a person closed",
+          (sweep_start(next_step(s1002), {}, ["accepted"])[0], sweep_start(next_step(dict(s1002, spec=False)), {})[0],
+           sweep_start(next_step(s1002), {"swept_start": "t"})[0], sweep_start(next_step(s1002), {"core_wait": ["a"]})[0],
+           sweep_start(next_step(s1002), {}, ["autopilot:continue"])[0], sweep_start(next_step(s1002), {}, busy="7")[0],
+           sweep_start(next_step(s1002), {}, closed=True)[0], sweep_start(next_step(dict(s1002, seal="changed")), {})[0]),
+          ("start", "start", "", "", "", "", "", ""))
+    check("#1002 C4: the sweep starts nothing a person stopped (`needs-human`), claimed or holds as its assignee",
+          (sweep_start(next_step(s1002), {}, ["accepted", "needs-human"])[0],
+           sweep_start(next_step(dict(s1002, issue={"state": "OPEN", "labels": ["accepted", "claimed"]})), {}, ["accepted", "claimed"])[0],
+           sweep_start(next_step(dict(s1002, issue={"state": "OPEN", "labels": ["accepted"], "assignees": ["alice"]})), {}, ["accepted"])[0]),
+          ("", "", ""))
+    check("#1002: a closed autopilot pull request holds the issue only unmerged and only when it closes it",
+          (closed_by_person([{"body": "Closes #9", "mergedAt": None}], 9), closed_by_person([{"body": "Closes #9", "mergedAt": "x"}], 9),
+           closed_by_person([{"body": "Closes #90", "mergedAt": None}], 9), closed_by_person([{"body": "Closes #9", "state": "OPEN"}], 9),
+           open_by_autopilot([{"body": "Closes #9", "state": "OPEN"}], 9), open_by_autopilot([{"body": "Closes #9", "state": "CLOSED"}], 9),
+           sweep_start(next_step(s1002), {}, drafted=True)[0]), (True, False, False, False, True, False, ""))
     check("C13: a draft only behind main is updated by the bot, with no model",
           (swp(mergeStateStatus="BEHIND", isDraft=True), swp(mergeStateStatus="BLOCKED", isDraft=True), swp(mergeStateStatus="BEHIND", isDraft=True, labels=[{"name": "autopilot"}, {"name": "needs-human"}])),
           ("update", "", ""))
@@ -7011,6 +7098,22 @@ def main(argv):
             print(f"sweep rate-limited needs the board's JSON on stdin ({err})", file=sys.stderr)
             return 64
         what, why = rate_limit_step(got, [l for l in os.environ.get("LABELS", "").split(",") if l])
+        print(f"{what}\t{why}")
+        return 0
+    if argv[:2] == ["sweep", "start"]:
+        # An accepted issue's missed start (#1002 C3): {step: next-step's
+        # answer, board, labels, busy: runs-busy's ids, prs: `gh pr list
+        # --state all --label autopilot`'s JSON, number} on stdin; prints
+        # `start` or nothing, then a tab and why.
+        try:
+            got = json.load(sys.stdin)
+        except ValueError as err:
+            print(f"sweep start needs a JSON object on stdin ({err})", file=sys.stderr)
+            return 64
+        got = got if isinstance(got, dict) else {}
+        prs = got.get("prs") if isinstance(got.get("prs"), list) else []
+        what, why = sweep_start(got.get("step") or {}, got.get("board") or {}, got.get("labels") or [], got.get("busy") or "",
+                                closed_by_person(prs, got.get("number")), open_by_autopilot(prs, got.get("number")))
         print(f"{what}\t{why}")
         return 0
     if argv[:1] == ["sweep"]:

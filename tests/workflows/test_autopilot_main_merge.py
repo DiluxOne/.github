@@ -45,7 +45,7 @@ def test_a_merge_into_main_sweeps_the_autopilot_pull_requests_with_no_persons_la
     sweep = yaml.safe_load((FLOWS / "autopilot-sweep.yml").read_text(encoding="utf-8"))
     on = sweep.get("on", sweep.get(True))
     assert {"schedule", "workflow_call", "workflow_dispatch"} <= set(on)
-    run = sweep["jobs"]["sweep"]["steps"][-1]["run"]
+    run = next(s for s in sweep["jobs"]["sweep"]["steps"] if s.get("name") == "Bring each one in step")["run"]
     # next-step's own answer decides, through autopilot.py sweep; the bot
     # acts on it: update-branch for one behind, its own continue for one
     # in conflict, which the run's fix round merges and resolves.
@@ -183,9 +183,10 @@ def test_the_hourly_sweep_still_covers_every_repository():
     assert on["workflow_dispatch"]["inputs"]["repo"]["default"] == ""
     assert on["workflow_call"]["inputs"]["repo"]["default"] == ""
     steps = sweep["jobs"]["sweep"]["steps"]
-    run = steps[-1]["run"]
+    in_step = next(s for s in steps if s.get("name") == "Bring each one in step")
+    run = in_step["run"]
     assert 'else where=(--owner "$OWNER"); fi' in run
-    assert steps[-1]["env"]["OWNER"] == "${{ github.repository_owner }}"
+    assert in_step["env"]["OWNER"] == "${{ github.repository_owner }}"
     # No repo, no name: the App token stays the organisation's.
     where = next(s for s in steps if s.get("id") == "where")
     assert 'echo "name=${REPO#*/}"' in where["run"]

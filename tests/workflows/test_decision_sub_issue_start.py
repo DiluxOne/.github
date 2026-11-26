@@ -34,7 +34,11 @@ def test_the_start_on_opened_is_dilux_bots_unlabelled_issue():
 
 def test_an_opened_issue_starts_and_only_autopilot_continue_continues():
     mode = workflow("issue-triage.yml")["jobs"]["autopilot"]["with"]["mode"]
-    assert mode == "${{ github.event.label.name == 'autopilot:continue' && 'continue' || 'start' }}"
+    # An opened or accepted issue starts; only `autopilot:continue` continues (an edit's mode is edit-start's, #1002).
+    expr = steps.EXPR.fullmatch(mode).group(1)
+    for action, label, want in (("opened", "", "start"), ("labeled", "accepted", "start"), ("labeled", "autopilot:continue", "continue")):
+        ctx = {"github.event.action": action, "github.event.label.name": label, "needs.edit-start.outputs.mode": ""}
+        assert steps.evaluate(expr, ctx) == want, (action, label)
 
 
 # autopilot.py stand-in: `lane` fails until its LANE_AFTER-th call, then
