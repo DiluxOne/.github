@@ -41,7 +41,7 @@ def test_c1_without_the_key_the_request_does_nothing_and_the_run_passes(tmp_path
     # A run with no secrets (a fork's, or a repository without the App's
     # key) mints no token, and the request warns and ends with success.
     view = jobs()["view"]
-    assert view["env"]["HAS_KEY"] == "${{ secrets.DILUX_BOT_PRIVATE_KEY != '' }}"
+    assert (view.get("env") or {}).get("HAS_KEY") == "${{ secrets.DILUX_BOT_PRIVATE_KEY != '' }}"
     token = next(s for s in view["steps"] if s.get("id") == "bot")
     assert token["if"] == "env.HAS_KEY == 'true'" and token.get("continue-on-error") is True
     ask = next(s for s in view["steps"] if "waiting-digest.yml" in s.get("run", ""))
@@ -89,5 +89,26 @@ def test_c2_the_contract_pins_the_views_token():
     spec = importlib.util.spec_from_file_location("caller_contract", ROOT / "scripts/caller-contract.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    assert mod.TOKENS["waiting-update.yml"]["view"] == {"repositories": ".github", "permissions": {"actions": "write", "metadata": "read"}}
+    assert mod.TOKENS["waiting-update.yml"].get("view") == {"repositories": ".github", "permissions": {"actions": "write", "metadata": "read"}}
     assert mod.tokens({"waiting-update.yml": load("waiting-update.yml")}) == []
+
+
+def test_c3_a_failing_check_of_its_own_still_fails_the_required_run():
+    for name in ("org-pull-request.yml", "pull-request.yml"):
+        job = load(name)["jobs"]["waiting"]
+        assert job["needs"] == "review", name
+        assert job["uses"].split("@")[0].endswith(".github/workflows/waiting-update.yml"), name
+    update = jobs()["update"]
+    assert "continue-on-error" not in update
+    assert not any("continue-on-error" in s for s in update["steps"]), "the board's update still fails the run"
+    assert update["concurrency"] == {
+        "group": "waiting-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}",
+        "cancel-in-progress": False}
+    # Only the view's steps, which ask for the rewrite, may continue on error.
+    for jname, job in jobs().items():
+        assert "continue-on-error" not in job, jname
+        for step in job["steps"]:
+            if step.get("continue-on-error"):
+                assert jname == "view", f"{jname}: {step.get('name')}"
+    ask = [s for s in jobs()["view"]["steps"] if s.get("name") == "Ask for the view"]
+    assert ask and ask[0].get("continue-on-error") is True, "the view's request is the one step that may fail without failing the run"
