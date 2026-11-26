@@ -190,7 +190,7 @@ jobs:
     steps:
       - name: App token
         id: bot
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
@@ -245,7 +245,7 @@ jobs:
 
       - name: App token
         id: bot
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
@@ -314,7 +314,7 @@ jobs:
         id: paid
         continue-on-error: true
         if: steps.cap.outputs.over != 'true' && steps.policy.outputs.paid_name != '' && steps.policy.outputs.paid_owner == github.repository_owner
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
@@ -424,7 +424,7 @@ jobs:
         env:
           DX_FULL_SCHEMA: '{"type":"object","additionalProperties":false,"required":["category","reply","summary","language"],"properties":{"language":{"type":"string","enum":["en","es","pt","other"]},"category":{"type":"string","enum":["bug_unconfirmed","needs_info","by_design","pro_feature","planned","enhancement","question","duplicate","security"]},"layer":{"type":"string","enum":["logic","browser","cli","api","workflow"]},"exists_in_pro":{"type":"boolean"},"duplicate_of":{"type":"integer"},"missing":{"type":"array","items":{"type":"string","maxLength":120}},"reply":{"type":"string","maxLength":2500},"summary":{"type":"string","maxLength":300}}}'
           DX_PAID_SCHEMA: '{"type":"object","additionalProperties":false,"required":["category","language"],"properties":{"language":{"type":"string","enum":["en","es","pt","other"]},"category":{"type":"string","enum":["bug_unconfirmed","needs_info","by_design","pro_feature","planned","enhancement","question","duplicate","security"]},"layer":{"type":"string","enum":["logic","browser","cli","api","workflow"]},"exists_in_pro":{"type":"boolean"},"duplicate_of":{"type":"integer"}}}'
-        uses: anthropics/claude-code-action@cc98b3ae241b0fcfb6a42a2690751afffecb4452 # v1.0.278
+        uses: anthropics/claude-code-action@acfe7992852970efb4fee683d63d628e3e52df67 # v1.0.286
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
@@ -555,7 +555,7 @@ jobs:
         id: sectoken
         if: steps.cap.outputs.over != 'true' && steps.brief.outputs.paid != 'true' && !github.event.repository.private && contains(steps.verdict.outputs.verdict, '"security"') && steps.sec.outputs.name != ''
         continue-on-error: true # without it, the report is locked as before
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
@@ -653,7 +653,7 @@ jobs:
     steps:
       - name: App token
         id: bot
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
@@ -697,7 +697,7 @@ jobs:
     steps:
       - name: App token
         id: bot
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
@@ -755,7 +755,7 @@ jobs:
     steps:
       - name: App token
         id: bot
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
@@ -814,7 +814,7 @@ jobs:
         if: steps.fixed.outputs.write == 'true'
         continue-on-error: true
         timeout-minutes: 6
-        uses: anthropics/claude-code-action@cc98b3ae241b0fcfb6a42a2690751afffecb4452 # v1.0.278
+        uses: anthropics/claude-code-action@acfe7992852970efb4fee683d63d628e3e52df67 # v1.0.286
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
@@ -859,7 +859,7 @@ jobs:
         id: sectoken
         if: ${{ !github.event.repository.private && contains(needs.triage.outputs.verdict, '"security"') && steps.sec.outputs.name != '' }}
         continue-on-error: true # without it, the report is locked as before
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
@@ -932,7 +932,7 @@ jobs:
         id: claude
         continue-on-error: true
         timeout-minutes: 30
-        uses: anthropics/claude-code-action@cc98b3ae241b0fcfb6a42a2690751afffecb4452 # v1.0.278
+        uses: anthropics/claude-code-action@acfe7992852970efb4fee683d63d628e3e52df67 # v1.0.286
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
@@ -961,7 +961,7 @@ jobs:
       - name: App token
         id: bot
         if: always()
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
@@ -990,7 +990,7 @@ jobs:
     steps:
       - name: App token
         id: bot
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
@@ -1051,7 +1051,7 @@ jobs:
     steps:
       - name: App token
         id: bot
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
@@ -1113,7 +1113,7 @@ jobs:
     steps:
       - name: App token
         id: bot
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
