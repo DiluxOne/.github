@@ -1794,7 +1794,9 @@ def sweep_start(step, board, labels=(), busy="", closed=False):
     any text when they could not be read); `closed`: a person closed its
     autopilot pull request unmerged. Only next-step's start (`spec` or
     `draft`, as `start`), once (`swept_start`), with no wait of the sweep's
-    other passes on its board, no continue already asked for and no run
+    other passes on its board, no `needs-human` (C4: a claim, an assignee,
+    a question asked already make next-step wait), no continue already
+    asked for and no run
     queued or in progress. Returns (what, why): `start` or ""."""
     step, board, labels = step or {}, board if isinstance(board, dict) else {}, list(labels or ())
     held = [k for k in SWEEP_HELD_KEYS if board.get(k) not in (None, False, "", [])]
@@ -1804,6 +1806,10 @@ def sweep_start(step, board, labels=(), busy="", closed=False):
         return "", f"its board says `{held[0]}`: the sweep's other pass has it"
     if "autopilot:continue" in labels:
         return "", "a continue is already asked for"
+    if "needs-human" in labels:
+        # #1002 C4: next-step reads `needs-human` on the pull request only;
+        # on the issue it is a stop that waits on a person all the same.
+        return "", "the autopilot stopped and a person has it (`needs-human`)"
     if closed:
         return "", "a person closed its autopilot pull request unmerged: the sweep does not start it again"
     if not (step.get("action") in ("spec", "draft") and step.get("as") == "start"):
@@ -4456,6 +4462,11 @@ A class on html.
            sweep_start(next_step(s1002), {}, ["autopilot:continue"])[0], sweep_start(next_step(s1002), {}, busy="7")[0],
            sweep_start(next_step(s1002), {}, closed=True)[0], sweep_start(next_step(dict(s1002, seal="changed")), {})[0]),
           ("start", "start", "", "", "", "", "", ""))
+    check("#1002 C4: the sweep starts nothing a person stopped (`needs-human`), claimed or holds as its assignee",
+          (sweep_start(next_step(s1002), {}, ["accepted", "needs-human"])[0],
+           sweep_start(next_step(dict(s1002, issue={"state": "OPEN", "labels": ["accepted", "claimed"]})), {}, ["accepted", "claimed"])[0],
+           sweep_start(next_step(dict(s1002, issue={"state": "OPEN", "labels": ["accepted"], "assignees": ["alice"]})), {}, ["accepted"])[0]),
+          ("", "", ""))
     check("#1002: a closed autopilot pull request holds the issue only unmerged and only when it closes it",
           (closed_by_person([{"body": "Closes #9", "mergedAt": None}], 9), closed_by_person([{"body": "Closes #9", "mergedAt": "x"}], 9),
            closed_by_person([{"body": "Closes #90", "mergedAt": None}], 9)), (True, False, False))

@@ -304,7 +304,8 @@ jobs:
       # #1002 C3: an accepted issue whose start was missed (an edit, a
       # comment or a refused run that started nothing) is started once. Only
       # one the autopilot holds that next-step would start (scripts/
-      # autopilot.py `sweep start`): nobody holds it, the seal matches, no
+      # autopilot.py `sweep start`): nobody holds it (C4: no claim, no
+      # assignee), no `needs-human` on it (C4), the seal matches, no
       # question waits, no pull request is on its way, no run is queued or in
       # progress (a read that fails counts as busy), no wait of the passes
       # above is on its board, and no autopilot pull request of it was

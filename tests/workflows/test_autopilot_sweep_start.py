@@ -182,3 +182,24 @@ def test_sweep_start_is_next_steps_start_and_nothing_else():
     assert autopilot.closed_by_person([{"number": 1, "body": "Fixes #9", "mergedAt": None}], 9) is True
     assert autopilot.closed_by_person([{"number": 1, "body": "Fixes #9", "mergedAt": "2026-11-01T00:00:00Z"}], 9) is False
     assert autopilot.closed_by_person([{"number": 1, "body": "Closes #90", "mergedAt": None}], 9) is False
+
+
+# #1002 C4: a stop waiting on a person, or a person's hold, is never started.
+def test_needs_human_a_claim_or_an_assignee_start_nothing(tmp_path):
+    cases = ({"labels": ("accepted", "needs-human")}, {"labels": ("accepted", "claimed")},
+             {"FAKE_HOLDER": "a person claimed it (`claimed`)"}, {"FAKE_HOLDER": "it is assigned to @alice"},
+             {"labels": ("accepted", "autopilot:waiting")}, {"FAKE_BOARD": '{"asked": "2026-11-26T10:00:00Z"}'})
+    for i, case in enumerate(cases):
+        ran, log = sweep(tmp_path / str(i), **case)
+        assert ran.code == 0, ran.stdout + ran.stderr
+        assert not continued(ran) and not marked(log), (case, ran.stdout)
+        assert "o/r#9: not started" in ran.stdout, (case, ran.stdout)
+
+
+def test_sweep_start_says_no_to_a_person_s_stop_or_hold():
+    state = {"issue": {"state": "OPEN", "labels": ["accepted"]}, "lane": "human-issue", "may_start": [True, "ready"], "seal": "match", "spec": True}
+    for labels in (["accepted", "needs-human"], ["accepted", "claimed"]):
+        step = autopilot.next_step(dict(state, issue={"state": "OPEN", "labels": labels}))
+        assert autopilot.sweep_start(step, {}, labels, "")[0] == "", labels
+    step = autopilot.next_step(dict(state, issue={"state": "OPEN", "labels": ["accepted"], "assignees": ["alice"]}))
+    assert autopilot.sweep_start(step, {}, ["accepted"], "")[0] == ""
