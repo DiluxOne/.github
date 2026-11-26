@@ -13,8 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def sweep_run():
-    wf = yaml.safe_load((ROOT / ".github/workflows/autopilot-sweep.yml").read_text(encoding="utf-8"))
-    return wf["jobs"]["sweep"]["steps"][-1]["run"]
+    return steps.step("autopilot-sweep.yml", "Bring each one in step", job="sweep")["run"]
 
 
 def test_the_sweep_reads_drafts_too_and_leaves_the_choice_to_autopilot_py():

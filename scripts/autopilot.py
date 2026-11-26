@@ -1765,6 +1765,54 @@ def rate_limit_step(board, labels=(), now=None):
     return "continue", "a run stopped on the API's rate limit, which has reset since: the next run takes it"
 
 
+# #1002 C3: an autopilot pull request's text that closes issue N.
+CLOSES_NUMBER = re.compile(r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b")
+# The board's keys of the sweep's other passes (the core, the rate limit) and
+# of its own start: an issue that carries one is not a missed start.
+SWEEP_HELD_KEYS = ("swept_start", "core_wait", "core_started", "rate_limited")
+
+
+def closed_by_person(prs, number):
+    """Whether an autopilot pull request closed unmerged closes issue NUMBER
+    (#1002, the maintainer's answer: a person closed the draft, and the
+    sweep never undoes that decision). `prs`: `gh pr list --state closed
+    --label autopilot --json number,body,mergedAt` of its repository. Pure."""
+    for p in prs or []:
+        if not isinstance(p, dict) or p.get("mergedAt"):
+            continue
+        if str(number) in CLOSES_NUMBER.findall(p.get("body") or ""):
+            return True
+    return False
+
+
+def sweep_start(step, board, labels=(), busy="", closed=False):
+    """Whether the hourly sweep starts an accepted issue whose start was
+    missed (#1002 C3, autopilot-sweep.yml). Pure. `step`: next-step's answer
+    from the issue's state (a hold, an unmatched seal, a question asked, a
+    pull request on its way all answer something else than a start);
+    `board`: its board; `labels`: its labels; `busy`: runs-busy's ids (or
+    any text when they could not be read); `closed`: a person closed its
+    autopilot pull request unmerged. Only next-step's start (`spec` or
+    `draft`, as `start`), once (`swept_start`), with no wait of the sweep's
+    other passes on its board, no continue already asked for and no run
+    queued or in progress. Returns (what, why): `start` or ""."""
+    step, board, labels = step or {}, board if isinstance(board, dict) else {}, list(labels or ())
+    held = [k for k in SWEEP_HELD_KEYS if board.get(k) not in (None, False, "", [])]
+    if "swept_start" in held:
+        return "", f"the sweep already started it once ({board.get('swept_start')}): a person takes it from here"
+    if held:
+        return "", f"its board says `{held[0]}`: the sweep's other pass has it"
+    if "autopilot:continue" in labels:
+        return "", "a continue is already asked for"
+    if closed:
+        return "", "a person closed its autopilot pull request unmerged: the sweep does not start it again"
+    if not (step.get("action") in ("spec", "draft") and step.get("as") == "start"):
+        return "", str(step.get("why") or "next-step starts nothing")
+    if str(busy or "").strip():
+        return "", "an autopilot run of it is queued or in progress, or its runs could not be read"
+    return "start", f"a missed start: {step.get('why')}"
+
+
 # The autopilot's refusal of an accepted issue for its shape (#699 C2): said
 # once on the issue with this mark, and noted on its board (`shape_refused`)
 # so an edit that makes it pass starts it (issue-triage.yml `edit-start`).
@@ -4401,6 +4449,16 @@ A class on html.
            rate_limit_step({}, now=200)[0], rate_limit_step({"rate_limited": 100}, ["autopilot:continue"], now=200)[0],
            rate_limit_step({"rate_limited": "x"}, now=200)[0]),
           ("continue", "", "", "", ""))
+    s1002 = {"issue": {"state": "OPEN", "labels": ["accepted"]}, "lane": "human-issue", "may_start": [True, "ready"], "seal": "match", "spec": True}
+    check("#1002 C3: the sweep starts a missed start once, with no run, no continue, no wait and no draft a person closed",
+          (sweep_start(next_step(s1002), {}, ["accepted"])[0], sweep_start(next_step(dict(s1002, spec=False)), {})[0],
+           sweep_start(next_step(s1002), {"swept_start": "t"})[0], sweep_start(next_step(s1002), {"core_wait": ["a"]})[0],
+           sweep_start(next_step(s1002), {}, ["autopilot:continue"])[0], sweep_start(next_step(s1002), {}, busy="7")[0],
+           sweep_start(next_step(s1002), {}, closed=True)[0], sweep_start(next_step(dict(s1002, seal="changed")), {})[0]),
+          ("start", "start", "", "", "", "", "", ""))
+    check("#1002: a closed autopilot pull request holds the issue only unmerged and only when it closes it",
+          (closed_by_person([{"body": "Closes #9", "mergedAt": None}], 9), closed_by_person([{"body": "Closes #9", "mergedAt": "x"}], 9),
+           closed_by_person([{"body": "Closes #90", "mergedAt": None}], 9)), (True, False, False))
     check("C13: a draft only behind main is updated by the bot, with no model",
           (swp(mergeStateStatus="BEHIND", isDraft=True), swp(mergeStateStatus="BLOCKED", isDraft=True), swp(mergeStateStatus="BEHIND", isDraft=True, labels=[{"name": "autopilot"}, {"name": "needs-human"}])),
           ("update", "", ""))
@@ -7014,6 +7072,21 @@ def main(argv):
             print(f"sweep rate-limited needs the board's JSON on stdin ({err})", file=sys.stderr)
             return 64
         what, why = rate_limit_step(got, [l for l in os.environ.get("LABELS", "").split(",") if l])
+        print(f"{what}\t{why}")
+        return 0
+    if argv[:2] == ["sweep", "start"]:
+        # An accepted issue's missed start (#1002 C3): {step: next-step's
+        # answer, board, labels, busy: runs-busy's ids, closed: `gh pr list
+        # --state closed --label autopilot`'s JSON, number} on stdin; prints
+        # `start` or nothing, then a tab and why.
+        try:
+            got = json.load(sys.stdin)
+        except ValueError as err:
+            print(f"sweep start needs a JSON object on stdin ({err})", file=sys.stderr)
+            return 64
+        got = got if isinstance(got, dict) else {}
+        what, why = sweep_start(got.get("step") or {}, got.get("board") or {}, got.get("labels") or [], got.get("busy") or "",
+                                closed_by_person(got.get("closed") or [], got.get("number")))
         print(f"{what}\t{why}")
         return 0
     if argv[:1] == ["sweep"]:
