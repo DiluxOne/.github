@@ -16,14 +16,18 @@ name: What waits (update)
 # pinned, rewritten from every open issue and pull request of the
 # organisation, grouped by person, one line per action with its full URL
 # (scripts/waiting.py publish; a private repository's are counted, never
-# named). The board is written with the App's token for the item's
-# repository alone (#619); the view, with one for the organisation.
-# waiting-digest.yml sweeps the same view once a day. It never
-# checks out the repository's code: only DiluxOne/.github's scripts. A
+# named) by waiting-digest.yml, which this run dispatches on main with the
+# App's token for DiluxOne/.github alone and actions: write (#1004: the view
+# as a job of this run, in a group shared between items, had a burst cancel
+# the caller's required run; the digest's runs replace each other there,
+# in nobody's required check, and the newest runs after the last event). A
+# failed request is a warning; the digest's daily run sweeps the view. The
+# board is written with the App's token for the item's repository alone
+# (#619). It never checks out the repository's code: only DiluxOne/.github's
+# scripts. A
 # comment of a bot (the board, the mention) starts nothing, nor does an
 # event on the bot's own `run:` issues, so it never feeds itself. One run
-# at a time per item, queued, so a mention is never posted twice; the
-# view's runs replace each other.
+# at a time per item, queued, so a mention is never posted twice.
 #
 #   jobs:
 #     waiting:
@@ -102,34 +106,38 @@ jobs:
     # order: the view after the board's update, which it lists.
     needs: update
     runs-on: ${{ vars.DX_RUNNER_HEAVY != '' && !((github.event.pull_request.user.login == vars.DX_BOT_LOGIN && (startsWith(github.event.pull_request.head.ref, 'test/repro-issue-') || (contains(github.event.pull_request.head.ref, '/') && contains(github.event.pull_request.head.ref, '-the-bug-reproduced-from-')))) || (github.event.issue.user.login == vars.DX_BOT_LOGIN && (github.event.issue.pull_request || startsWith(github.event.issue.title, 'The bug reproduced from ')))) && fromJSON(vars.DX_RUNNER_HEAVY) || 'ubuntu-latest' }}
-    timeout-minutes: 10
-    concurrency:
-      group: waiting-view-${{ github.repository }}
-      cancel-in-progress: true
+    timeout-minutes: 5
+    # No concurrency group (#1004): one shared between items had GitHub
+    # cancel the caller's required run in a burst. The rewrite is
+    # waiting-digest.yml's, whose own group lets the newest request run.
     permissions: {}
+    env:
+      HAS_KEY: ${{ secrets.DILUX_BOT_PRIVATE_KEY != '' }}
     steps:
-      - name: App token
+      # The organisation's App, for DiluxOne/.github alone, and only to
+      # dispatch its workflows (#1004, pinned in scripts/caller-contract.py).
+      - name: App token (dispatch waiting-digest.yml)
         id: bot
+        if: env.HAS_KEY == 'true'
+        continue-on-error: true
         uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          permission-issues: write # the view's issue in DiluxOne/.github
-          permission-pull-requests: read
-          permission-checks: read
-          permission-statuses: read # each pull request's commit statuses, in statusCheckRollup (#641)
-          permission-contents: read # a private repository's commits, for statusCheckRollup (#641: without it, HTTP 403)
+          repositories: .github
+          permission-actions: write # dispatch waiting-digest.yml, nothing else
           permission-metadata: read
-      - name: The organisation's scripts
-        env:
-          REF: ${{ inputs.central-ref || job.workflow_sha }}
-        run: |
-          set -euo pipefail
-          git init -q .dx-central && git -C .dx-central fetch -q --depth 1 https://github.com/DiluxOne/.github "$REF" && git -C .dx-central checkout -q FETCH_HEAD
-          test ! -f .dx-central/scripts/config-overlay.sh || bash .dx-central/scripts/config-overlay.sh .dx-central
-      - name: Rewrite the view
+      # A failed request is a warning, never a red required run: the next
+      # event's request, or the daily sweep, rewrites the view.
+      - name: Ask for the view
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
-          OWNER: ${{ github.repository_owner }}
-        run: python3 .dx-central/scripts/waiting.py publish
+          CENTRAL: ${{ github.repository_owner }}/.github
+        run: |
+          if [ -z "$GH_TOKEN" ]; then echo "::warning::No App token for $CENTRAL: the daily sweep rewrites the \"What waits\" view."; exit 0; fi
+          if gh api -X POST "repos/$CENTRAL/actions/workflows/waiting-digest.yml/dispatches" -f ref=main --silent; then
+            echo "Asked waiting-digest.yml to rewrite the view."
+          else
+            echo "::warning::Could not dispatch waiting-digest.yml: the daily sweep rewrites the view."
+          fi

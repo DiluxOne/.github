@@ -1,17 +1,19 @@
 name: What waits
 
-# Not reusable. Every day, and by hand (#479, #564): the sweep of the "What
-# waits" view, which waiting-update.yml rewrites on every event of an issue
-# or a pull request: every open issue and pull request of the organisation
+# Not reusable. Every day, by hand, and at the request of waiting-update.yml
+# on every event of an issue or a pull request (#479, #564, #1004): the
+# "What waits" view: every open issue and pull request of the organisation
 # that waits on someone, what blocks it (needs-human, the autopilot's
 # question, an acceptance, an incomplete issue, a triage's question, a
 # claim, a failed check, an unresolved thread, a draft, the checks, a
 # person's merge), the action and its full URL, grouped by whom it waits
 # on, in one issue of this repository, labelled `run:waiting` and pinned,
 # whose body is rewritten every run (scripts/waiting.py publish): the place
-# the maintainer reads. A run repairs what a missed event left. The issue
-# is public, so a private repository's items are counted, never named. A
-# search that fails fails the run and leaves the last body as it was.
+# the maintainer reads. A run replaces the one in progress: its runs are
+# nobody's required check. The daily run repairs what a missed request
+# left. The issue is public, so a private repository's items are counted,
+# never named. A search that fails fails the run and leaves the last body
+# as it was.
 
 on:
   schedule:
@@ -21,8 +23,11 @@ on:
 permissions:
   contents: read
 
+# One running and one pending (#1004): a burst of requests from
+# waiting-update.yml collapses, and the newest starts after the last event.
 concurrency:
   group: waiting-digest
+  cancel-in-progress: true
 
 jobs:
   digest:
@@ -40,6 +45,8 @@ jobs:
           permission-issues: write
           permission-pull-requests: read
           permission-checks: read # the heads' checks, for a failed one
+          permission-statuses: read # each pull request's commit statuses, in statusCheckRollup (#641)
+          permission-contents: read # a private repository's commits, for statusCheckRollup (#641: without it, HTTP 403)
           permission-metadata: read
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

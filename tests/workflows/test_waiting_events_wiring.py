@@ -51,10 +51,12 @@ def test_the_update_reads_the_item_then_rewrites_the_view_and_never_runs_a_pull_
     assert "github.event.comment.user.type == 'Bot'" in cond, "the bot's own comments (the board, the mention) start nothing"
     assert "'run:'" in cond, "nor do the bot's run: issues, the view among them"
     assert update["concurrency"]["cancel-in-progress"] is False, "queued, so a mention is never posted twice"
-    assert view["needs"] == "update" and view["concurrency"]["cancel-in-progress"] is True
+    # #1004: the view keeps no group shared between items; it asks
+    # waiting-digest.yml, whose runs replace each other, for the rewrite.
+    assert view["needs"] == "update" and "concurrency" not in view
     runs = [s.get("run", "") for s in update["steps"]]
     assert any("waiting.py update" in r for r in runs)
-    assert any("waiting.py publish" in s.get("run", "") for s in view["steps"])
+    assert any("waiting-digest.yml/dispatches" in s.get("run", "") for s in view["steps"])
     text = (WF / "waiting-update.yml").read_text(encoding="utf-8")
     assert "actions/checkout" not in text, "only DiluxOne/.github's scripts, fetched by git"
     # The event's text never reaches a script but through env:.
@@ -99,7 +101,8 @@ def test_the_update_may_comment_on_a_pull_request():
 def test_the_view_may_read_a_private_repositorys_commits():
     # #641: the view's search reads each pull request's last commit; in a
     # private repository the commits answer HTTP 403 without contents: read.
-    doc = load(WF / "waiting-update.yml")
-    token = next(s for s in doc["jobs"]["view"]["steps"] if s.get("id") == "bot")
+    # #1004: waiting-digest.yml does every rewrite of the view.
+    doc = load(WF / "waiting-digest.yml")
+    token = next(s for s in doc["jobs"]["digest"]["steps"] if s.get("id") == "bot")
     assert token["with"]["permission-contents"] == "read"
     assert token["with"]["permission-statuses"] == "read"
