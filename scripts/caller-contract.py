@@ -52,6 +52,9 @@ TOKENS = {
                    # #928 C3: actions: write, a failed job's log and its one rerun.
                    "permissions": {"issues": "write", "pull-requests": "write", "checks": "read", "contents": "read", "statuses": "read",
                                    "actions": "write", "metadata": "read"}},
+        # #1004: the view asks waiting-digest.yml of DiluxOne/.github for the
+        # rewrite: dispatch there, nothing else.
+        "view": {"repositories": ".github", "permissions": {"actions": "write", "metadata": "read"}},
     },
 }
 APP_TOKEN = "actions/create-github-app-token@"
@@ -299,6 +302,15 @@ def self_test():
     ok("#641: the waiting job's token must ask statuses: read, for statusCheckRollup",
        tokens({"waiting-update.yml": shipped}),
        ["waiting-update.yml job `update`: its App token asks statuses: none, and it needs read"])
+    shipped = load(os.path.join(ROOT, ".github", "workflows", "waiting-update.yml"))
+    for step in shipped["jobs"]["view"]["steps"]:
+        if str(step.get("uses") or "").startswith(APP_TOKEN):
+            step["with"]["owner"] = "${{ github.repository_owner }}"
+            step["with"]["permission-issues"] = "write"
+    ok("#1004: the view's token is for DiluxOne/.github alone, to dispatch there",
+       tokens({"waiting-update.yml": shipped}),
+       ["waiting-update.yml job `view`: mints its App token for the whole installation (`owner:`), not for .github alone",
+        "waiting-update.yml job `view`: its App token asks issues: write, more than it needs (none)"])
     ok("C3, C10: the engine's workflows, its shipped callers and its own callers keep the contract", check(), [])
     print("all tests passed" if not failed else "some tests failed")
     return 1 if failed else 0
