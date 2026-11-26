@@ -306,7 +306,8 @@ jobs:
       # one the autopilot holds that next-step would start (scripts/
       # autopilot.py `sweep start`): nobody holds it (C4: no claim, no
       # assignee), no `needs-human` on it (C4), the seal matches, no
-      # question waits, no pull request is on its way, no run is queued or in
+      # question waits, no pull request is on its way (a person's, or the
+      # autopilot's own open draft), no run is queued or in
       # progress (a read that fails counts as busy), no wait of the passes
       # above is on its board, and no autopilot pull request of it was
       # closed unmerged by a person (the maintainer's answer on #1003: a
@@ -330,7 +331,7 @@ jobs:
           done
           sort -u "$RUNNER_TEMP/accepted.txt" -o "$RUNNER_TEMP/accepted.txt"
           failed=""
-          mkdir -p "$RUNNER_TEMP/closed"
+          mkdir -p "$RUNNER_TEMP/prs"
           while read -r repo n <&3; do
             [ -n "$repo" ] || continue
             board=$(GITHUB_REPOSITORY="$repo" NUMBER="$n" python3 .dx-central/scripts/receipts.py state get 2>/dev/null) || { echo "::warning::$repo#$n: its board could not be read."; continue; }
@@ -340,13 +341,14 @@ jobs:
             labels=$(jq -c '[.labels[].name]' "$RUNNER_TEMP/issue.json")
             ! jq -e 'index("lane:release") or index("autopilot:continue")' <<<"$labels" >/dev/null || continue
             jq -r '.body // ""' "$RUNNER_TEMP/issue.json" > "$RUNNER_TEMP/body.md"
-            # The autopilot's closed pull requests, once per repository.
-            closed="$RUNNER_TEMP/closed/${repo//\//_}.json"
-            if [ ! -f "$closed" ]; then
-              gh pr list --repo "$repo" --state closed --label autopilot --limit 200 --json number,body,mergedAt > "$closed.tmp" && mv "$closed.tmp" "$closed" \
-                || { echo "unreadable" > "$closed"; }
+            # The autopilot's pull requests, open and closed, once per
+            # repository: `taken` leaves its own open draft out (#696).
+            prs="$RUNNER_TEMP/prs/${repo//\//_}.json"
+            if [ ! -f "$prs" ]; then
+              gh pr list --repo "$repo" --state all --label autopilot --limit 500 --json number,body,state,mergedAt > "$prs.tmp" && mv "$prs.tmp" "$prs" \
+                || { echo "unreadable" > "$prs"; }
             fi
-            jq -e 'type == "array"' "$closed" >/dev/null 2>&1 || { echo "::warning::$repo: its closed autopilot pull requests could not be read; #$n is not started."; continue; }
+            jq -e 'type == "array"' "$prs" >/dev/null 2>&1 || { echo "::warning::$repo: its autopilot pull requests could not be read; #$n is not started."; continue; }
             # The state next-step reads, gathered as the edit-start job of
             # issue-triage.yml gathers it.
             on=(env GITHUB_REPOSITORY="$repo" NUMBER="$n" BODY="$RUNNER_TEMP/body.md")
@@ -370,8 +372,8 @@ jobs:
               spec|draft) busy=$("${on[@]}" python3 .dx-central/scripts/autopilot.py runs-busy) || busy="(unreadable)" ;;
             esac
             out=$(jq -n --argjson step "$step" --argjson board "$board" --argjson labels "$labels" --arg busy "$busy" \
-              --slurpfile closed "$closed" --argjson number "$n" \
-              '{step: $step, board: $board, labels: $labels, busy: $busy, closed: $closed[0], number: $number}' \
+              --slurpfile prs "$prs" --argjson number "$n" \
+              '{step: $step, board: $board, labels: $labels, busy: $busy, prs: $prs[0], number: $number}' \
               | python3 .dx-central/scripts/autopilot.py sweep start) || { echo "::warning::$repo#$n: sweep start could not say."; continue; }
             [ "${out%%$'\t'*}" = start ] || { echo "$repo#$n: not started: ${out#*$'\t'}"; continue; }
             echo "$repo#$n: a missed start: it starts (${out#*$'\t'})"

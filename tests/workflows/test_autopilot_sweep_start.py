@@ -72,7 +72,7 @@ PRD = "### Problem\n\nx\n\n### Scope\n\n- y\n\n### Spec: approach\n\nz\n"
 
 def sweep(tmp_path, labels=("accepted",), closed="[]", **env):
     """The sweep's missed-start step on o/r#9, an accepted issue with its
-    Spec; CLOSED is `gh pr list --state closed`'s JSON for o/r."""
+    Spec; CLOSED is `gh pr list --state all --label autopilot`'s JSON for o/r."""
     files = {".dx-central/scripts/autopilot.py": f"REAL = {REAL!r}\n" + CENTRAL,
              ".dx-central/scripts/receipts.py": f"REAL = {REAL!r}\n" + CENTRAL}
     tmp_path.mkdir(parents=True, exist_ok=True)
@@ -133,14 +133,29 @@ def test_a_wait_on_the_core_or_the_rate_limit_is_the_sweeps_other_pass(tmp_path)
 def test_a_draft_a_person_closed_is_left(tmp_path):
     # The maintainer's answer: a closed autopilot pull request that closes
     # it, unmerged, is a person's decision, not a missed start.
-    closed = json.dumps([{"number": 12, "body": "Closes #9.", "mergedAt": None}])
+    closed = json.dumps([{"number": 12, "body": "Closes #9.", "state": "CLOSED", "mergedAt": None}])
     ran, log = sweep(tmp_path, closed=closed)
     assert ran.code == 0, ran.stdout + ran.stderr
     assert not continued(ran) and not marked(log), ran.stdout
     # Another issue's, or a merged one's, does not hold it.
-    other = json.dumps([{"number": 12, "body": "Closes #90.", "mergedAt": None}])
+    other = json.dumps([{"number": 12, "body": "Closes #90.", "state": "CLOSED", "mergedAt": None},
+                        {"number": 13, "body": "Closes #9.", "state": "MERGED", "mergedAt": "2026-11-01T00:00:00Z"}])
     ran, log = sweep(tmp_path / "other", closed=other)
     assert len(continued(ran)) == 1, ran.stdout
+
+
+def test_an_open_autopilot_draft_is_its_own_flow_s(tmp_path):
+    # `taken` leaves the autopilot's own draft out (#696): the sweep reads it.
+    ran, log = sweep(tmp_path, closed=json.dumps([{"number": 12, "body": "Closes #9", "state": "OPEN", "mergedAt": None}]))
+    assert ran.code == 0, ran.stdout + ran.stderr
+    assert not continued(ran) and not marked(log), ran.stdout
+    assert "its autopilot pull request is open" in ran.stdout
+
+
+def test_unreadable_pull_requests_start_nothing(tmp_path):
+    ran, log = sweep(tmp_path, closed="boom")
+    assert ran.code == 0, ran.stdout + ran.stderr
+    assert not continued(ran) and not marked(log), ran.stdout
 
 
 def test_the_closed_pull_requests_are_read_once_per_repository(tmp_path):

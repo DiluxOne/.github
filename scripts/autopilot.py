@@ -1775,24 +1775,35 @@ SWEEP_HELD_KEYS = ("swept_start", "core_wait", "core_started", "rate_limited")
 def closed_by_person(prs, number):
     """Whether an autopilot pull request closed unmerged closes issue NUMBER
     (#1002, the maintainer's answer: a person closed the draft, and the
-    sweep never undoes that decision). `prs`: `gh pr list --state closed
-    --label autopilot --json number,body,mergedAt` of its repository. Pure."""
+    sweep never undoes that decision). `prs`: `gh pr list --state all
+    --label autopilot --json number,body,state,mergedAt` of its repository;
+    an open or merged one is not counted here. Pure."""
     for p in prs or []:
-        if not isinstance(p, dict) or p.get("mergedAt"):
+        if not isinstance(p, dict) or p.get("mergedAt") or str(p.get("state") or "CLOSED").upper() != "CLOSED":
             continue
         if str(number) in CLOSES_NUMBER.findall(p.get("body") or ""):
             return True
     return False
 
 
-def sweep_start(step, board, labels=(), busy="", closed=False):
+def open_by_autopilot(prs, number):
+    """Whether an open autopilot pull request closes issue NUMBER (#1002:
+    `autopilot.py taken` leaves the autopilot's own draft out, #696, so the
+    sweep reads it here). `prs`: `gh pr list --state all --label autopilot
+    --json number,body,state,mergedAt` of its repository. Pure."""
+    return any(isinstance(p, dict) and str(p.get("state") or "").upper() == "OPEN"
+               and str(number) in CLOSES_NUMBER.findall(p.get("body") or "") for p in prs or [])
+
+
+def sweep_start(step, board, labels=(), busy="", closed=False, drafted=False):
     """Whether the hourly sweep starts an accepted issue whose start was
     missed (#1002 C3, autopilot-sweep.yml). Pure. `step`: next-step's answer
     from the issue's state (a hold, an unmatched seal, a question asked, a
     pull request on its way all answer something else than a start);
     `board`: its board; `labels`: its labels; `busy`: runs-busy's ids (or
     any text when they could not be read); `closed`: a person closed its
-    autopilot pull request unmerged. Only next-step's start (`spec` or
+    autopilot pull request unmerged; `drafted`: its autopilot pull request
+    is open. Only next-step's start (`spec` or
     `draft`, as `start`), once (`swept_start`), with no wait of the sweep's
     other passes on its board, no `needs-human` (C4: a claim, an assignee,
     a question asked already make next-step wait), no continue already
@@ -1810,6 +1821,8 @@ def sweep_start(step, board, labels=(), busy="", closed=False):
         # #1002 C4: next-step reads `needs-human` on the pull request only;
         # on the issue it is a stop that waits on a person all the same.
         return "", "the autopilot stopped and a person has it (`needs-human`)"
+    if drafted:
+        return "", "its autopilot pull request is open: its own flow has it"
     if closed:
         return "", "a person closed its autopilot pull request unmerged: the sweep does not start it again"
     if not (step.get("action") in ("spec", "draft") and step.get("as") == "start"):
@@ -4469,7 +4482,9 @@ A class on html.
           ("", "", ""))
     check("#1002: a closed autopilot pull request holds the issue only unmerged and only when it closes it",
           (closed_by_person([{"body": "Closes #9", "mergedAt": None}], 9), closed_by_person([{"body": "Closes #9", "mergedAt": "x"}], 9),
-           closed_by_person([{"body": "Closes #90", "mergedAt": None}], 9)), (True, False, False))
+           closed_by_person([{"body": "Closes #90", "mergedAt": None}], 9), closed_by_person([{"body": "Closes #9", "state": "OPEN"}], 9),
+           open_by_autopilot([{"body": "Closes #9", "state": "OPEN"}], 9), open_by_autopilot([{"body": "Closes #9", "state": "CLOSED"}], 9),
+           sweep_start(next_step(s1002), {}, drafted=True)[0]), (True, False, False, False, True, False, ""))
     check("C13: a draft only behind main is updated by the bot, with no model",
           (swp(mergeStateStatus="BEHIND", isDraft=True), swp(mergeStateStatus="BLOCKED", isDraft=True), swp(mergeStateStatus="BEHIND", isDraft=True, labels=[{"name": "autopilot"}, {"name": "needs-human"}])),
           ("update", "", ""))
@@ -7087,8 +7102,8 @@ def main(argv):
         return 0
     if argv[:2] == ["sweep", "start"]:
         # An accepted issue's missed start (#1002 C3): {step: next-step's
-        # answer, board, labels, busy: runs-busy's ids, closed: `gh pr list
-        # --state closed --label autopilot`'s JSON, number} on stdin; prints
+        # answer, board, labels, busy: runs-busy's ids, prs: `gh pr list
+        # --state all --label autopilot`'s JSON, number} on stdin; prints
         # `start` or nothing, then a tab and why.
         try:
             got = json.load(sys.stdin)
@@ -7096,8 +7111,9 @@ def main(argv):
             print(f"sweep start needs a JSON object on stdin ({err})", file=sys.stderr)
             return 64
         got = got if isinstance(got, dict) else {}
+        prs = got.get("prs") if isinstance(got.get("prs"), list) else []
         what, why = sweep_start(got.get("step") or {}, got.get("board") or {}, got.get("labels") or [], got.get("busy") or "",
-                                closed_by_person(got.get("closed") or [], got.get("number")))
+                                closed_by_person(prs, got.get("number")), open_by_autopilot(prs, got.get("number")))
         print(f"{what}\t{why}")
         return 0
     if argv[:1] == ["sweep"]:
