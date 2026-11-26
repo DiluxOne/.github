@@ -94,10 +94,10 @@ def test_c2_the_contract_pins_the_views_token():
 
 
 def test_c3_a_failing_check_of_its_own_still_fails_the_required_run():
-    for name in ("org-pull-request.yml", "pull-request.yml"):
+    for name, uses in (("pull-request.yml", "./.github/workflows/waiting-update.yml"),
+                       ("org-pull-request.yml", "DiluxOne/.github/.github/workflows/waiting-update.yml@v7")):
         job = load(name)["jobs"]["waiting"]
-        assert job["needs"] == "review", name
-        assert job["uses"].split("@")[0].endswith(".github/workflows/waiting-update.yml"), name
+        assert job["needs"] == "review" and job["uses"] == uses, name
     update = jobs()["update"]
     assert "continue-on-error" not in update
     assert not any("continue-on-error" in s for s in update["steps"]), "the board's update still fails the run"

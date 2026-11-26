@@ -69,7 +69,8 @@ def pipeline_step(needs):
 
 
 def test_c1_the_pipeline_passes_when_its_gates_pass_whatever_waiting_did():
-    # `waiting`, whose view its own concurrency group cancels, is no gate:
+    # `waiting`, side work (its view was cancelled by its own concurrency
+    # group until #1004), is no gate:
     # not in `needs`, so its result never reaches the step.
     assert "waiting" not in load(TEMPLATE)["jobs"]["pipeline"]["needs"]
     for results in (("success", "success", "success"), ("success", "success", "skipped"), ("skipped", "skipped", "skipped")):
