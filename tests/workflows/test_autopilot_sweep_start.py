@@ -84,6 +84,8 @@ def sweep(tmp_path, labels=("accepted",), closed="[]", **env):
           '  "search issues"*) ;;\n'
           f'  "issue view 9"*) cat {tmp_path / "issue.json"} ;;\n'
           f'  "pr list"*) cat {tmp_path / "closed.json"} ;;\n'
+          f'  "api -X GET search/issues"*"label:\\"accepted\\""*) echo {env.pop("TOTAL", "1")} ;;\n'
+          '  "api -X GET search/issues"*) echo 0 ;;\n'
           "esac\n")
     s = steps.step("autopilot-sweep.yml", "Start a missed one", job="sweep")
     ran = steps.run(s, tmp_path, central=False, files=files, stubs={"gh": gh, "sleep": ""},
@@ -156,6 +158,28 @@ def test_unreadable_pull_requests_start_nothing(tmp_path):
     ran, log = sweep(tmp_path, closed="boom")
     assert ran.code == 0, ran.stdout + ran.stderr
     assert not continued(ran) and not marked(log), ran.stdout
+
+
+def test_a_full_list_of_pull_requests_starts_nothing(tmp_path):
+    # The list is capped at 2000: a full one may have left out the pull
+    # request a person closed, so it fails closed, as an unreadable one.
+    full = json.dumps([{"number": 5000 - i, "body": f"Closes #{5000 - i}", "state": "MERGED", "mergedAt": "t"} for i in range(2000)])
+    ran, log = sweep(tmp_path, closed=full)
+    assert ran.code == 0, ran.stdout + ran.stderr
+    assert not continued(ran) and not marked(log), ran.stdout
+    assert "could not be read in full" in ran.stdout
+    assert ["--limit", "2000"] == next(c for c in ran.of("gh") if c[:2] == ["pr", "list"])[8:10]
+    # One short of the cap is the whole list.
+    ran, log = sweep(tmp_path / "under", closed=json.dumps(json.loads(full)[:1999]))
+    assert len(continued(ran)) == 1, ran.stdout
+
+
+def test_a_short_issue_search_still_sweeps_and_then_fails(tmp_path):
+    for i, total in enumerate(("1001", "''")):
+        ran, log = sweep(tmp_path / str(i), TOTAL=total)
+        assert len(continued(ran)) == 1, ran.stdout
+        assert ran.code != 0
+        assert "labelled accepted" in ran.stdout + ran.stderr
 
 
 def test_the_closed_pull_requests_are_read_once_per_repository(tmp_path):
