@@ -94,7 +94,7 @@ jobs:
 
       - name: App token (read that repository)
         id: read
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
@@ -118,7 +118,7 @@ jobs:
         id: agent
         timeout-minutes: 40
         continue-on-error: true # the list says the night found nothing new
-        uses: anthropics/claude-code-action@cc98b3ae241b0fcfb6a42a2690751afffecb4452 # v1.0.278
+        uses: anthropics/claude-code-action@acfe7992852970efb4fee683d63d628e3e52df67 # v1.0.286
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
@@ -140,7 +140,7 @@ jobs:
       - name: App token (the repository's bugs)
         id: bugs-token
         if: steps.agent.outcome == 'success'
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
@@ -153,7 +153,7 @@ jobs:
         id: write
         # A night that did not finish leaves the list as it was.
         if: steps.agent.outcome == 'success'
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
@@ -202,7 +202,7 @@ jobs:
         if: steps.cand.outputs.second != ''
         continue-on-error: true
         timeout-minutes: 10
-        uses: anthropics/claude-code-action@cc98b3ae241b0fcfb6a42a2690751afffecb4452 # v1.0.278
+        uses: anthropics/claude-code-action@acfe7992852970efb4fee683d63d628e3e52df67 # v1.0.286
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}

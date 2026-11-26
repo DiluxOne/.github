@@ -129,7 +129,7 @@ jobs:
     steps:
       - name: App token
         id: bot
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
@@ -296,7 +296,7 @@ jobs:
     steps:
       - name: App token
         id: bot
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
@@ -359,7 +359,7 @@ jobs:
         if: steps.others.outputs.prompt != ''
         continue-on-error: true
         timeout-minutes: 5
-        uses: anthropics/claude-code-action@cc98b3ae241b0fcfb6a42a2690751afffecb4452 # v1.0.278
+        uses: anthropics/claude-code-action@acfe7992852970efb4fee683d63d628e3e52df67 # v1.0.286
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
@@ -411,7 +411,7 @@ jobs:
     steps:
       - name: App token
         id: bot
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
@@ -490,7 +490,7 @@ jobs:
     steps:
       - name: App token
         id: bot
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
@@ -681,7 +681,7 @@ jobs:
         if: steps.pr.outputs.run == 'true'
         continue-on-error: true
         timeout-minutes: 10
-        uses: anthropics/claude-code-action@cc98b3ae241b0fcfb6a42a2690751afffecb4452 # v1.0.278
+        uses: anthropics/claude-code-action@acfe7992852970efb4fee683d63d628e3e52df67 # v1.0.286
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
@@ -816,7 +816,7 @@ jobs:
         # token is minted after the model has run and used only here.
         if: steps.post.outputs.resolve == 'true'
         id: resolver
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
@@ -840,7 +840,7 @@ jobs:
       - name: Token for the review's re-run
         if: steps.post.outputs.settled == 'true'
         id: rerunner
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ vars.DILUX_BOT_CLIENT_ID }}
           private-key: ${{ secrets.DILUX_BOT_PRIVATE_KEY }}
